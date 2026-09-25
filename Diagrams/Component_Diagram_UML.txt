@@ -1,0 +1,123 @@
+THIS LOOKS LIKE DOGSHIT
+@startuml
+title Decentralized Compute Marketplace - Component Diagram
+
+left to right direction
+
+skinparam componentStyle uml2
+
+
+' =========================================================
+' INTERFACES
+' =========================================================
+
+() "Job Submission /\nMarketplace Interface" as IMarketplace
+
+() "Provider Registry\nInterface" as IRegistry
+
+() "Job Contract\nInterface" as IJob
+
+() "Provider Assignment\nInterface" as IAssignment
+
+() "Container Execution\nInterface" as IExecution
+
+() "Storage\nInterface" as IStorage
+
+
+' =========================================================
+' COMPONENTS
+' =========================================================
+
+component "Consumer App" as ConsumerApp
+
+component "Matching Server" as MatchingServer
+
+component "Marketplace Factory\nSmart Contract" as Factory
+
+component "Job / Escrow\nSmart Contract" as JobContract
+
+component "Provider Registry\nSmart Contract" as Registry
+
+component "Provider App" as ProviderApp
+
+component "Container Runtime" as Runtime
+
+component "Distributed Storage" as Storage
+
+
+' =========================================================
+' PROVIDED INTERFACES
+' =========================================================
+
+MatchingServer - IMarketplace
+
+MatchingServer - IAssignment
+
+Registry - IRegistry
+
+JobContract - IJob
+
+Runtime - IExecution
+
+Storage - IStorage
+
+
+' =========================================================
+' REQUIRED INTERFACES
+' =========================================================
+
+ConsumerApp ..> IMarketplace
+
+ConsumerApp ..> IJob
+ConsumerApp ..> IStorage
+
+MatchingServer ..> IJob
+MatchingServer ..> IRegistry
+MatchingServer ..> IAssignment
+
+ProviderApp ..> IAssignment
+ProviderApp ..> IJob
+ProviderApp ..> IRegistry
+ProviderApp ..> IExecution
+ProviderApp ..> IStorage
+
+
+' =========================================================
+' FACTORY
+' =========================================================
+
+ConsumerApp --> Factory : create job
+
+Factory ..> IJob : deploys
+
+
+' =========================================================
+' NOTES
+' =========================================================
+
+note right of MatchingServer
+  Centralized coordination:
+  • Maintain job queue
+  • Track providers
+  • Match jobs to providers
+  • Send assignments
+
+  Does NOT control:
+  • Escrow
+  • Verification
+  • Payment
+  • Penalties
+end note
+
+note right of JobContract
+  Decentralized enforcement:
+  • Job state
+  • Assignment
+  • Commit / reveal
+  • Verification
+  • Escrow
+  • Payment
+  • Penalties
+end note
+
+@enduml

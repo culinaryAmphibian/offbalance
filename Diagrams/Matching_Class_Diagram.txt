@@ -1,0 +1,57 @@
+@startuml
+title Marketplace Matching and Execution
+
+class MatchingServer {
+    +matchJobs()
+    +selectProviders()
+    +assignJob()
+    +handleProviderFailure()
+}
+
+class JobQueue {
+    +addJob()
+    +removeJob()
+    +getAvailableJobs()
+}
+
+class ProviderPool {
+    +addProvider()
+    +removeProvider()
+    +getAvailableProviders()
+}
+
+class MatchingAlgorithm {
+    +findMatches()
+    +scoreProvider()
+    +checkRequirements()
+}
+
+class ProviderInfo {
+    +providerId: UUID
+    +cpuCores: int
+    +memoryMB: long
+    +gpuMemoryMB: long
+    +pricePerUnit: Currency
+    +reputation: float
+    +availability: ProviderStatus
+}
+
+class JobRequirements {
+    +cpuCores: int
+    +memoryMB: long
+    +gpuMemoryMB: long
+    +maxPrice: Currency
+    +maxExecutionTime: Duration
+}
+
+MatchingServer *-- JobQueue
+MatchingServer *-- ProviderPool
+MatchingServer --> MatchingAlgorithm
+
+JobQueue --> JobRequirements
+ProviderPool --> ProviderInfo
+
+MatchingAlgorithm --> JobRequirements : evaluates
+MatchingAlgorithm --> ProviderInfo : evaluates
+
+@enduml

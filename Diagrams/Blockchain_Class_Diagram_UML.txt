@@ -1,0 +1,89 @@
+@startuml
+title Decentralized Compute Marketplace - Blockchain Model
+
+skinparam classAttributeIconSize 0
+
+package "Blockchain Smart Contracts" {
+
+    class MarketplaceFactory <<Smart Contract>> {
+        +createJob()
+        +getJobAddress()
+    }
+
+    class ProviderRegistry <<Smart Contract>> {
+        +registerProvider()
+        +updateProvider()
+        +stake()
+        +unstake()
+        +getProvider()
+        +isEligible()
+    }
+
+    class JobEscrowContract <<Smart Contract>> {
+        +jobId: uint
+        +consumer: address
+        +status: JobStatus
+        +escrowAmount: uint
+        +deadline: uint
+
+        +assignProvider()
+        +acceptAssignment()
+        +submitCommitment()
+        +revealResult()
+        +finalizeVerification()
+        +releasePayment()
+        +slashProvider()
+        +refundConsumer()
+    }
+
+    class ProviderRecord {
+        +walletAddress: address
+        +reputation: uint
+        +stake: uint
+        +status: ProviderStatus
+        +hardwareHash: bytes32
+    }
+
+    class Commitment {
+        +provider: address
+        +resultHash: bytes32
+        +revealed: bool
+    }
+
+    class AssignmentRecord {
+        +provider: address
+        +status: AssignmentStatus
+    }
+}
+
+MarketplaceFactory "1" --> "0..*" JobEscrowContract : creates
+
+ProviderRegistry "1" *-- "0..*" ProviderRecord
+
+JobEscrowContract --> ProviderRegistry : validates provider
+
+JobEscrowContract "1" *-- "1..*" AssignmentRecord
+JobEscrowContract "1" *-- "1..*" Commitment
+
+AssignmentRecord --> ProviderRecord : references
+Commitment --> ProviderRecord : submitted by
+
+note right of MarketplaceFactory
+    Creates a new job contract
+    for each submitted job.
+end note
+
+note right of JobEscrowContract
+    Holds buyer funds and
+    enforces the job protocol.
+
+    The contract does NOT
+    execute the computation.
+
+    It verifies commitments,
+    determines consensus,
+    and controls payment
+    and penalties.
+end note
+
+@enduml

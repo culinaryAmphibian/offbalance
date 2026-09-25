@@ -1,0 +1,250 @@
+@startuml
+title Decentralized Compute Marketplace - Core Domain Model
+
+skinparam classAttributeIconSize 0
+
+' =========================
+' Users
+' =========================
+
+abstract class User {
+    +userId: UUID
+    +walletAddress: String
+}
+
+class Consumer {
+    +submitJob()
+    +cancelJob()
+    +retrieveResult()
+}
+
+class Provider {
+    +providerId: UUID
+    +reputation: float
+    +status: ProviderStatus
+    +register()
+    +stake()
+    +acceptAssignment()
+    +submitCommitment()
+    +revealResult()
+}
+
+User <|-- Consumer
+User <|-- Provider
+
+
+' =========================
+' Jobs
+' =========================
+
+class Job {
+    +jobId: UUID
+    +status: JobStatus
+    +maxPrice: Currency
+    +deadline: DateTime
+    +submit()
+    +cancel()
+}
+
+class JobRequirements {
+    +cpuCores: int
+    +memoryMB: long
+    +gpuRequired: boolean
+    +gpuMemoryMB: long
+    +storageMB: long
+    +maxExecutionTime: Duration
+}
+
+Consumer "1" --> "0..*" Job : submits
+Job "1" *-- "1" JobRequirements : requires
+
+
+' =========================
+' Matching / Assignment
+' =========================
+
+class MatchingServer {
+    +matchJobs()
+    +selectProviders()
+    +assignJob()
+    +handleFailure()
+}
+
+class Assignment {
+    +assignmentId: UUID
+    +status: AssignmentStatus
+    +assignedAt: DateTime
+    +acceptedAt: DateTime
+}
+
+MatchingServer "1" --> "0..*" Job : matches
+MatchingServer "1" --> "0..*" Assignment : creates
+Job "1" *-- "1..*" Assignment : has
+Provider "1" --> "0..*" Assignment : receives
+
+
+' =========================
+' Execution
+' =========================
+
+class Execution {
+    +executionId: UUID
+    +startedAt: DateTime
+    +completedAt: DateTime
+    +status: ExecutionStatus
+}
+
+class Container {
+    +imageHash: String
+    +resourceLimit: ResourceLimit
+    +start()
+    +stop()
+}
+
+Assignment "1" *-- "1" Execution : produces
+Execution "1" --> "1" Container : runs in
+
+
+' =========================
+' Results
+' =========================
+
+class Result {
+    +resultId: UUID
+    +resultHash: Hash
+    +storageReference: String
+}
+
+class ResultCommitment {
+    +commitmentHash: Hash
+    +nonce: Hash
+    +committedAt: DateTime
+    +revealedAt: DateTime
+    +reveal()
+}
+
+Execution "1" --> "1" Result : produces
+Result "1" *-- "1" ResultCommitment : committed as
+
+
+' =========================
+' Verification
+' =========================
+
+class VerificationRound {
+    +verificationId: UUID
+    +commitDeadline: DateTime
+    +revealDeadline: DateTime
+    +consensusThreshold: float
+    +status: VerificationStatus
+    +evaluateResults()
+}
+
+class VerificationVote {
+    +resultHash: Hash
+    +valid: boolean
+}
+
+Job "1" *-- "1" VerificationRound : requires
+VerificationRound "1" *-- "1..*" VerificationVote
+Provider "1" --> "0..*" VerificationVote : submits
+Result "1" --> "0..*" VerificationVote : supports
+
+
+' =========================
+' Financial
+' =========================
+
+class PaymentEscrow {
+    +amount: Currency
+    +status: EscrowStatus
+    +lockFunds()
+    +releasePayment()
+    +refund()
+}
+
+class Stake {
+    +amount: Currency
+    +status: StakeStatus
+    +lock()
+    +release()
+    +slash()
+}
+
+Job "1" *-- "1" PaymentEscrow : funded by
+Provider "1" *-- "1" Stake : maintains
+
+VerificationRound --> PaymentEscrow : determines release
+VerificationRound --> Stake : determines penalties
+
+
+' =========================
+' Storage
+' =========================
+
+class DistributedStorage {
+    +upload()
+    +download()
+    +getReference()
+}
+
+Result --> DistributedStorage : stored in
+Job --> DistributedStorage : input stored in
+
+
+' =========================
+' Enumerations
+' =========================
+
+enum JobStatus {
+    OPEN
+    ASSIGNED
+    EXECUTING
+    VERIFYING
+    COMPLETED
+    FAILED
+    CANCELLED
+}
+
+enum AssignmentStatus {
+    PENDING
+    ACCEPTED
+    EXECUTING
+    COMPLETED
+    FAILED
+}
+
+enum ExecutionStatus {
+    RUNNING
+    COMPLETED
+    FAILED
+}
+
+enum VerificationStatus {
+    COMMIT
+    REVEAL
+    CONSENSUS
+    COMPLETE
+    DISPUTED
+}
+
+enum ProviderStatus {
+    AVAILABLE
+    BUSY
+    OFFLINE
+    SUSPENDED
+}
+
+enum EscrowStatus {
+    LOCKED
+    RELEASED
+    REFUNDED
+}
+
+enum StakeStatus {
+    AVAILABLE
+    LOCKED
+    SLASHED
+}
+
+@enduml
