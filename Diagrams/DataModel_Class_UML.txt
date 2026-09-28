@@ -1,0 +1,121 @@
+@startuml
+title Decentralized Compute Marketplace - Off-Chain Data Model (MongoDB)
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam nodesep 60
+skinparam ranksep 60
+
+class Account <<collection>> {
+    + _id: ObjectId
+    + walletId: String
+    + linkedWallets: String[]
+    .. as buyer ..
+    {field} + submittedJobs: ObjectId[]  (grouped by status)
+    + completedJobs: ObjectId[]
+    + totalSpent: Decimal
+    .. as provider ..
+    {field} + pickedUpJobs: ObjectId[]  (grouped by status)
+    + totalEarned: Decimal
+    + currentStake: Decimal
+    + reputation: Number
+    + hardwareRef: ObjectId
+}
+
+class Hardware <<collection>> {
+    + _id: ObjectId
+    {field} + userRef: ObjectId  (key)
+    + cpuScore: Number
+    + gpuScore: Number
+    + memoryScore: Number
+    {field} + price: Decimal  (per unit time)
+    + usage: Number
+    + updatedAt: Date
+}
+
+class Job <<collection>> {
+    + _id: ObjectId
+    + onChainJobId: Number
+    + owner: ObjectId
+    + status: JobStatus
+    + providers: ObjectId[]
+    + dockerImageRef: ObjectId
+    + maxPrice: Decimal
+    + runningPrice: Decimal
+    + usage: Number
+    + k: Number
+    + quorum: Number
+    {field} + window: Number  (seconds)
+    + requirements: JobRequirements
+    + providerResults: ProviderResult[]
+    + consensusResultHash: String
+    + createdAt: Date
+}
+
+class JobRequirements <<embedded>> {
+    + minCpuScore: Number
+    + minGpuScore: Number
+    + minMemoryScore: Number
+}
+
+class ProviderResult <<embedded>> {
+    + provider: ObjectId
+    + resultHash: String
+    + result: Buffer | String
+    + receivedAt: Date
+}
+
+class DockerImage <<collection>> {
+    + _id: ObjectId
+    + jobRef: ObjectId
+    {field} + image: Buffer  (actual Docker image)
+    + imageHash: String
+    + sizeBytes: Number
+}
+
+class Tutorial <<collection>> {
+    + _id: ObjectId
+    + text: String
+}
+
+enum JobStatus {
+    PENDING
+    PICKED_UP
+    RUNNING
+    VERIFYING
+    COMPLETED
+    FAILED
+}
+
+Account "1" --> "0..*" Job : owns (buyer)
+Account "0..*" <-- "0..*" Job : providers
+Account "1" --> "0..1" Hardware : hardwareRef
+Job "1" --> "1" DockerImage : dockerImageRef
+Job "1" *-- "1" JobRequirements
+Job "1" *-- "0..k" ProviderResult
+Job --> JobStatus
+
+note right of JobStatus
+  Mirrors the on-chain JobStatus enum.
+  Kept in sync by the server's
+  Blockchain Manager event listener.
+end note
+
+note bottom of ProviderResult
+  Full results live only here (off-chain).
+  The chain stores only hashes; the result whose
+  hash equals the on-chain consensus hash is
+  returned to the buyer.
+end note
+
+note left of Account
+  One wallet / account can act as
+  both buyer and provider.
+end note
+
+note right of Hardware
+  Scores computed by the provider
+  daemon's background benchmark.
+end note
+@enduml

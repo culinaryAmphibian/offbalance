@@ -1,0 +1,147 @@
+@startuml
+title Decentralized Compute Marketplace - Server Class Diagram (Node.js / Express)
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam nodesep 50
+skinparam ranksep 60
+
+package "Routes  (Express, JWT-protected except /auth)" #EEF4FF {
+    class AuthRouter <<router>> {
+        {method} + GET /auth/nonce
+        {method} + POST /auth/verify  (SIWE -> JWT)
+    }
+    class JobsRouter <<router>> {
+        {method} + POST /jobs  (submit job)
+        {method} + GET /jobs/:id
+        {method} + POST /jobs/:id/update
+    }
+    class ProviderRouter <<router>> {
+        {method} + POST /provider/machineSpecs
+        {method} + GET /provider/tutorial
+        {method} + POST /provider/startJob  (scores)
+    }
+    class AccountRouter <<router>> {
+        {method} + GET /account/:id/dashboard
+        {method} + POST /account/:id/dashboard
+    }
+}
+
+package "Services" #FFF6E5 {
+    class AuthService {
+        + createNonce(wallet: String) : String
+        + verifySiweMessage(message, signature) : JWT
+    }
+
+    class JobService {
+        + submitJob(buyer: Account, form: JobForm) : Job
+        + getJob(jobId) : Job
+        + updateStatus(jobId, status: JobStatus)
+        + storeProviderResult(jobId, provider, result)
+        + deliverConsensusResult(jobId, consensusHash)
+    }
+
+    class AccountService {
+        + getDashboard(walletId) : Account
+        + updateAccount(walletId, info)
+        + linkWallet(walletId, wallet)
+        + unlinkWallet(walletId, wallet)
+        + deleteAccount(walletId)
+    }
+
+    class HardwareService {
+        + saveMachineSpecs(walletId, specs: BenchmarkScores)
+        + getHardware(walletId) : Hardware
+        + suggestMarketPrice(specs) : Currency
+    }
+
+    class MatchingEngine {
+        - jobQueue: JobQueue
+        - providerPool: ProviderPoolCache
+        + enqueue(job: Job)
+        + matchNext()
+        + findTopK(job: Job, k: int) : Hardware[]
+        + meetsRequirements(job, hw) : boolean
+        + scoreProvider(job, hw) : float
+        + handleProviderFailure(jobId, provider)
+    }
+
+    class JobQueue {
+        + add(job: Job)
+        + remove(jobId)
+        + peek() : Job
+        + getPending() : Job[]
+    }
+
+    class ProviderPoolCache {
+        - online: Map<wallet, ProviderSession>
+        + add(session: ProviderSession)
+        + remove(wallet)
+        + heartbeat(wallet)
+        + getAvailable() : ProviderSession[]
+        + markBusy(wallet)
+        + markIdle(wallet)
+    }
+
+    class ProviderSession {
+        + wallet: String
+        + sessionKey: String
+        + socket: TLSSocket
+        + lastHeartbeat: DateTime
+        + busy: boolean
+    }
+
+    class ProtocolServer {
+        - port: int
+        + listen()
+        + onConnect(socket)
+        + sendAssignment(wallet, jobId)
+        + sendDockerImage(wallet, jobId, image)
+        + onResult(wallet, jobId, result)
+        + onHeartbeat(wallet)
+    }
+
+    class ServerBlockchainManager {
+        - provider: JsonRpcProvider
+        - signer: Wallet
+        - jobEscrow: Contract
+        - providerRegistry: Contract
+        + submitJob(job: Job) : onChainJobId
+        + listenForEvents()
+        + handleEvent(event)
+        + verifySession(wallet, sessionKey) : boolean
+    }
+}
+
+' ------------ Routes -> Services ------------
+AuthRouter --> AuthService
+JobsRouter --> JobService
+ProviderRouter --> HardwareService
+ProviderRouter --> MatchingEngine
+AccountRouter --> AccountService
+
+' ------------ Service collaborations ------------
+JobService --> MatchingEngine : enqueue job
+JobService --> ServerBlockchainManager : submitJob()
+MatchingEngine *-- JobQueue
+MatchingEngine *-- ProviderPoolCache
+ProviderPoolCache "1" o-- "0..*" ProviderSession
+MatchingEngine --> ProtocolServer : send assignments
+ProtocolServer --> ProviderPoolCache : register / heartbeat
+ProtocolServer --> JobService : full results
+ServerBlockchainManager --> JobService : status events
+
+note as ModelsNote
+  Services persist to MongoDB models
+  (Account, Job, Hardware, DockerImage,
+  Tutorial) - see Data Model diagram.
+end note
+
+note left of ServerBlockchainManager
+  Listens (eth_subscribe / eth_getLogs):
+  JobAccepted -> verify session, send Docker image
+  JobStatusChanged -> update Job.status in Mongo
+  JobCompleted -> deliverConsensusResult()
+end note
+@enduml

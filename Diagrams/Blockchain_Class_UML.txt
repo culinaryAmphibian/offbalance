@@ -1,0 +1,146 @@
+@startuml
+title Decentralized Compute Marketplace - On-Chain Class Diagram (Solidity)
+
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam nodesep 60
+skinparam ranksep 60
+
+package "Smart Contracts" #EAF7EA {
+
+    class JobEscrow <<contract>> {
+        - server: address
+        - registry: ProviderRegistry
+        - nextJobId: uint256
+        {field} - jobs: mapping(uint256 => Job)
+        --
+        .. Buyer functions (called by server) ..
+        + submitJob(buyer: address, dockerImageHash: bytes32,\n    maxPrice: uint256, k: uint8, quorum: uint8,\n    window: uint256) payable : uint256
+        .. Provider functions (signed by session key) ..
+        + acceptJob(jobId: uint256, sessionSignature: bytes)
+        + submitResultHash(jobId: uint256, commitHash: bytes32,\n    sessionSignature: bytes)
+        + submitResultDecoding(jobId: uint256, resultHash: bytes32,\n    nonce: bytes32, sessionSignature: bytes)
+        .. Anyone ..
+        + finalizeTimeout(jobId: uint256)
+        + getJob(jobId: uint256) : Job
+        .. Internal ..
+        - _verifySession(provider: address, sig: bytes) : bool
+        - _resolveConsensus(jobId: uint256)
+        - _handleTimeout(jobId: uint256)
+        - _payWinnersAndSlashLosers(jobId: uint256,\n    winners: address[], allProviders: address[])
+    }
+
+    class ProviderRegistry <<contract>> {
+        - jobEscrow: address
+        - minStake: uint256
+        {field} - providers: mapping(address => ProviderRecord)
+        {field} - sessionOwner: mapping(address => address)
+        --
+        .. Provider functions ..
+        + registerProvider(rate: uint256, sessionKey: address) payable
+        + deregisterProvider()
+        + addStake() payable
+        + withdrawStake(amount: uint256)
+        + setSessionKey(sessionKey: address)
+        + revokeSessionKey()
+        + updateRate(rate: uint256)
+        .. Called only by JobEscrow ..
+        + lockStake(provider: address, amount: uint256)
+        + unlockStake(provider: address, amount: uint256)
+        + slash(provider: address, amount: uint256)
+        .. Views ..
+        + isEligible(provider: address, requiredStake: uint256) : bool
+        + getProvider(provider: address) : ProviderRecord
+        + ownerOfSessionKey(sessionKey: address) : address
+    }
+
+    class Job <<struct>> {
+        + jobId: uint256
+        + buyer: address
+        + dockerImageHash: bytes32
+        + maxPrice: uint256
+        + k: uint8
+        + quorum: uint8
+        + window: uint256
+        + commitDeadline: uint256
+        + revealDeadline: uint256
+        + status: JobStatus
+        + providers: address[]
+        {field} + submissions: mapping(address => Submission)
+        + consensusHash: bytes32
+    }
+
+    class Submission <<struct>> {
+        + provider: address
+        + commitHash: bytes32
+        + revealedHash: bytes32
+        + committed: bool
+        + revealed: bool
+    }
+
+    class ProviderRecord <<struct>> {
+        + wallet: address
+        + sessionKey: address
+        + stake: uint256
+        + lockedStake: uint256
+        + rate: uint256
+        + reputation: uint256
+        + registered: bool
+    }
+
+    enum JobStatus {
+        PENDING
+        PICKED_UP
+        RUNNING
+        VERIFYING
+        COMPLETED
+        FAILED
+    }
+
+    class "<<events>>" as Events {
+        JobSubmitted(jobId, buyer, maxPrice, k, quorum)
+        JobAccepted(jobId, provider)
+        JobStatusChanged(jobId, status)
+        ResultCommitted(jobId, provider)
+        ResultRevealed(jobId, provider, resultHash)
+        JobCompleted(jobId, consensusHash, winners)
+        JobFailed(jobId)
+        ProviderRegistered(provider)
+        StakeChanged(provider, stake, lockedStake)
+        ProviderSlashed(provider, amount)
+    }
+}
+
+JobEscrow "1" *-- "0..*" Job : jobs
+Job "1" *-- "1..k" Submission : submissions
+Job --> JobStatus
+JobEscrow --> ProviderRegistry : eligibility,\nlock / unlock / slash
+ProviderRegistry "1" *-- "0..*" ProviderRecord : providers
+Submission ..> ProviderRecord : provider
+JobEscrow ..> Events : emits
+ProviderRegistry ..> Events : emits
+
+note top of JobEscrow
+  Only HASHES go on chain:
+  commitHash = keccak256(resultHash, nonce)
+  reveal = (resultHash, nonce)
+  The full result is sent to the server off-chain.
+end note
+
+note right of JobStatus
+  PENDING    : posted by server, awaiting providers
+  PICKED_UP  : providers accepting (stake locked)
+  RUNNING    : k accepted, commit window open
+  VERIFYING  : commit window closed, reveal window open
+  COMPLETED  : >= quorum agree; winners paid, others slashed
+  FAILED     : no consensus / timeout; buyer escrow
+               forfeited, providers slashed
+end note
+
+note right of ProviderRecord
+  rate = provider's price per unit time.
+  Winners split the buyer's maxPrice
+  weighted by their rate.
+end note
+@enduml
