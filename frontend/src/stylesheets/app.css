@@ -1,0 +1,62 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;450;500;550;600;650;700&display=swap');
+
+:root{color-scheme:dark;font-family:'DM Sans',sans-serif;color:#f4f4f4;background:#101010;font-synthesis:none;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;font-weight:450}
+*{box-sizing:border-box}
+body{margin:0;min-width:320px}
+button,a{-webkit-tap-highlight-color:transparent}
+button{font:inherit;cursor:pointer}
+button:focus-visible,a:focus-visible,.table-scroll:focus-visible{outline:2px solid #f4f4f4;outline-offset:4px}
+.header{height:100px;border-bottom:1px solid #383838;background:#191919}
+.header-inner{height:100%;max-width:1200px;margin:auto;padding:0 40px;display:flex;align-items:center;justify-content:space-between;gap:20px}
+.brand{display:flex;align-items:center;color:#f4f4f4;font-weight:700;font-size:25px;letter-spacing:-1.2px;text-decoration:none}
+.brand svg{margin-right:12px;transform:rotate(-9deg)}
+.brand-dot{color:#f4f4f4}
+.account{display:flex;align-items:center;gap:22px;font-size:12px}
+.demo{border:1px solid #383838;border-radius:0;padding:4px 8px;color:#b0b0b0;font-weight:500}
+.wallet{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;color:#b0b0b0}
+main{max-width:1200px;margin:auto;padding:58px 40px 90px}
+.page-heading{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:32px}
+h1,h2,p{margin:0}
+h1{font-size:32px;font-weight:550;letter-spacing:-1.2px}
+.view-switch{display:flex;padding:0;border:1px solid #383838;border-radius:0;background:#191919;gap:0}
+.view-switch button{border:0;border-radius:0;background:transparent;color:#b0b0b0;padding:8px 22px;font-size:13px;font-weight:550;transition:background .15s,color .15s}
+.view-switch button[aria-pressed=true]{background:#f4f4f4;color:#191919}
+.view-switch button[aria-pressed=false]:hover{background:#242424;color:#f4f4f4}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);background:#191919;border:1px solid #383838;border-radius:0;padding:30px 0;margin-bottom:44px}
+.stat{padding:0 32px}
+.stat+.stat{border-left:1px solid #383838}
+.stat h2{font-size:13px;font-weight:500;color:#a3a3a3;margin-bottom:20px}
+.stat p{font-size:42px;line-height:1.15;letter-spacing:-1.8px;font-weight:500;font-variant-numeric:tabular-nums}
+.stat:first-child p{color:#f4f4f4}
+.unit{font-size:13px;font-weight:500;letter-spacing:0;color:#a3a3a3;margin-left:10px}
+.section-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+.section-heading h2{font-size:17px;font-weight:550;letter-spacing:-.3px}
+.table-scroll{overflow-x:auto;border:1px solid #383838;border-radius:0;background:#191919}
+table{width:100%;border-collapse:collapse;text-align:left;white-space:nowrap;font-size:13px}
+thead{background:#242424;color:#b0b0b0}
+th{font-size:11px;font-weight:550;padding:15px 24px}
+td{height:80px;padding:14px 24px;border-top:1px solid #303030}
+tbody tr:hover{background:#202020}
+td:first-child{min-width:265px}
+.job-symbol{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid #383838;border-radius:0;margin-right:14px;color:#b0b0b0;font-size:17px;vertical-align:middle}
+.job-name{font-weight:500}
+.status{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:500;line-height:1;padding:7px 9px;border-radius:0}
+.status:before{content:'';width:5px;height:5px;border-radius:0;background:currentColor}
+.running{color:#191919;background:#f4f4f4}
+.verifying{color:#e5e5e5;background:#363636}
+.pending{color:#a3a3a3;background:#252525}
+.completed{color:#f4f4f4;background:#303030}
+.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;font-variant-numeric:tabular-nums}
+.date,.currency{color:#a3a3a3}
+.numeric{text-align:right}
+.currency{font-family:'DM Sans',sans-serif;font-size:10px;margin-left:3px}
+.machine{border:1px solid #383838;border-radius:0;padding:24px 28px;background:#191919;margin:-12px 0 32px}
+.machine-name{display:flex;align-items:center;gap:12px}
+.machine-name h2{font-size:15px;font-weight:550}
+.machine-name .status{margin-left:auto}
+.machine-icon{color:#f4f4f4;font-size:23px;line-height:1}
+.machine-specs{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;margin:26px 0 0}
+.machine-specs dt{font-size:11px;color:#a3a3a3;margin-bottom:8px}
+.machine-specs dd{margin:0;font-size:13px;font-variant-numeric:tabular-nums}
+@media(min-width:1500px){main{padding-top:80px}}
+@media(max-width:700px){.header{height:80px}.header-inner{padding:0 22px}.brand{font-size:22px}.brand svg{width:23px;margin-right:8px}.account{gap:10px}.wallet{display:none}main{padding:36px 20px 60px}h1{font-size:27px}.page-heading{margin-bottom:24px}.view-switch button{padding:7px 13px;font-size:12px}.stats{padding:23px 0;margin-bottom:32px}.stat{padding:0 16px}.stat h2{font-size:11px;min-height:28px;margin-bottom:8px}.stat p{font-size:30px;letter-spacing:-1px}.unit{display:block;font-size:10px;margin:6px 0 0}.machine{padding:22px}.machine-specs{grid-template-columns:repeat(2,1fr)}th,td{padding-left:18px;padding-right:18px}td{height:72px}}
