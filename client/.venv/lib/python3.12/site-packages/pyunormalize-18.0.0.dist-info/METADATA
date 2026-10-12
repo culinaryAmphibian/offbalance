@@ -1,0 +1,138 @@
+Metadata-Version: 2.4
+Name: pyunormalize
+Version: 18.0.0
+Summary: A library for Unicode normalization (NFC, NFD, NFKC, NFKD) independent of Python's core Unicode database.
+Author-email: Marc Lodewijck <mlodewijck@gmail.com>
+License-Expression: MIT
+Project-URL: Homepage, https://github.com/mlodewijck/pyunormalize
+Project-URL: Source, https://github.com/mlodewijck/pyunormalize
+Project-URL: Issues, https://github.com/mlodewijck/pyunormalize/issues
+Project-URL: Changelog, https://github.com/mlodewijck/pyunormalize/blob/main/CHANGELOG.md
+Keywords: nfc,nfd,nfkc,nfkd,normalization forms,normalize,hangul,text,text processing,unicode,unicode normalization,i18n,python,pure-python
+Classifier: Development Status :: 5 - Production/Stable
+Classifier: Intended Audience :: Developers
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3 :: Only
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Classifier: Programming Language :: Python :: 3.14
+Classifier: Topic :: Software Development :: Internationalization
+Classifier: Topic :: Software Development :: Localization
+Classifier: Topic :: Software Development :: Libraries :: Python Modules
+Classifier: Topic :: Text Processing
+Classifier: Topic :: Text Processing :: Linguistic
+Classifier: Topic :: Utilities
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+License-File: UNICODE-LICENSE
+Provides-Extra: dev
+Requires-Dist: nox; extra == "dev"
+Dynamic: license-file
+
+# pyunormalize
+The `pyunormalize` package is a pure-Python, zero-dependency implementation of the Unicode normalization algorithm.
+
+It supports the four standard Unicode normalization forms:
+
+- NFC
+- NFD
+- NFKC
+- NFKD
+
+The package uses generated lookup tables derived from the Unicode Character Database (UCD) for Unicode&nbsp;18.0.0, released in September&nbsp;2026. It is therefore independent of the `unicodedata` module and the specific Unicode database version bundled with the Python runtime on which it is installed.
+
+All four normalization forms are tested against the official Unicode [`NormalizationTest.txt`](https://www.unicode.org/Public/18.0.0/ucd/NormalizationTest.txt) test file.
+
+### Requirements
+
+Python 3.9 or newer.
+
+### Installation
+Install the package with:
+```shell
+pip install pyunormalize
+```
+
+Upgrade to the latest version with:
+```shell
+pip install --upgrade pyunormalize
+```
+
+### Public API
+The public API exposes the four normalization functions and a generic dispatcher:
+```python
+from pyunormalize import NFC, NFD, NFKC, NFKD, normalize
+```
+
+It also exposes constants for the Unicode version in use:
+```python
+from pyunormalize import UCD_VERSION, UNICODE_VERSION
+```
+
+Note that `UCD_VERSION` and `UNICODE_VERSION` are aliases referring to the same version string (`'18.0.0'`).
+
+### Usage examples
+Below are practical examples illustrating how to normalize Unicode strings using either dedicated functions or the generic dispatcher.
+
+#### Dedicated functions
+Use the convenience functions `NFC`, `NFD`, `NFKC`, or `NFKD` for direct normalization:
+```python
+from pyunormalize import NFC, NFD, NFKC, NFKD
+
+text = "désaﬃliât"
+assert text == NFC(text)
+
+def hex_repr(string):
+    return " ".join([f"{ord(c):04X}" for c in string])
+
+print(f"NFD  : {hex_repr(NFD(text))}")
+print(f"NFKD : {hex_repr(NFKD(text))}")
+
+print(f"NFC  : {hex_repr(NFC(text))}")
+print(f"NFKC : {hex_repr(NFKC(text))}")
+```
+
+Output:
+```text
+NFD  : 0064 0065 0301 0073 0061 FB03 006C 0069 0061 0302 0074
+NFKD : 0064 0065 0301 0073 0061 0066 0066 0069 006C 0069 0061 0302 0074
+NFC  : 0064 00E9 0073 0061 FB03 006C 0069 00E2 0074
+NFKC : 0064 00E9 0073 0061 0066 0066 0069 006C 0069 00E2 0074
+```
+
+#### Generic `normalize` function
+When the normalization form is specified dynamically at runtime, use `normalize(form, text)`:
+
+```python
+from pyunormalize import normalize
+
+text = "ﬂuﬃness"
+
+# The `form` parameter accepts "NFC", "NFD", "NFKC", or "NFKD" (case-sensitive)
+nfkd_text = normalize("NFKD", text)
+
+print(nfkd_text)
+```
+
+Output:
+```text
+fluffiness
+```
+
+### Related resources
+This implementation is based on the following resources:
+- [The Unicode Standard, Version 18.0 – Core Specification, Section&nbsp;3.11: “Normalization Forms”](https://www.unicode.org/versions/Unicode18.0.0/core-spec/chapter-3/#G49537)
+- [Unicode Standard Annex #15: “Unicode Normalization Forms,” revision&nbsp;58](https://www.unicode.org/reports/tr15/tr15-58.html)
+
+### Changelog
+See the [CHANGELOG](https://github.com/mlodewijck/pyunormalize/blob/master/CHANGELOG.md) for the latest updates and changes.
+
+### Licenses
+The code is available under the terms of the [MIT License](https://github.com/mlodewijck/pyunormalize/blob/master/LICENSE).
+
+The use of Unicode data files is governed by the [UNICODE TERMS OF USE](https://www.unicode.org/copyright.html). Further specifications of rights and restrictions pertaining to the use of the Unicode data files and software can be found in the [Unicode License v3](https://www.unicode.org/license.txt), a copy of which is included as [`UNICODE-LICENSE`](https://github.com/mlodewijck/pyunormalize/blob/master/UNICODE-LICENSE).
