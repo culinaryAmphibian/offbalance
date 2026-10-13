@@ -14,7 +14,7 @@ ACCESS_TOKEN = 'TEST_TOKEN'
 BASE_URL = 'http://localhost:5173'
 DEFAULT_RPC = 'http://127.0.0.1:8545'
 # need to replace with the proper path and solidity name
-CONTRACT_ARTIFACT = Path("artifacts/contracts/OffBalance.sol/OffBalance.json")
+CONTRACT_ARTIFACT = Path("blockchain/artifacts/contracts/OffBalance.json")
 
 def ask_for_session_key() -> LocalAccount:
     session_key = getpass("Please provide your authenticated session key: ")
