@@ -58,7 +58,7 @@ contract OffBalance {
     event REVEAL_PHASE_START(JobID_t jobId);
     event CONSENSUS_VERIFICATION_START(JobID_t jobId);
     event DELIVERY_PHASE_START(JobID_t jobId);
-    event DELIVERED(JobID_t);
+    event DELIVERED(JobID_t jobId);
 
     event PAID(JobID_t jobId, address provider);
     event SLASHED(JobID_t jobId, address provider);
@@ -201,7 +201,7 @@ contract OffBalance {
             Provider storage provider = providers[jobs[jobId].assignedProviders[i]];
             
             // payout logic on provider,
-            // need to also mark them in the winning providers
+            // need to also mark them in the jobs[jobId].winning providers
 
             // emit paid or slashed
 
