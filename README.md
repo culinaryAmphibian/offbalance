@@ -22,16 +22,19 @@
 
 ## Quick start: local chain + client + event controller
 
-Use three terminals:
+Use four terminals:
 
 ```bash
 # 1. Start a fresh local chain and deploy the contracts
 cd blockchain && npm run dev
 
-# 2. Run a provider client against the event mock (start this BEFORE firing events)
-cd client && python3 main.py --dev --mock
+# 2. Start the mock server (hands out the event mock's address by default)
+cd server && npm run dev:mock
 
-# 3. Fire events at it
+# 3. Run a provider client (start this BEFORE firing events)
+cd client && python3 main.py --dev
+
+# 4. Fire events at it
 cd client && python3 dev/event_controller.py
 events> assign 1 p1        # client prints "I was selected!"
 events> flow 2 p1 p2       # whole job lifecycle, with pauses between phases
@@ -71,21 +74,21 @@ The deploy writes `blockchain/deployments/localhost.json`, which is gitignored a
   "eventMock": { "address": "0xe7f1…", "abi": [...] } }
 ```
 
-This is the source of truth for local addresses and ABIs. The client reads it in `--dev` mode, so it stays correct even when the addresses have shifted.
+This is the source of truth for local addresses and ABIs. The mock server reads the address from it on every request, and the client reads the ABI from it, so both stay correct even when the addresses have shifted.
 
 ## Provider client (`client/`)
 
 ```bash
-python3 main.py                                  # real flow: prompts for API key + session key, asks server for contract
-python3 main.py --dev                            # local chain, provider 1, listens to the real OffBalance, no server
-python3 main.py --dev --mock                     # same, but listens to OffBalanceEventMock
-python3 main.py --dev --mock --provider 2        # run as provider 2 (start several to simulate many providers)
+python3 main.py                          # prompts for API key + session key
+python3 main.py --dev                    # provider 1, keys from dev.env
+python3 main.py --dev --provider 2       # run as provider 2 (start several to simulate many providers)
 ```
 
-`--dev` means:
-- the key is `PROVIDER_N_PRIVATE_KEY` from `dev.env`;
-- the contract address and ABI come from `deployments/localhost.json`;
-- there's no server, so the benchmark is printed instead of posted.
+The client always needs a server: it gets the contract address from `GET /contract_address` and posts its benchmark to `POST /scores`. Locally, that's the mock server in `server/` (`npm run dev:mock`, port 5000). It hands out `OffBalanceEventMock` by default; start it with `CONTRACT=real` to hand out `OffBalance` instead. The client picks the matching ABI from `deployments/localhost.json`.
+
+`--dev` only changes where credentials come from:
+- the session key is `PROVIDER_N_PRIVATE_KEY` from `dev.env`;
+- the API key is `OFFBALANCE_API_KEY` if set, otherwise `dev` (the mock server accepts any token).
 
 Outside `--dev`, any prompt can be skipped with an env var: `OFFBALANCE_API_KEY`, `PROVIDER_PRIVATE_KEY`, `OFFBALANCE_ADDRESS` (skips the server lookup), `OFFBALANCE_SERVER_URL`, `RPC_URL`.
 
@@ -95,12 +98,12 @@ The client polls for new blocks every second. It only sees events from blocks mi
 
 **Why.** The client is driven entirely by contract events (`PROVIDER_SELECTED`, `REVEAL_PHASE_START`, …). The real contract can't easily produce them on demand. Most of its state-transition functions are currently `private`, and they're guarded by deadlines, caller checks and job state, so reaching the reveal phase would mean playing out an entire job.
 
-**What.** [`OffBalanceEventMock.sol`](blockchain/contracts/OffBalanceEventMock.sol) is a dev-only contract with the **exact same event declarations** as `OffBalance`, plus one function per event that just emits it, with no state or checks. An event log is identified by the hash of its signature plus its encoded arguments, so the client can't tell a mock event from a real one. The only difference is the emitting address, which is why the client needs `--mock`.
+**What.** [`OffBalanceEventMock.sol`](blockchain/contracts/OffBalanceEventMock.sol) is a dev-only contract with the **exact same event declarations** as `OffBalance`, plus one function per event that just emits it, with no state or checks. An event log is identified by the hash of its signature plus its encoded arguments, so the client can't tell a mock event from a real one. The only difference is the emitting address, which is why the mock server's `CONTRACT` setting decides which contract the client listens to.
 
 ```
 dev/event_controller.py ──tx──▶ OffBalanceEventMock ──emits──▶ REVEAL_PHASE_START(42)
                                                                       │
-                          main.py --dev --mock  ◀──polls logs─────────┘
+                          main.py --dev         ◀──polls logs─────────┘
 ```
 
 **Controller commands.** `JOB` is a job ID number. `WHO` is `p1`–`p4`, `server`, `buyer`, or a `0x` address. Type `help` in the shell for the full list. You can also run one command at a time: `python3 dev/event_controller.py flow 1 p1`.

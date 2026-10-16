@@ -56,7 +56,7 @@ class BlockchainManager():
         return res
 
     # SUBMIT phase action
-    def submit_result_hash(self, job_id: int, result_hash: bytes):
+    def commit(self, job_id: int, result_hash: bytes):
         pass
 
     # REVEAL phase action

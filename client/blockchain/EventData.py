@@ -19,8 +19,9 @@ class ProviderSelectedEvent(Event):
         return f"{super().__repr__()} provider selected: {self.provider_selected}"
 
 class CommitPhaseStartEvent(Event):
-    def __init__(self, block_number: int, event: BlockchainEvent, jobId: int):
+    def __init__(self, block_number: int, event: BlockchainEvent, jobId: int, deadline: int):
         super().__init__(block_number, event, jobId)
+        self.deadline = deadline
 
 class RevealPhaseStartEvent(Event):
     def __init__(self, block_number: int, event: BlockchainEvent, jobId: int):
@@ -53,7 +54,7 @@ def event_class_factory(e) -> Event:
             return ProviderSelectedEvent(block_number, event, jobId, args['provider'])
         
         case BlockchainEvent.COMMIT_PHASE_START.value:
-            return CommitPhaseStartEvent(block_number, event, jobId)
+            return CommitPhaseStartEvent(block_number, event, jobId, args['deadline'])
         
         case BlockchainEvent.REVEAL_PHASE_START.value:
             return RevealPhaseStartEvent(block_number, event, jobId)

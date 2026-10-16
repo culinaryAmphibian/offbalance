@@ -4,27 +4,26 @@ from blockchain.BlockchainManager import BlockchainManager
 from blockchain.BlockchainEvent import BlockchainEvent
 from server.ServerManager import ServerManager
 from blockchain.EventData import *
+from job.RunManager import RunManager
 from web3 import Web3
 import time
+import threading
 
 
 
 class ProviderClient():
-    # server is None in dev mode (no backend running)
-    def __init__(self, benchmark: BenchmarkManager, blockchain: BlockchainManager, server: ServerManager | None):
+    def __init__(self, benchmark: BenchmarkManager, blockchain: BlockchainManager, server: ServerManager, runner: RunManager):
         self.benchmark = benchmark
         self.blockchain = blockchain
         self.server = server
+        self.runner = runner
         self.busy = False # flag saying whether we do job or not
 
     # mediator methods here...
     def run(self) -> None:
         scores = self.benchmark.do_benchmark()
         # failures terminate with error
-        if self.server is not None:
-            self.server.post_benchmark(scores)
-        else:
-            print(f"No server, skipping benchmark post: {scores}")
+        self.server.post_benchmark(scores)
 
         # mux events 
         while True:
@@ -37,13 +36,15 @@ class ProviderClient():
     # ugly ahh multiplexer D:
     def _handle_event(self, event: Event):
         print(event)
-        if isinstance(event, ProviderSelectedEvent):    
-                if self.blockchain.address == event.provider_selected:
-                    print(f"I was selected! {self.blockchain.address} === {event.provider_selected}")
-                print("Handling provider selected!")
+
+        if isinstance(event, ProviderSelectedEvent):  
+            print('Handling assignment')  
+            if self.blockchain.address == event.provider_selected:
+                self.handleAssignment(event.jobId)
 
         elif isinstance(event, CommitPhaseStartEvent):
             print("Handling commit phase start")
+            self.handleCommitPhaseStart(event.jobId, event.deadline)
 
         elif isinstance(event, RevealPhaseStartEvent):
             print("Hanlding reveal phase start")
@@ -64,3 +65,21 @@ class ProviderClient():
             raise ValueError(f"Unknown event of type: {event.type}")
         
         # here, will need to mux the events and orchestrate client workflow
+    
+    def handleAssignment(self, jobId):
+        print(f"Handling assignment for: {jobId}")
+        manifest = self.server.getDockerManifest(jobId)
+        self.runner.prepareJob(manifest, jobId)
+
+
+    def handleCommitPhaseStart(self, jobId, deadline):
+        threading.Thread(target=self._runAndCommit, args=(jobId, deadline), daemon=True).start() 
+        # timer, when the runner is ready, then he should return the result..?
+    
+    def _runAndCommit(self, jobId, deadline):
+        result = self.runner.startJob(jobId, deadline)
+        if result.status == 'ok':
+            self.blockchain.commit(jobId, self.runner.hash_dir(result.output_dir))
+
+        
+        

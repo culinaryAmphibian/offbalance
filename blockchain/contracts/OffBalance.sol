@@ -54,7 +54,7 @@ contract OffBalance {
     // posted by matcher
     event PROVIDER_SELECTED(JobID_t jobId, address provider);
 
-    event COMMIT_PHASE_START(JobID_t jobId);
+    event COMMIT_PHASE_START(JobID_t jobId, uint deadline);
     event REVEAL_PHASE_START(JobID_t jobId);
     event CONSENSUS_VERIFICATION_START(JobID_t jobId);
     event DELIVERY_PHASE_START(JobID_t jobId);
@@ -106,12 +106,12 @@ contract OffBalance {
     // ==========functions for providers========== //
     function submitCommitment(JobID_t jobId, Commitment_t calldata commitment) private {
         require(block.timestamp < jobs[jobId].commitDeadline);
-        // logic for commitment
+        // logic for commitment - using sha256 to hash the commits, then encrypt them i think?
     }
 
     function submitReveal(JobID_t jobId) private {
         require(block.timestamp < jobs[jobId].revealDeadline);
-        // logic for revealing
+        // logic for revealing -
     }
     // ==========functions for providers========== //
 
@@ -139,7 +139,7 @@ contract OffBalance {
         jobs[jobId].status = Status.COMMIT;
         jobs[jobId].commitDeadline = block.timestamp + jobs[jobId].executionTime;
 
-        emit COMMIT_PHASE_START(jobId);
+        emit COMMIT_PHASE_START(jobId, jobs[jobId].executionTime);
     }
 
     // server verifies the receipt for a provider

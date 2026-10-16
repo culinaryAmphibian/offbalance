@@ -1,8 +1,10 @@
 # main orchestrator that creates all of the managers
 #
-#   python3 main.py                        # real flow: server + prompts
-#   python3 main.py --dev                  # local hardhat node, provider 1, no server
-#   python3 main.py --dev --provider 2 --mock   # listen to the event mock (dev/event_controller.py)
+#   python3 main.py                        # prompts for API key + session key
+#   python3 main.py --dev --provider 2     # keys from dev.env, against server/dev-server.ts
+#
+# the contract address always comes from the server; the dev server picks
+# OffBalance vs OffBalanceEventMock with CONTRACT=real|mock
 from blockchain.BlockchainManager import BlockchainManager
 from benchmark.BenchmarkManager import BenchmarkManager
 from server.ServerManager import ServerManager
@@ -15,12 +17,13 @@ from pathlib import Path
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from getpass import getpass
+from job.RunManager import RunManager
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEV_ENV_FILE = REPO_ROOT / 'dev.env'
 
 # every value can be overridden from the environment (see dev.env)
-BASE_URL = os.environ.get('OFFBALANCE_SERVER_URL', 'http://localhost:5173')
+BASE_URL = os.environ.get('OFFBALANCE_SERVER_URL', 'http://localhost:5000')
 RPC_URL = os.environ.get('RPC_URL', 'http://127.0.0.1:8545')
 # written by `npm run deploy:local` in blockchain/
 DEPLOYMENT_FILE = REPO_ROOT / os.environ.get('OFFBALANCE_DEPLOYMENT', 'blockchain/deployments/localhost.json')
@@ -28,11 +31,9 @@ DEPLOYMENT_FILE = REPO_ROOT / os.environ.get('OFFBALANCE_DEPLOYMENT', 'blockchai
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OffBalance provider client")
     parser.add_argument('--dev', action='store_true',
-                        help="local hardhat mode: key from dev.env, contract from the deployment file, no server")
+                        help="local hardhat mode: session key from dev.env, API key defaults to 'dev'")
     parser.add_argument('--provider', type=int, default=1,
                         help="with --dev: which PROVIDER_N_PRIVATE_KEY from dev.env to use (default 1)")
-    parser.add_argument('--mock', action='store_true',
-                        help="with --dev: listen to OffBalanceEventMock instead of OffBalance")
     return parser.parse_args()
 
 def load_dev_env() -> dict[str, str]:
@@ -43,6 +44,13 @@ def load_dev_env() -> dict[str, str]:
             key, value = line.split('=', 1)
             env[key] = value
     return env
+
+def load_dev_signer(provider: int) -> LocalAccount:
+    key_name = f'PROVIDER_{provider}_PRIVATE_KEY'
+    dev_env = load_dev_env()
+    if key_name not in dev_env:
+        raise ValueError(f"{key_name} is not in {DEV_ENV_FILE}")
+    return Account.from_key(dev_env[key_name])
 
 def ask_for_session_key() -> LocalAccount:
     session_key = os.environ.get('PROVIDER_PRIVATE_KEY') or getpass("Please provide your authenticated session key: ")
@@ -69,32 +77,22 @@ def main():
     if not w3.is_connected():
         raise ConnectionError(f"Hardhat node is not reachable at {RPC_URL}")
 
-    deployment = json.loads(DEPLOYMENT_FILE.read_text())
-    contract_abi = deployment['abi']
-
-    if args.dev:
-        # no server in dev: addresses come from the deployment file, keys from dev.env
-        s_mgr = None
-        key_name = f'PROVIDER_{args.provider}_PRIVATE_KEY'
-        dev_env = load_dev_env()
-        if key_name not in dev_env:
-            raise ValueError(f"{key_name} is not in {DEV_ENV_FILE}")
-        signer = Account.from_key(dev_env[key_name])
-
-        if args.mock:
-            addr_str = deployment['eventMock']['address']
-            contract_abi = deployment['eventMock']['abi']
-        else:
-            addr_str = deployment['address']
-    else:
-        # create server manager
-        s_mgr = ServerManager(BASE_URL, ask_for_api_key())
-        # obtain contract addr from server via network call
-        addr_str = ask_for_contract_addr(s_mgr)
-        # get the signer account
-        signer = ask_for_session_key()
+    # create server manager
+    api_key = os.environ.get('OFFBALANCE_API_KEY', 'dev') if args.dev else ask_for_api_key()
+    s_mgr = ServerManager(BASE_URL, api_key)
+    # obtain contract addr from server via network call
+    addr_str = ask_for_contract_addr(s_mgr)
+    # get the signer account
+    signer = load_dev_signer(args.provider) if args.dev else ask_for_session_key()
 
     contract_addr = Web3.to_checksum_address(addr_str)
+
+    # the server may hand out the event mock, which has its own ABI
+    deployment = json.loads(DEPLOYMENT_FILE.read_text())
+    if contract_addr == Web3.to_checksum_address(deployment['eventMock']['address']):
+        contract_abi = deployment['eventMock']['abi']
+    else:
+        contract_abi = deployment['abi']
 
     # make sure it's valid
     if not w3.eth.get_code(contract_addr):
@@ -107,12 +105,13 @@ def main():
     bc_mgr = BlockchainManager(w3, contract, signer)
     print(f"Provider {signer.address} listening to {contract_addr}")
 
-    mediator = ProviderClient(be_mgr, bc_mgr, s_mgr)
+    run_mgr = RunManager()
+
+    mediator = ProviderClient(be_mgr, bc_mgr, s_mgr, run_mgr)
     try:
         mediator.run()
     finally:
-        if s_mgr is not None:
-            s_mgr.close()
+        s_mgr.close()
 
 if __name__ == "__main__":
     main()
