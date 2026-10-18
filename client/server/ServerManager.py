@@ -42,3 +42,9 @@ class ServerManager():
     # cleanup :D
     def close(self) -> None:
         self.session.close()
+
+    def getDockerManifest(self, jobId):
+        res = self.request("GET", f"/jobManifest/{jobId}")
+        
+        print("manifest obtained: ", res.json()['manifest'])
+        return res.json()['manifest']

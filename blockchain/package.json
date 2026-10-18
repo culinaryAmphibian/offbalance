@@ -1,0 +1,25 @@
+{
+  "name": "blockchain",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "chain": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy-local.ts --network localhost",
+    "dev": "bash scripts/dev.sh",
+    "test": "hardhat test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ignition": "^3.1.9",
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.7",
+    "@types/node": "^22.20.5",
+    "forge-std": "github:foundry-rs/forge-std#v1.16.2",
+    "hardhat": "^3.20.0",
+    "typescript": "~6.0.3",
+    "viem": "^2.57.7"
+  }
+}

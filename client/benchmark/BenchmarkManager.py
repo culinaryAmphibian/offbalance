@@ -5,7 +5,7 @@ import os
 import statistics
 import threading
 import time
-from Scores import Scores
+from benchmark.Scores import Scores
 
 CPU_PAYLOAD = bytes(8 * 1024)
 MEMORY_BUFFER_BYTES = 16 * 1024 * 1024
