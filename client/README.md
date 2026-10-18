@@ -40,3 +40,7 @@ GPU is reported as unavailable (`null`) until a GPU benchmark backend is impleme
 8. Then, when the REVEAL phase starts, BCM posts the decoding, which the blockchain uses to verify
 9. Blockchain manager then listens for CONSENSUS events to hear whether its a part of the consensus, and then if it is sets a flag such that when:
 10. a DELIVERY event gets posted, we send the computation output to the server
+
+TODO:
+
+- [ ] write tests for server to make sure the contract between client and server is enforced.

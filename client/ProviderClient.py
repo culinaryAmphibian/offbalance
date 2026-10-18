@@ -17,7 +17,6 @@ class ProviderClient():
         self.blockchain = blockchain
         self.server = server
         self.runner = runner
-        self.busy = False # flag saying whether we do job or not
 
     # mediator methods here...
     def run(self) -> None:
@@ -27,7 +26,7 @@ class ProviderClient():
 
         # mux events 
         while True:
-            events = self.blockchain.poll_events()
+            events = self.blockchain.pollEvents()
             for event in events:
                 self._handle_event(event)
 
@@ -47,7 +46,7 @@ class ProviderClient():
             self.handleCommitPhaseStart(event.jobId, event.deadline)
 
         elif isinstance(event, RevealPhaseStartEvent):
-            print("Hanlding reveal phase start")
+            print("Handling reveal phase start")
 
         elif isinstance(event, DeliveryPhaseStartEvent):
             print("Handling delivery phase start")
@@ -71,15 +70,15 @@ class ProviderClient():
         manifest = self.server.getDockerManifest(jobId)
         self.runner.prepareJob(manifest, jobId)
 
-
     def handleCommitPhaseStart(self, jobId, deadline):
         threading.Thread(target=self._runAndCommit, args=(jobId, deadline), daemon=True).start() 
         # timer, when the runner is ready, then he should return the result..?
     
     def _runAndCommit(self, jobId, deadline):
         result = self.runner.startJob(jobId, deadline)
-        if result.status == 'ok':
+        if result.status == 'ok' and result.output_dir:
+            print(f"Result was obtained: {result.output_dir}")
             self.blockchain.commit(jobId, self.runner.hash_dir(result.output_dir))
 
         
-        
+    

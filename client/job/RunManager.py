@@ -24,7 +24,7 @@ class RunManager():
 
 
     def startJob(self, jobId: int, deadline: int): 
-        if jobId != self.currentJobId or self.currentManifest == None:
+        if jobId != self.currentJobId or self.currentManifest == None or self.out_dir == None:
             raise Exception("Current jobId does not match the job I need to start. Did you load it from the server first?")
 
         print(f"Running Job: {jobId}")
@@ -46,9 +46,9 @@ class RunManager():
             image,
             command = self.currentManifest['command'],
             environment=env,
-            network_disabled = self.currentManifest.get('input_url'),
+            network_disabled = not self.currentManifest.get('input_url'),
             volumes={str(self.out_dir): {'bind': '/output', 'mode': 'rw'}},
-            user = f"{os.getuid()}:{os.getuid()}",
+            user = f"{os.getuid()}:{os.getgid()}",
             detach=True,
         )
 

@@ -18,6 +18,7 @@ from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from getpass import getpass
 from job.RunManager import RunManager
+from blockchain.Contract import ProviderContractWrapper
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEV_ENV_FILE = REPO_ROOT / 'dev.env'
@@ -99,7 +100,8 @@ def main():
         raise ValueError(f"No contract deployed at {addr_str}")
 
     # contract object
-    contract = w3.eth.contract(address=contract_addr, abi=contract_abi)
+    raw_contract = w3.eth.contract(address=contract_addr, abi=contract_abi)
+    contract = ProviderContractWrapper(raw_contract, )
 
     # finally ready for blockchain manager
     bc_mgr = BlockchainManager(w3, contract, signer)

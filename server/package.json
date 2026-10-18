@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test:dev && npm run test:real",
+    "test:dev": "SERVER_FILE=dev-server.ts node --test \"test/**/*.test.ts\"",
+    "test:real": "SERVER_FILE=server.ts node --test \"test/**/*.test.ts\"",
     "dev:mock": "node dev-server.ts"
   },
   "keywords": [],

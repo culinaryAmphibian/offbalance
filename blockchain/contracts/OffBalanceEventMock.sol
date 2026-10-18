@@ -9,7 +9,7 @@ import {JobID_t} from "./OffBalance.sol";
 contract OffBalanceEventMock {
     event JOB_SUBMITTED(JobID_t jobId);
     event PROVIDER_SELECTED(JobID_t jobId, address provider);
-    event COMMIT_PHASE_START(JobID_t jobId);
+    event COMMIT_PHASE_START(JobID_t jobId, uint deadline);
     event REVEAL_PHASE_START(JobID_t jobId);
     event CONSENSUS_VERIFICATION_START(JobID_t jobId);
     event DELIVERY_PHASE_START(JobID_t jobId);
@@ -27,7 +27,7 @@ contract OffBalanceEventMock {
         }
     }
 
-    function commitPhaseStart(JobID_t jobId) external { emit COMMIT_PHASE_START(jobId); }
+    function commitPhaseStart(JobID_t jobId, uint deadline) external { emit COMMIT_PHASE_START(jobId, deadline); }
     function revealPhaseStart(JobID_t jobId) external { emit REVEAL_PHASE_START(jobId); }
     function consensusVerificationStart(JobID_t jobId) external { emit CONSENSUS_VERIFICATION_START(jobId); }
     function deliveryPhaseStart(JobID_t jobId) external { emit DELIVERY_PHASE_START(jobId); }

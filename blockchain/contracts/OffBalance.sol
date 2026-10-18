@@ -12,9 +12,10 @@ using {compareJobIds as ==} for JobID_t global;
 contract OffBalance {
     // ------ necessary types ----------
     type Result_t is uint256; // not sure how to represent results yet either
+    type Commitment_t is uint256;
     enum Status { JOB_SUBMITTED, PROVIDER_SELECTED, COMMIT, REVEAL, CONSENSUS, DELIVERING, DELIVERED, PAID, CANCELED, NO_QUORUM }
 
-    struct Commitment_t {
+    struct Commitment_struct_t {
         bool winning; // is this a winning answer?
         uint hash; // not sure what type the hash should actually be
         bool delivered; // was it delivered?
@@ -45,7 +46,7 @@ contract OffBalance {
     struct Provider {
         address addr;
         JobID_t[] jobsAssigned;
-        mapping(JobID_t => Commitment_t) answers; // commits per job
+        mapping(JobID_t => Commitment_struct_t) answers; // commits per job
     }
 
     // ---------- define events --------------
@@ -104,12 +105,12 @@ contract OffBalance {
     // ==========functions for buyers========== //
 
     // ==========functions for providers========== //
-    function submitCommitment(JobID_t jobId, Commitment_t calldata commitment) private {
+    function submitCommitment(JobID_t jobId, Commitment_t commitment) public {
         require(block.timestamp < jobs[jobId].commitDeadline);
         // logic for commitment - using sha256 to hash the commits, then encrypt them i think?
     }
 
-    function submitReveal(JobID_t jobId) private {
+    function submitReveal(JobID_t jobId) public {
         require(block.timestamp < jobs[jobId].revealDeadline);
         // logic for revealing -
     }
@@ -119,7 +120,7 @@ contract OffBalance {
     /*
      * Server calls this when it finds the matches for the job
      */
-    function assignProviders(JobID_t jobId, address[] calldata providerAddresses) private {
+    function assignProviders(JobID_t jobId, address[] calldata providerAddresses) public {
         require(msg.sender == server); // only server can call this
         require(jobs[jobId].status == Status.JOB_SUBMITTED); // only if it's a new job
 
@@ -143,7 +144,7 @@ contract OffBalance {
     }
 
     // server verifies the receipt for a provider
-    function verifyReceipt(JobID_t jobId, address provider) private {
+    function verifyReceipt(JobID_t jobId, address provider) public {
         require(block.timestamp < jobs[jobId].deliveryDeadline); // must be in delivery window
         require(msg.sender == server); // only server calls this
         require(providers[provider].answers[jobId].winning); // must be winning
@@ -154,7 +155,7 @@ contract OffBalance {
     // driver functions that do state transitions //
 
     //  end commit phase, start reveal
-    function startRevealPhase(JobID_t jobId) private {
+    function startRevealPhase(JobID_t jobId) public {
         require(block.timestamp > jobs[jobId].commitDeadline);
         require(jobs[jobId].status == Status.COMMIT); // must be in commit phase before this
         jobs[jobId].revealDeadline = block.timestamp + REVEAL_WINDOW;
@@ -162,7 +163,7 @@ contract OffBalance {
         emit REVEAL_PHASE_START(jobId);
     }
 
-    function calculateConsensus(JobID_t jobId) private {
+    function calculateConsensus(JobID_t jobId) public {
         require (jobs[jobId].status == Status.REVEAL);
         require (block.timestamp > jobs[jobId].revealDeadline);
         
@@ -172,7 +173,7 @@ contract OffBalance {
     }
 
     // end reveal, start delivery
-    function endRevealPhase(JobID_t jobId) private {
+    function endRevealPhase(JobID_t jobId) public {
         require(block.timestamp > jobs[jobId].revealDeadline);
         require(jobs[jobId].status == Status.REVEAL);
 
@@ -185,7 +186,7 @@ contract OffBalance {
     }
 
     // end, trigger payout
-    function endDeliveryPhase(JobID_t jobId) private {
+    function endDeliveryPhase(JobID_t jobId) public {
         require(block.timestamp > jobs[jobId].deliveryDeadline);
         require(jobs[jobId].status == Status.DELIVERING);
 
@@ -194,7 +195,7 @@ contract OffBalance {
         emit DELIVERED(jobId);
     }
 
-    function payWinnersAndSlashLosers(JobID_t jobId) private {
+    function payWinnersAndSlashLosers(JobID_t jobId) public {
         require(jobs[jobId].status == Status.DELIVERED);
         
         for (uint256 i = 0; i < jobs[jobId].assignedProviders.length; i++) {

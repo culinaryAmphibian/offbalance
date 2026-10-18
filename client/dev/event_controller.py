@@ -16,6 +16,9 @@ from web3 import Web3
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# OffBalance emits the job's executionTime as COMMIT_PHASE_START's deadline
+DEFAULT_DEADLINE = 60
+
 
 def load_env(path: Path) -> dict[str, str]:
     env = {}
@@ -93,6 +96,14 @@ class EventController(cmd.Cmd):
                     return abi["name"]
         raise ValueError(f"unknown log topic {topic.hex()}")
 
+    def pop_option(self, parts: list[str], flag: str, default: float) -> float:
+        if flag not in parts:
+            return default
+        i = parts.index(flag)
+        value = float(parts[i + 1])
+        del parts[i:i + 2]
+        return value
+
     def parse(self, arg: str, min_args: int, usage: str) -> list[str]:
         parts = shlex.split(arg)
         if len(parts) < min_args:
@@ -120,9 +131,9 @@ class EventController(cmd.Cmd):
         self.send("providersSelected", int(job), [self.resolve(w) for w in who])
 
     def do_commit(self, arg):
-        "commit JOB              emit COMMIT_PHASE_START"
-        job, = self.parse(arg, 1, "commit JOB")
-        self.send("commitPhaseStart", int(job))
+        f"commit JOB [DEADLINE]   emit COMMIT_PHASE_START (deadline defaults to {DEFAULT_DEADLINE})"
+        job, *deadline = self.parse(arg, 1, "commit JOB [DEADLINE]")
+        self.send("commitPhaseStart", int(job), int(deadline[0]) if deadline else DEFAULT_DEADLINE)
 
     def do_reveal(self, arg):
         "reveal JOB              emit REVEAL_PHASE_START"
@@ -166,23 +177,22 @@ class EventController(cmd.Cmd):
 
     # ---------- sequences ----------
     def do_assign(self, arg):
-        "assign JOB WHO [WHO..]  PROVIDER_SELECTED for each + COMMIT_PHASE_START (like assignProviders)"
-        job, *who = self.parse(arg, 2, "assign JOB WHO [WHO..]")
-        self.do_select(arg)
-        self.do_commit(job)
+        "assign JOB WHO [WHO..] [--deadline D]  PROVIDER_SELECTED for each + COMMIT_PHASE_START (like assignProviders)"
+        parts = self.parse(arg, 2, "assign JOB WHO [WHO..] [--deadline D]")
+        deadline = int(self.pop_option(parts, "--deadline", DEFAULT_DEADLINE))
+        job, *who = parts
+        self.do_select(shlex.join([job, *who]))
+        self.do_commit(f"{job} {deadline}")
 
     def do_flow(self, arg):
-        "flow JOB WHO [WHO..] [--delay S]  full happy path, pausing S seconds (default 3) between phases"
-        parts = self.parse(arg, 2, "flow JOB WHO [WHO..] [--delay S]")
-        delay = 3.0
-        if "--delay" in parts:
-            i = parts.index("--delay")
-            delay = float(parts[i + 1])
-            del parts[i:i + 2]
+        "flow JOB WHO [WHO..] [--delay S] [--deadline D]  full happy path, pausing S seconds (default 3) between phases"
+        parts = self.parse(arg, 2, "flow JOB WHO [WHO..] [--delay S] [--deadline D]")
+        delay = self.pop_option(parts, "--delay", 3.0)
+        deadline = int(self.pop_option(parts, "--deadline", DEFAULT_DEADLINE))
         job, *who = parts
         steps = [
             lambda: self.do_submit(job),
-            lambda: self.do_assign(" ".join([job, *who])),
+            lambda: self.do_assign(shlex.join([job, *who, "--deadline", str(deadline)])),
             lambda: self.do_reveal(job),
             lambda: self.do_consensus(job),
             lambda: self.do_delivery(job),
