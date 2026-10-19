@@ -27,10 +27,10 @@ test('USD conversion rounds down to wei and never exceeds its submitted USD amou
 
 test('budgets reject zero, nondecimal, negative, numeric and excessive precision inputs', () => {
   for (const value of ['', '0', '0.000', '-1', '+1', '.1', '1.', '1e3', ' 1', '1 ', 'NaN', 'Infinity', null, 1, {}, '0.0000000000000000001']) {
-    assert.throws(() => convertBudget(value), /positive ETH budget/);
+    assert.throws(() => convertBudget(value), /positive ETH hourly cap/);
   }
   for (const value of ['', '0', '0.00', '-1', '.1', '1.', '1e3', ' 1', 'NaN', 'Infinity', null, 1, '0.001', '1.000']) {
-    assert.throws(() => convertBudget(value, 'USD', '3000'), /positive USD budget/);
+    assert.throws(() => convertBudget(value, 'USD', '3000'), /positive USD hourly cap/);
   }
   assert.throws(() => convertBudget('1', 'EUR'), /Choose ETH or USD/);
 });
@@ -46,5 +46,5 @@ test('input and converted budgets obey the API length limit', () => {
   assert.throws(() => convertBudget('9'.repeat(101)), /100 characters/);
   assert.throws(() => convertBudget('9'.repeat(101), 'USD', '3000'), /100 characters/);
   assert.throws(() => convertBudget('1', 'USD', '9'.repeat(101)), /valid ETH\/USD rate/);
-  assert.throws(() => convertBudget('9'.repeat(100), 'USD', '0.000000000000000001'), /converted ETH budget is too large/);
+  assert.throws(() => convertBudget('9'.repeat(100), 'USD', '0.000000000000000001'), /converted ETH hourly cap is too large/);
 });

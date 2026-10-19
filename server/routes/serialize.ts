@@ -9,6 +9,7 @@ const dec = (v: Types.Decimal128 | null | undefined) => (v == null ? null : v.to
 export function serializeJob(job: WithId<Job>) {
 	return {
 		id: job.onChainJobId,
+		name: job.name,
 		owner: String(job.owner),
 		status: job.status,
 		submittedAt: job.submittedAt,

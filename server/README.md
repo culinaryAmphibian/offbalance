@@ -57,11 +57,11 @@ python ../client/main.py --dev
 
 Keep certificate verification enabled. The local certificate must also be trusted by browser/Node clients: for Node commands use `NODE_EXTRA_CA_CERTS="$PWD/.local/tls/cert.pem"`. Publicly trusted production certificates ordinarily need no custom CA setting. Generate a replacement local certificate with `npm run cert:dev -- --force` after expiry. The provider client's blockchain connection is still required by its existing execution workflow.
 
-`dev:mock` remains an HTTP development mock so the existing root launcher keeps working. `npm start` always starts the real HTTPS server. No client, frontend, or root launcher files are changed.
+`dev:mock` remains an independent HTTP development mock. The root launcher now starts the real HTTPS server with a fresh development database for each fresh local chain. `npm start` always starts the real HTTPS server. No client, frontend, or root launcher files are changed.
 
 Agent output collection still requires an expected SHA-256 plus a caller-supplied object storage adapter. Providers may post existing output locations through `/provider/results/:jobId`; receipt verification depends on the contract. The Python directory hash and agent byte hash still require an agreed output format for direct output collection.
 
-The database branch's other job, provider, account and build routes are retained. The frontend's different login, pricing and job request shapes still need API alignment; frontend files are untouched.
+The database branch's other job, provider, account and build routes are retained. `POST /jobs` additionally persists names and binds optional idempotency keys to the account and original payload. `GET /config` exposes execution mode and the public contract address/chain ID; job responses provide owner-specific submission/result capabilities. The frontend uses these routes through its verified HTTPS development proxy. See [frontend/README.md](../frontend/README.md) for the connected browser workflow.
 
 ## Validation
 

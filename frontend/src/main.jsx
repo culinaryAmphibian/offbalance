@@ -56,7 +56,7 @@ function App() {
 			</header>
 			<main>
 				{auth.session ? (
-					<Workspace key={auth.session.account.wallet} />
+					<Workspace key={auth.session.account.wallet} clientKey={demo ? null : auth.session.token} />
 				) : (
 					<section
 						className="sign-in"
@@ -93,7 +93,7 @@ function App() {
 	);
 }
 
-function Workspace() {
+function Workspace({ clientKey }) {
 	const [hash, setHash] = useState(window.location.hash || "#/");
 	const [view, setView] = useState("buyer");
 	const [createdId, setCreatedId] = useState(null);
@@ -115,7 +115,7 @@ function Workspace() {
 				}}
 			/>
 		);
-	if (hash === "#/provider") return <ProviderSetup api={api} />;
+	if (hash === "#/provider") return <ProviderSetup api={api} clientKey={clientKey} />;
 	const match = hash.match(/^#\/jobs\/([^/]+)$/);
 	if (match) {
 		let id;
@@ -129,7 +129,7 @@ function Workspace() {
 				key={id}
 				api={api}
 				id={id}
-				notice={createdId === id ? "Job submitted." : ""}
+				notice={createdId === id ? "Job saved." : ""}
 			/>
 		);
 	}
@@ -229,7 +229,7 @@ function Overview({ view, setView }) {
 										<th>Providers</th>
 										<th>Submitted</th>
 										<th className="numeric">
-											{isBuyer ? "Budget" : "Earnings"}
+											{isBuyer ? "Hourly cap / provider" : "Earnings"}
 										</th>
 									</tr>
 								</thead>
@@ -259,7 +259,7 @@ function Overview({ view, setView }) {
 													: job.earnings) ?? "—"}
 												<span className="currency">
 													{" "}
-													ETH
+													{isBuyer ? "ETH / h" : "ETH"}
 												</span>
 											</td>
 										</tr>

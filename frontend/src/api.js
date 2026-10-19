@@ -18,25 +18,32 @@ export function createApi({
 			token = value;
 		},
 		onUnauthorized: null,
-		nonce: (wallet, chainId) =>
-			request(
-				`/auth/nonce?${new URLSearchParams({ wallet, chainId, ...(globalThis.location ? { origin: globalThis.location.origin } : {}) })}`,
-			),
-		verify: (message, signature) =>
-			request("/auth/verify", {
+		nonce: (wallet) =>
+			request(`/auth/nonce?${new URLSearchParams({ wallet })}`),
+		verify: async (wallet, signature) => {
+			const data = await request("/auth", {
 				method: "POST",
-				body: { message, signature },
-			}),
+				body: { wallet, signature },
+			});
+			return { ...data, account: { id: data.accountId, wallet: data.wallet } };
+		},
+		logout: async (sessionToken = token) => sessionToken
+			? request("/auth/logout", { method: "POST", sessionToken })
+			: null,
+		getConfig: (signal) => request("/config", { signal }),
 		listJobs: async (view, signal) => {
-			const data = await request(
-				`/jobs?${new URLSearchParams({ view })}`,
-				{ signal },
-			);
+			const [data, dashboard] = await Promise.all([
+				request(`/jobs?${new URLSearchParams({ role: view })}`, { signal }),
+				request("/account/me/dashboard", { signal }),
+			]);
+			const { jobs: _recentJobs, hardware: _hardware, ...summary } = dashboard[view] ?? {};
 			return {
 				...data,
-				jobs: Array.isArray(data.jobs)
-					? data.jobs.map(normalizeJob)
-					: data.jobs,
+				jobs: Array.isArray(data.jobs) ? data.jobs.map(normalizeJob) : data.jobs,
+				summary: {
+					...summary,
+					...(view === "provider" ? { currentStake: dashboard.account?.currentStake } : {}),
+				},
 			};
 		},
 		createJob: async (job, key) => {
@@ -56,20 +63,38 @@ export function createApi({
 		getResult: (id, signal) =>
 			request(`/jobs/${encodeURIComponent(id)}/result`, {
 				signal,
-				binary: true,
 			}),
-		getProvider: (signal) => request("/provider/profile", { signal }),
-		getProviderTutorial: (signal) =>
-			request("/provider/tutorial", { signal }),
-		saveProviderPricing: (pricing) =>
-			request("/provider/pricing", { method: "POST", body: pricing }),
+		getProvider: async (signal) => {
+			const [data, dashboard] = await Promise.all([
+				request("/provider/hardware", { signal }).catch(error => {
+					if (error.status === 404) return { hardware: null };
+					throw error;
+				}),
+				request("/account/me/dashboard", { signal }),
+			]);
+			return { provider: providerProfile(data, dashboard.account?.currentStake) };
+		},
+		getProviderTutorial: async (signal) => {
+			const data = await request("/provider/tutorial", { signal });
+			return { tutorial: {
+				title: "Client setup",
+				steps: typeof data.text === "string" ? data.text.split(/\n+/).map(step => step.replace(/^\s*\d+\.\s*/, "").trim()).filter(Boolean) : [],
+				updatedAt: data.updatedAt,
+			} };
+		},
+		saveProviderPricing: async ({ pricePerHour }) => {
+			const data = await request("/provider/price", {
+				method: "POST", body: { price: pricePerHour },
+			});
+			return { provider: providerProfile(data) };
+		},
 	};
 
 	async function request(
 		path,
-		{ body, headers, signal, binary = false, ...options } = {},
+		{ body, headers, signal, sessionToken = token, ...options } = {},
 	) {
-		const requestToken = token;
+		const requestToken = sessionToken;
 		let response;
 		try {
 			response = await fetcher(`${root}${path}`, {
@@ -78,9 +103,7 @@ export function createApi({
 					? AbortSignal.any([signal, AbortSignal.timeout(20000)])
 					: AbortSignal.timeout(20000),
 				headers: {
-					Accept: binary
-						? "application/octet-stream"
-						: "application/json",
+					Accept: "application/json",
 					...(body ? { "Content-Type": "application/json" } : {}),
 					...(requestToken
 						? { Authorization: `Bearer ${requestToken}` }
@@ -102,11 +125,11 @@ export function createApi({
 		if (!response.ok) {
 			const problem = await response.json().catch(() => null);
 			throw new ApiError(
-				problem?.message || `Request failed (${response.status}).`,
+				problem?.error || problem?.message || `Request failed (${response.status}).`,
 				response.status,
 			);
 		}
-		if (binary) return response.blob();
+		if (response.status === 204) return null;
 		if (
 			!response.headers.get("content-type")?.includes("application/json")
 		) {
@@ -123,4 +146,20 @@ export function createApi({
 		}
 	}
 	return api;
+}
+
+function rateText(value) {
+	return typeof value === "number" ? value.toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: 18 }) : String(value);
+}
+
+function providerProfile({ hardware, suggestedPrice, online, lastSeen }, currentStake) {
+	return {
+		registered: Boolean(hardware),
+		online: online ?? false,
+		lastSeen: lastSeen ?? null,
+		currentStake,
+		pricePerHour: hardware?.price == null ? null : rateText(hardware.price),
+		suggestedPricePerHour: suggestedPrice == null ? null : rateText(suggestedPrice),
+		machine: hardware ?? null,
+	};
 }

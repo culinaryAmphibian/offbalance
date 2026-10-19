@@ -65,7 +65,7 @@ export default function JobForm({ api, onCreated }) {
     const form = formRef.current;
     try {
       const { job } = await api.createJob(request.current.payload, request.current.key);
-      if (!job?.id) throw new Error('The server did not return a job ID.');
+      if (job?.id == null) throw new Error('The server did not return a job ID.');
       if (form.isConnected) onCreated(job.id);
     } catch (problem) {
       if (form.isConnected) setError(problem.message);
@@ -90,20 +90,20 @@ export default function JobForm({ api, onCreated }) {
 
   return <>
     <a className="back-link" href="#/">← Overview</a>
-    <div className="page-heading"><h1>Submit job</h1></div>
+    <div className="page-heading"><h1>Save a job</h1></div>
     <form className="panel job-form" ref={formRef} onSubmit={submit} noValidate>
-      <p className="muted form-intro">Submit a container workload. Providers are assigned automatically.</p>
+      <p className="muted form-intro">Save your container workload to the coordinator. If blockchain execution is configured, submit it from the job details page next.</p>
       {error && <p className="notice error" role="alert">{error}</p>}
       <fieldset disabled={pending}>
         {field('name', 'Job name', { autoFocus: true, maxLength: 120, autoComplete: 'off' })}
         {field('dockerImage', 'Container image', { maxLength: 512, autoCapitalize: 'none', spellCheck: false })}
-        <p className="muted image-note">Use the provider client’s output-directory convention so results can be collected.</p>
+        <p className="muted image-note">The container runs its default command. Use the provider client’s output-directory convention so results can be collected. Tags are resolved to a pinned digest by the server.</p>
         <div className="form-grid">
           <div className="field">
-            <label htmlFor="maxPrice">Maximum budget ({values.budgetCurrency})</label>
+            <label htmlFor="maxPrice">Hourly cap per provider ({values.budgetCurrency})</label>
             <div className="budget-input">
               <input id="maxPrice" name="maxPrice" inputMode="decimal" value={values.maxPrice} onChange={event => change('maxPrice', event.target.value)} aria-invalid={!!errors.maxPrice} aria-describedby={[errors.maxPrice && 'maxPrice-error', usd && 'budget-conversion'].filter(Boolean).join(' ') || undefined} />
-              <select aria-label="Budget currency" name="budgetCurrency" value={values.budgetCurrency} onChange={event => change('budgetCurrency', event.target.value)}>
+              <select aria-label="Hourly cap currency" name="budgetCurrency" value={values.budgetCurrency} onChange={event => change('budgetCurrency', event.target.value)}>
                 <option value="ETH">ETH</option><option value="USD">USD</option>
               </select>
             </div>
@@ -126,8 +126,8 @@ export default function JobForm({ api, onCreated }) {
           </div>
           <p className="muted">Leave at zero for no minimum.</p>
         </details>
-        <div className="form-actions"><button className="button primary" type="submit">{pending ? 'Submitting…' : 'Submit job'}</button><a className="text-link" href="#/">Cancel</a></div>
-        <p className="muted form-note">The budget is a spending limit{usd ? ', converted to ETH at the quoted rate' : ''}. This form does not transfer funds.</p>
+        <div className="form-actions"><button className="button primary" type="submit">{pending ? 'Saving…' : 'Save job'}</button><a className="text-link" href="#/">Cancel</a></div>
+        <p className="muted form-note">The cap limits each provider’s hourly rate{usd ? ', converted to ETH at the quoted rate' : ''}. Total cost also depends on provider count and runtime. Saving does not transfer funds.</p>
       </fieldset>
     </form>
   </>;

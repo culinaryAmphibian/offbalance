@@ -1,3 +1,5 @@
+import { normalizeJob } from "./jobs.js";
+
 const wallet = "0x71C0000000000000000000000000000000009A2F";
 const stamp = new Date().toISOString();
 const defaults = {
@@ -9,6 +11,7 @@ const defaults = {
 	requirements: { minCpuScore: 0, minGpuScore: 0, minMemoryScore: 0 },
 	createdAt: stamp,
 	providerCount: 3,
+	executionMode: "demo",
 };
 
 export function createDemoApi() {
@@ -62,12 +65,13 @@ export function createDemoApi() {
 				verifiedAt: stamp,
 			},
 			payment: { status: "PAID", settledAt: stamp },
-			result: { available: true, filename: "matrix-result.json" },
+			results: [{ provider: "demo-provider", hash: "demo-result-hash", location: "https://example.com/offbalance-demo-output", deliveryTime: stamp, receiptVerified: true }],
 		},
 	];
 	const submissions = new Map();
 	return {
 		setToken() {},
+		getConfig: async () => ({ executionMode: "demo", chain: null }),
 		demoLogin: async () => ({
 			token: "local-demo-only",
 			expiresAt: new Date(Date.now() + 3600000).toISOString(),
@@ -98,13 +102,15 @@ export function createDemoApi() {
 		createJob: async (input, key) => {
 			if (submissions.has(key))
 				return structuredClone(submissions.get(key));
-			const job = {
+			const job = normalizeJob({
 				...input,
+				dockerImage: input.image ?? input.dockerImageDigest ?? input.dockerImage,
+				executionMode: "demo",
 				id: crypto.randomUUID(),
 				createdAt: new Date().toISOString(),
 				status: "PENDING",
 				providerCount: 0,
-			};
+			});
 			jobs = [job, ...jobs];
 			const response = { job };
 			submissions.set(key, response);
@@ -116,24 +122,9 @@ export function createDemoApi() {
 			return { job: structuredClone(job) };
 		},
 		getResult: async (id) => {
-			if (!jobs.find((job) => job.id === id)?.result?.available)
-				throw new Error("The result is not ready.");
-			return new Blob(
-				[
-					JSON.stringify(
-						{
-							matrix: [
-								[1, 0],
-								[0, 1],
-							],
-							mode: "demo",
-						},
-						null,
-						2,
-					),
-				],
-				{ type: "application/json" },
-			);
+			const job = jobs.find((item) => item.id === id);
+			if (!job) throw new Error("Job not found.");
+			return { status: job.status, results: structuredClone(job.results ?? []) };
 		},
 		getProvider: async () => ({ provider: structuredClone(provider) }),
 		getProviderTutorial: async () => ({

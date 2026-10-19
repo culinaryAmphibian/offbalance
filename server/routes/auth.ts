@@ -22,7 +22,7 @@ export function authRoutes(): Router {
 			{ nonce, createdAt: new Date() },
 			{ upsert: true },
 		);
-		res.json({ message: loginMessage(wallet, nonce) });
+		res.json({ message: loginMessage(wallet, nonce), wallet: wallet.toLowerCase() });
 	});
 
 	// step 2: send the signature back; a new wallet signs up
@@ -38,7 +38,7 @@ export function authRoutes(): Router {
 
 		const token = newToken();
 		await AuthTokenModel.create({ tokenHash: hashToken(token), account: account._id, wallet: address });
-		res.status(201).json({ token, accountId: String(account._id) });
+		res.status(201).json({ token, accountId: String(account._id), wallet: address });
 	});
 
 	router.post("/auth/logout", requireAuth, async (_req, res) => {

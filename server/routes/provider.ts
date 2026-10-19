@@ -1,5 +1,6 @@
 // /provider: tutorial, the provider's machine and pricing, and result delivery.
 import { Router } from "express";
+import { decimalString } from "../models/decimal.ts";
 import { hourlyPrice } from "../adapters/repository.ts";
 import { requireAuth } from "../middleware/auth.ts";
 import { HardwareModel, JobStatus, TutorialModel } from "../models/index.ts";
@@ -39,20 +40,27 @@ export function providerRoutes({ chain, matcher }: Deps): Router {
 
 	router.get("/provider/hardware", requireAuth, async (_req, res) => {
 		const hw = await HardwareModel.findOne({ userRef: res.locals.account._id });
-		if (!hw) {
-			res.status(404).json({ error: "no machine yet; run the provider client to benchmark it" });
-			return;
-		}
-		res.json({ hardware: serializeHardware(hw), suggestedPrice: await suggestedPrice(hw.cpuScore, hw._id) });
+		const live = hw && matcher.manager.pool.get(hw.address);
+		const timeout = matcher.manager.pool.heartbeatTimeoutMs;
+		const online = Boolean(live && live.lastHeartbeat > 0 && live.lastHeartbeat <= Date.now() && Date.now() - live.lastHeartbeat <= timeout);
+		res.json({ hardware: hw ? serializeHardware(hw) : null,
+			suggestedPrice: hw ? await suggestedPrice(hw.cpuScore, hw._id) : null,
+			online, lastSeen: live?.lastHeartbeat ? new Date(live.lastHeartbeat).toISOString() : null });
 	});
 
 	// per-hour rate; machines aren't matched until they have one
 	router.post("/provider/price", requireAuth, async (req, res) => {
 		const price = Number(req.body?.price);
-		let validPrice = req.body?.price !== undefined;
-		try { hourlyPrice(price); } catch { validPrice = false; }
+		let validPrice = typeof req.body?.price === "string" || typeof req.body?.price === "number";
+		let priceError = "price must be non-negative finite ETH with at most 18 decimal places";
+		try {
+			if (hourlyPrice(price) !== decimalString(req.body.price)) {
+				validPrice = false;
+				priceError = "This price exceeds the stored rate precision. Use fewer significant digits.";
+			}
+		} catch { validPrice = false; }
 		if (!validPrice) {
-			res.status(400).json({ error: "price must be non-negative finite ETH with at most 18 decimal places" });
+			res.status(400).json({ error: priceError });
 			return;
 		}
 		const hw = await HardwareModel.findOneAndUpdate(
