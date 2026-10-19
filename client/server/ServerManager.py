@@ -58,3 +58,14 @@ class ServerManager():
         
         print("manifest obtained: ", res.json()['manifest'])
         return res.json()['manifest']
+
+    def report_error(self, jobId, message: str) -> None:
+        # Job workers do not share the polling/heartbeat Requests sessions.
+        with requests.Session() as session:
+            session.headers.update(self.session.headers)
+            session.verify = self.session.verify
+            response = session.post(
+                f"{self.base_url}/provider/jobs/{jobId}/error",
+                json={"message": message[:4096]}, timeout=15,
+            )
+            response.raise_for_status()

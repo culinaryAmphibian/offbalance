@@ -109,6 +109,64 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 			assert.equal(result.reputation, 1);
 		});
 
+		await t.test("actual job events still reject missing and invalid job IDs without recording completion", async () => {
+			const f = await fixture();
+			for (const jobId of [undefined, -1n, "invalid", BigInt(Number.MAX_SAFE_INTEGER) + 1n]) {
+				const event = { ...f.event("REVEAL_PHASE_START", randomUUID()), args: { jobId } };
+				await assert.rejects(handleChainEvent(event, f.matcher), /Invalid event jobId/);
+				assert.equal(await ChainEventModel.exists({ _id: event.id }), null);
+			}
+			assert.equal((await JobModel.findById(f.job._id).orFail()).status, JobStatus.AWAITING_DELIVERY);
+		});
+
+		await t.test("provider-only commitment logs allow later job events and checkpointed monitor restart", async () => {
+			const f = await fixture();
+			const abi = ["event COMMIT_SUBMITTED_BY(address provider)",
+				"event REVEAL_PHASE_START(uint256 jobId)", "event CONSENSUS_VERIFICATION_START(uint256 jobId)"];
+			const iface = new Interface(abi);
+			const address = "0x1111111111111111111111111111111111111111";
+			const logs = ["COMMIT_SUBMITTED_BY", "REVEAL_PHASE_START", "CONSENSUS_VERIFICATION_START"].map((name, index) => ({
+				address, blockNumber: index === 2 ? 3 : 1, blockHash: hash(index === 2 ? 4 : 2),
+				transactionHash: hash(200 + index), transactionIndex: index, index: 0,
+				...iface.encodeEventLog(name, [index === 0 ? f.provider.walletIds[0] : f.job.onChainJobId]),
+			}));
+			const namespace = `commit-log-test:${f.job.onChainJobId}`;
+			let head = 2;
+			const ranges: number[] = [];
+			const seen: string[] = [];
+			const createMonitor = () => new BlockchainMonitor({
+				provider: {
+					getBlockNumber: () => head,
+					getBlock: number => ({ number, hash: hash(number + 1) }),
+					getLogs: ({ fromBlock, toBlock }) => {
+						ranges.push(fromBlock);
+						return logs.filter(log => log.blockNumber >= fromBlock && log.blockNumber <= toBlock);
+					},
+				},
+				address, abi, chainId: 31337, confirmations: 0,
+				checkpointStore: new MongoCheckpointStore(namespace),
+				onEvent: async event => {
+					seen.push(event.name);
+					await handleChainEvent(chainEvent(event, iface), f.matcher);
+				},
+			});
+			const monitor = createMonitor();
+			try {
+				assert.equal((await monitor.pollOnce()).processed, 2);
+				assert.equal((await JobModel.findById(f.job._id).orFail()).status, JobStatus.REVEAL_PHASE);
+				assert.deepEqual(await new MongoCheckpointStore(namespace).load(), { blockNumber: 2, blockHash: hash(3) });
+			} finally { await monitor.stop(); }
+			head = 3;
+			const restarted = createMonitor();
+			try {
+				assert.equal((await restarted.pollOnce()).processed, 1);
+				assert.equal((await JobModel.findById(f.job._id).orFail()).status, JobStatus.CONSENSUS_VERIFICATION);
+				assert.deepEqual(await new MongoCheckpointStore(namespace).load(), { blockNumber: 3, blockHash: hash(4) });
+				assert.deepEqual(ranges, [0, 3]);
+				assert.deepEqual(seen, ["COMMIT_SUBMITTED_BY", "REVEAL_PHASE_START", "CONSENSUS_VERIFICATION_START"]);
+			} finally { await restarted.stop(); }
+		});
+
 		await t.test("monitor decoding, event effects, and persisted checkpoint replay end to end", async () => {
 			const f = await fixture();
 			const abi = ["event PAID(uint256 indexed jobId, address provider)",

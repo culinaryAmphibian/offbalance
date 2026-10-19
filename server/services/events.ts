@@ -16,6 +16,8 @@ export async function handleChainEvent(event: ChainEvent, matcher: Matcher): Pro
 }
 
 async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher): Promise<void> {
+	// This diagnostic event carries only a provider address, not a job ID.
+	if (name === "COMMIT_SUBMITTED_BY") return;
 	const jobId = Number(args.jobId);
 	if (!Number.isSafeInteger(jobId) || jobId < 0) throw new TypeError("Invalid event jobId.");
 	const effectId = id ?? `${jobId}:${name}:${String(args.provider ?? "").toLowerCase()}`;
