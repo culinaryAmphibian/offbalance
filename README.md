@@ -7,7 +7,7 @@
 | `blockchain/` | Hardhat 3 project: the `OffBalance` contract, a dev-only event mock, and deploy scripts |
 | `client/` | Python provider client: benchmarks the machine, listens for contract events, runs jobs in Docker and commits the result hash |
 | `client/dev/` | Dev tools for the client: the event controller (drives the mock) and the contract controller (drives the real contract) |
-| `server/` | Backend API (not wired up yet), plus `dev-server.ts`, a mock of the routes the client calls |
+| `server/` | TypeScript HTTPS API with MongoDB persistence, plus `dev-server.ts`, a mock of the routes the client calls |
 | `frontend/` | React dashboard |
 | `dev.env` | Fixed local-dev addresses and private keys, shared by every part of the app |
 
@@ -26,6 +26,20 @@
   docker run --rm hello-world       # check
   ```
   `Permission denied` on `/var/run/docker.sock` means your shell doesn't have the `docker` group yet. `FileNotFoundError` means the daemon isn't installed or isn't running. Don't run the client with `sudo`; that skips the venv.
+
+## Connected frontend and real backend
+
+The frontend now uses the real server's wallet sign-in, persisted jobs, dashboards,
+provider pricing and delivery records. Follow [frontend/README.md](frontend/README.md)
+for the two-terminal setup, HTTPS certificate trust and database-only development.
+The existing mock workflows below remain available through `server/npm run dev:mock`.
+
+`startup.py --shell` now launches the real HTTPS API instead of the mock. It needs
+MongoDB running and the existing Node/Python prerequisites. Each launch creates a
+fresh, retained development database to match its newly started local blockchain;
+`MONGODB_URI` selects the MongoDB host. The launcher generates the local certificate
+before starting Vite and configures trusted HTTPS for the Python client. Full
+reveal/consensus/delivery/payment behavior remains unfinished in the client/contract.
 
 ## Quick start
 
@@ -237,9 +251,9 @@ The client depends on three server routes. [`server/test/client-contract.test.ts
 ```bash
 cd server
 npm run test:dev     # against dev-server.ts: must always pass
-npm run test:real    # against server.ts
-npm test             # both
-SERVER_URL=http://localhost:3000 node --test "test/**/*.test.ts"   # against an already-running server
+npm run test:real    # real HTTPS API + Python client, isolated MongoDB fixture
+npm test             # typecheck, managers, unit, mock, database and HTTPS tests
+SERVER_URL=https://localhost:5000 NODE_EXTRA_CA_CERTS="$PWD/.local/tls/cert.pem" node --test test/client-contract.test.ts
 ```
 
 | Route | The tests require |
@@ -263,8 +277,9 @@ When the client starts calling a new route or reading a new field, add it here f
 - `require`s have no revert messages.
 - `OffBalanceEventMock` has no provider functions, so a client listening to it crashes when it tries to commit. Use `CONTRACT=real` to test commits.
 - `Commitment_t` is a `uint256`, so the client converts its 32-byte sha256 to an int. A `bytes32` would fit the hash directly.
-- `server/server.ts` has no routes and doesn't listen yet, so `npm run test:real` fails and the client only works against `dev-server.ts`.
+- The Python execution loop does not yet send the heartbeats required for automatic provider matching.
+- Provider reveal/delivery behavior and contract consensus/payment logic are unfinished; connected API and browser tests do not establish full job settlement.
 
 ## TODO
 
-1. One script that starts every part of the app: local chain, server, MongoDB, frontend. `blockchain/scripts/dev.sh` covers the chain.
+1. Complete provider heartbeat/reveal/delivery and contract consensus/payment behavior. `startup.py` starts the local chain, HTTPS server, frontend and client; MongoDB must already be running.

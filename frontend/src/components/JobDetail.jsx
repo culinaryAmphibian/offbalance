@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { dateLabel, jobPhase, statusLabel, timeLabel, windowMinutes } from '../jobs';
+import { dateLabel, jobPhase, statusLabel, timeLabel, windowMinutes, resultUrl } from '../jobs';
 import { useResource } from '../useResource';
+import { submitStoredJob } from '../chain';
 
 export function Status({ value }) {
   return <span className={`status ${jobPhase(value)[0]}`}>{statusLabel(value)}</span>;
@@ -13,32 +14,57 @@ export function ResourceError({ message, retry }) {
 export default function JobDetail({ api, id, notice }) {
   const load = useCallback(signal => api.getJob(id, signal), [api, id]);
   const { data, error, loading, refresh } = useResource(load, 5000);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadError, setDownloadError] = useState('');
-  const downloadController = useRef(null);
-  useEffect(() => () => downloadController.current?.abort(), []);
+  const [results, setResults] = useState(null);
+  const [loadingResults, setLoadingResults] = useState(false);
+  const [resultError, setResultError] = useState('');
+  const [chainPending, setChainPending] = useState(false);
+  const [chainError, setChainError] = useState('');
+  const [transaction, setTransaction] = useState('');
+  const resultController = useRef(null);
+  const chainSubmitting = useRef(false);
+  const chainController = useRef(null);
+  const active = useRef(false);
+  useEffect(() => { active.current = true; return () => { active.current = false; resultController.current?.abort(); chainController.current?.abort(); }; }, []);
   const job = data?.job;
+  const needsChain = job?.executionMode === 'chain' && !job.submittedAt && job.status === 'PENDING';
 
-  async function download() {
+  async function loadResults() {
+    resultController.current?.abort();
     const controller = new AbortController();
-    downloadController.current = controller;
-    setDownloading(true);
-    setDownloadError('');
+    resultController.current = controller;
+    setLoadingResults(true);
+    setResultError('');
     try {
-      const blob = await api.getResult(id, controller.signal);
+      const result = await api.getResult(id, controller.signal);
       if (controller.signal.aborted) return;
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = (job.result?.filename || `offbalance-${id}.bin`).replace(/[\\/\x00-\x1f]/g, '_');
-      document.body.append(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      if (!Array.isArray(result?.results)) throw new Error('The server did not return delivery records.');
+      setResults(result.results);
     } catch (problem) {
-      if (!controller.signal.aborted) setDownloadError(problem.message);
+      if (!controller.signal.aborted) setResultError(problem.status === 403 ? 'Delivery records are available to the job owner.' : problem.message);
     } finally {
-      if (!controller.signal.aborted) setDownloading(false);
+      if (!controller.signal.aborted) setLoadingResults(false);
+    }
+  }
+
+  async function submitChain() {
+    if (chainSubmitting.current || transaction) return;
+    chainSubmitting.current = true;
+    const controller = new AbortController();
+    chainController.current = controller;
+    setChainPending(true);
+    setChainError('');
+    try {
+      const config = await api.getConfig();
+      if (!active.current || controller.signal.aborted) return;
+      const { hash } = await submitStoredJob(job, config, window.ethereum, { signal: controller.signal });
+      if (!active.current) return;
+      setTransaction(hash);
+      refresh();
+    } catch (problem) {
+      if (active.current) setChainError(problem.message || 'Blockchain submission failed.');
+    } finally {
+      chainSubmitting.current = false;
+      if (active.current) setChainPending(false);
     }
   }
 
@@ -46,17 +72,23 @@ export default function JobDetail({ api, id, notice }) {
     <a className="back-link" href="#/">← Overview</a>
     <div className="page-heading"><h1>{job?.name || 'Job details'}</h1>{job && <Status value={job.status} />}</div>
     {notice && <p className="notice" role="status">{notice}</p>}
-    {job?.executionMode === 'local' && <p className="notice">Local execution. On-chain escrow and settlement are not configured.</p>}
+    {job?.executionMode === 'local' && <p className="notice">Database-backed coordinator mode. Blockchain submission, escrow, and settlement are disabled.</p>}
+    {needsChain && <section className="panel" aria-label="Blockchain submission">
+      <p>This job is saved in the database. It needs a blockchain submission before providers can be assigned.</p>
+      {job.canSubmit !== false && <button className="button primary" onClick={submitChain} disabled={chainPending || !!transaction}>{chainPending ? 'Check your wallet…' : transaction ? 'Transaction sent' : 'Submit to blockchain'}</button>}
+      {transaction && <p className="notice" role="status">Transaction sent: <span className="mono">{transaction}</span>. Waiting for the coordinator to observe the submission. Keep this page open while it is pending.</p>}
+      {chainError && <p className="notice error" role="alert">{chainError}</p>}
+    </section>}
     {error && <ResourceError message={error} retry={refresh} />}
     {loading && !job && <p className="muted" role="status">Loading job…</p>}
     {data && !job && !error && <p className="notice error" role="alert">The server did not return a job.</p>}
     {job && <>
-      <p className="phase-note muted" role="status">{jobPhase(job.status)[1]}</p>
+      <p className="phase-note muted" role="status">{needsChain ? 'Saved; waiting for blockchain submission.' : jobPhase(job.status)[1]}</p>
       <section className="panel" aria-labelledby="details-heading">
         <div className="section-heading"><h2 id="details-heading">Details</h2><button className="text-button" onClick={refresh} disabled={loading}>Refresh</button></div>
         <dl className="detail-grid">
-          <Item label="Job ID" mono>{job.id}</Item><Item label="Submitted">{dateLabel(job.createdAt)}</Item>
-          <Item label="Container image" mono>{job.dockerImage || '—'}</Item><Item label="Maximum budget">{job.maxPrice ?? '—'} ETH</Item>
+          <Item label="Job ID" mono>{job.id}</Item><Item label="Saved">{dateLabel(job.createdAt)}</Item>
+          <Item label="Container image" mono>{job.dockerImage || '—'}</Item><Item label="Hourly cap per provider">{job.maxPrice ?? '—'} ETH / hour</Item>
           <Item label="Providers assigned">{job.providerCount ?? '—'} / {job.k ?? '—'}</Item><Item label="Matching results">{job.consensus?.agreeing ?? '—'} / {job.consensus?.required ?? job.quorum ?? '—'}</Item>
           <Item label="Runtime">{job.runtimeSeconds == null ? '—' : `${job.runtimeSeconds} seconds`}</Item><Item label="Execution window">{job.window == null ? '—' : `${windowMinutes(job.window)} ${job.window === 60 ? 'minute' : 'minutes'}`}</Item>
           <Item label="Minimum scores">CPU {job.requirements?.minCpuScore ?? '—'} · GPU {job.requirements?.minGpuScore ?? '—'} · Memory {job.requirements?.minMemoryScore ?? '—'}</Item>
@@ -77,11 +109,23 @@ export default function JobDetail({ api, id, notice }) {
         </dl>
         {job.delivery?.error && <p className="notice error" role="alert">{job.delivery.error}</p>}
         {job.payment?.error && <p className="notice error" role="alert">{job.payment.error}</p>}
-        {job.result?.available ? <>
-          {(job.resultHash || job.consensusResultHash) && <p className="result-hash mono"><span className="muted">Result hash </span>{job.resultHash || job.consensusResultHash}</p>}
-          <button className="button primary" onClick={download} disabled={downloading}>{downloading ? 'Downloading…' : 'Download result'}</button>
-        </> : <p className="muted">{['FAILED', 'NO_QUORUM', 'CANCELED', 'CANCELLED'].includes(job.status) ? 'No verified result is available.' : 'The result will appear here when it is ready.'}</p>}
-        {downloadError && <p className="notice error" role="alert">{downloadError}</p>}
+        {(job.resultHash || job.consensusResultHash) && <p className="result-hash mono"><span className="muted">Reported result hash </span>{job.resultHash || job.consensusResultHash}</p>}
+        {job.canViewResults !== false ? <>
+          <p className="muted">Delivery records are provider-reported output locations. Receipt verification and payment are separate.</p>
+          <button className="button primary" onClick={loadResults} disabled={loadingResults}>{loadingResults ? 'Loading records…' : results ? 'Refresh delivery records' : 'Load delivery records'}</button>
+          {results?.length === 0 && <p className="muted">No delivery records have been reported.</p>}
+          {results?.map((result, index) => <div className="result-record" key={`${result.provider}-${index}`}>
+            <dl className="detail-grid">
+              <Item label="Provider" mono>{result.provider}</Item>
+              <Item label="Reported hash" mono>{result.hash}</Item>
+              <Item label="Delivered">{timeLabel(result.deliveryTime)}</Item>
+              <Item label="Receipt">{result.receiptVerified ? 'Verified on chain' : 'Not verified'}</Item>
+              <Item label="Output location" mono>{result.location || 'Not reported'}</Item>
+            </dl>
+            {resultUrl(result.location) && <a className="text-link" href={resultUrl(result.location)} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">Open provider output{result.receiptVerified ? '' : ' (unverified receipt)'}</a>}
+          </div>)}
+        </> : <p className="muted">Delivery records are available to the job owner.</p>}
+        {resultError && <p className="notice error" role="alert">{resultError}</p>}
       </section>
       <p className="muted refresh-note">Updates every 5 seconds.</p>
     </>}

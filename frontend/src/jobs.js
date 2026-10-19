@@ -60,7 +60,7 @@ const phases = {
 export const jobPhase = (status) =>
 	phases[status] || ["pending", "The server has reported a new job phase."];
 
-// Lucidchart and repository UML use different names for the same job fields.
+// Keep the UI shape stable while accepting the database API field names.
 export function normalizeJob(job) {
 	if (!job || typeof job !== "object")
 		throw new Error("The API returned an invalid job.");
@@ -139,15 +139,17 @@ export function validateJob(values, usdPerEth = null) {
 export function jobPayload(values, usdPerEth = null) {
 	return {
 		name: values.name.trim(),
-		dockerImage: values.dockerImage.trim(),
+		...(/@sha256:[0-9a-f]{64}$/.test(values.dockerImage.trim())
+			? { dockerImageDigest: values.dockerImage.trim() }
+			: { image: values.dockerImage.trim() }),
 		maxPrice: convertBudget(
 			values.maxPrice,
 			values.budgetCurrency ?? "ETH",
 			usdPerEth,
 		),
-		k: Number(values.k),
-		quorum: Number(values.quorum),
-		window: Number(values.window) * 60,
+		minNodesToRunOn: Number(values.k),
+		minNodesToAgree: Number(values.quorum),
+		timeWindow: Number(values.window) * 60,
 		requirements: Object.fromEntries(
 			["minCpuScore", "minGpuScore", "minMemoryScore"].map((field) => [
 				field,
@@ -160,4 +162,14 @@ export function windowMinutes(seconds) {
 	return Number.isFinite(seconds) && seconds > 0
 		? String(Number((seconds / 60).toFixed(6)))
 		: "—";
+}
+
+// Output URLs are supplied by providers. Never execute scripts or forward API credentials.
+export function resultUrl(value) {
+	try {
+		const url = new URL(value);
+		return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+	} catch {
+		return null;
+	}
 }
