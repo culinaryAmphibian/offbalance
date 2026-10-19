@@ -1,15 +1,19 @@
 # mediator design pattern - holds references to all managers and governs their interactions
-from benchmark.BenchmarkManager import BenchmarkManager
-from blockchain.BlockchainManager import BlockchainManager
-from blockchain.BlockchainEvent import BlockchainEvent
-from server.ServerManager import ServerManager
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from blockchain.EventData import *
-from job.RunManager import RunManager
-from web3 import Web3
-import time
+import requests
+import sys
 import threading
 
+if TYPE_CHECKING:
+    from benchmark.BenchmarkManager import BenchmarkManager
+    from blockchain.BlockchainManager import BlockchainManager
+    from server.ServerManager import ServerManager
+    from job.RunManager import RunManager
 
+HEARTBEAT_INTERVAL_SECONDS = 10
 
 class ProviderClient():
     def __init__(self, benchmark: BenchmarkManager, blockchain: BlockchainManager, server: ServerManager, runner: RunManager):
@@ -19,18 +23,49 @@ class ProviderClient():
         self.runner = runner
 
     # mediator methods here...
-    def run(self) -> None:
+    def run(self, stop_event: threading.Event | None = None) -> None:
+        stop_event = stop_event or threading.Event()
         scores = self.benchmark.do_benchmark()
         # failures terminate with error
         self.server.post_benchmark(scores)
 
-        # mux events 
-        while True:
-            events = self.blockchain.pollEvents()
-            for event in events:
-                self._handle_event(event)
+        # Advertise immediately, then renew independently of slow chain requests.
+        self._heartbeat()
+        heartbeat_errors = []
 
-            time.sleep(1)
+        def keep_available():
+            while not stop_event.wait(HEARTBEAT_INTERVAL_SECONDS):
+                try:
+                    self._heartbeat()
+                except requests.RequestException as error:
+                    heartbeat_errors.append(error)
+                    stop_event.set()
+                    return
+
+        worker = threading.Thread(target=keep_available, name='provider-heartbeat', daemon=True)
+        worker.start()
+        try:
+            while not stop_event.is_set():
+                events = self.blockchain.pollEvents()
+                for event in events:
+                    if stop_event.is_set():
+                        break
+                    self._handle_event(event)
+                stop_event.wait(1)
+        finally:
+            stop_event.set()
+            worker.join()  # finish any bounded HTTP request before closing sessions
+        if heartbeat_errors:
+            raise heartbeat_errors[0]
+
+    def _heartbeat(self) -> None:
+        try:
+            self.server.heartbeat()
+        except requests.RequestException as error:
+            status = error.response.status_code if error.response is not None else None
+            if status in (401, 403) or isinstance(error, requests.exceptions.SSLError):
+                raise
+            print("Provider heartbeat failed; retrying in 10 seconds.", file=sys.stderr)
 
     # ugly ahh multiplexer D:
     def _handle_event(self, event: Event):
@@ -80,5 +115,3 @@ class ProviderClient():
             print(f"Result was obtained: {result.output_dir}")
             self.blockchain.commit(jobId, self.runner.hash_dir(result.output_dir))
 
-        
-    

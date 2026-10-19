@@ -141,7 +141,7 @@ The client always needs a server: it gets the contract address from `GET /contra
 
 `--dev` only changes where credentials come from:
 - the session key is `PROVIDER_N_PRIVATE_KEY` from `dev.env`;
-- the API key is `OFFBALANCE_API_KEY` if set, otherwise `dev` (the mock server accepts any token).
+- the API key is `OFFBALANCE_API_KEY` if set, otherwise `dev` for provider 1 and `dev2`–`dev4` for providers 2–4 (seeded by the real server; the mock accepts any token).
 
 Outside `--dev`, any prompt can be skipped with an env var: `OFFBALANCE_API_KEY`, `PROVIDER_PRIVATE_KEY`, `OFFBALANCE_ADDRESS` (skips the server lookup), `OFFBALANCE_SERVER_URL`, `RPC_URL`.
 

@@ -35,7 +35,7 @@ The existing Python HTTP endpoints remain available:
 - `POST /scores` (form-encoded `cpu`, optional `gpu`, `mem`)
 - `GET /jobManifest/:jobId` (assigned providers only)
 
-Authenticate with `Authorization: Bearer <token>`. Wallet sign-in is `GET /auth/nonce?wallet=...` followed by `POST /auth {wallet, signature}`; its token is also the provider API key. Report benchmarks and set a rate with `POST /provider/price {"price": 1}`. Then send authenticated `POST /provider/heartbeat` every **10 seconds** while available (timeout: 30 seconds). Neither saved benchmarks nor pricing establishes liveness. The existing Python client needs this heartbeat call added before it can participate in automatic matching; client files are outside this change.
+Authenticate with `Authorization: Bearer <token>`. Wallet sign-in is `GET /auth/nonce?wallet=...` followed by `POST /auth {wallet, signature}`; its token is also the provider API key. Report benchmarks and set a positive rate with `POST /provider/price {"price": 1}`. The Python client sends authenticated `POST /provider/heartbeat` immediately after benchmarking and every **10 seconds** while polling (timeout: 30 seconds). Neither saved benchmarks nor pricing establishes liveness. Stopping the client lets availability expire without releasing unfinished assignments.
 
 Provider control shares the HTTPS listener:
 
@@ -57,7 +57,7 @@ python ../client/main.py --dev
 
 Keep certificate verification enabled. The local certificate must also be trusted by browser/Node clients: for Node commands use `NODE_EXTRA_CA_CERTS="$PWD/.local/tls/cert.pem"`. Publicly trusted production certificates ordinarily need no custom CA setting. Generate a replacement local certificate with `npm run cert:dev -- --force` after expiry. The provider client's blockchain connection is still required by its existing execution workflow.
 
-`dev:mock` remains an independent HTTP development mock. The root launcher now starts the real HTTPS server with a fresh development database for each fresh local chain. `npm start` always starts the real HTTPS server. No client, frontend, or root launcher files are changed.
+`dev:mock` remains an independent HTTP development mock and accepts provider heartbeats after a benchmark upload. The root launcher starts the real HTTPS server with a fresh development database for each fresh local chain. `npm start` always starts the real HTTPS server.
 
 Agent output collection still requires an expected SHA-256 plus a caller-supplied object storage adapter. Providers may post existing output locations through `/provider/results/:jobId`; receipt verification depends on the contract. The Python directory hash and agent byte hash still require an agreed output format for direct output collection.
 
@@ -79,4 +79,4 @@ TEST_PYTHON=/absolute/path/to/python \
 npm test
 ```
 
-`test:https` runs against an isolated, seeded MongoDB database and starts the actual `server.ts`. It executes Sergey's unchanged `test/client-contract.test.ts` (nine tests) over HTTPS, then imports the real Python `ServerManager` to upload benchmarks and fetch its manifest. Clients explicitly trust a temporary test CA; separate tests reject untrusted certificates, hostname mismatches and plaintext connections. `test:real` runs this same acceptance suite, defaulting MongoDB to localhost when `MONGODB_URI` is unset. Chain integration tests use an explicit RPC fixture; they do not claim a live deployed-contract or Python execution test. Docker registry resolution/builds require network/registry access and Docker respectively; builds remain off until `REGISTRY_NAMESPACE` is set.
+`test:https` runs against an isolated, seeded MongoDB database and starts the actual `server.ts`. It executes Sergey's unchanged `test/client-contract.test.ts` (nine tests) over HTTPS, then imports the real Python `ServerManager` to upload benchmarks and fetch its manifest. It also runs the Python provider loop with fixture benchmark/chain inputs, proving that its heartbeat makes the provider online and matches a waiting job; this does not execute Docker or a real blockchain. Clients explicitly trust a temporary test CA; separate tests reject untrusted certificates, hostname mismatches and plaintext connections. `test:real` runs this same acceptance suite, defaulting MongoDB to localhost when `MONGODB_URI` is unset. Chain integration tests use an explicit RPC fixture; they do not claim a live deployed-contract or Docker execution test. Docker registry resolution/builds require network/registry access and Docker respectively; builds remain off until `REGISTRY_NAMESPACE` is set.

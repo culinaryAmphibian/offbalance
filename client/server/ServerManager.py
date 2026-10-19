@@ -11,6 +11,9 @@ class ServerManager():
         self.session.headers.update({
             "Accept": "application/json"
         })
+        # The availability worker must not share a Requests session with job calls.
+        self._heartbeat_session = requests.Session()
+        self._heartbeat_session.headers.update({"Accept": "application/json"})
 
         if access_token is not None:
             self.set_access_token(access_token)
@@ -18,6 +21,7 @@ class ServerManager():
     # sets auth for server to know who its talking to    
     def set_access_token(self, token: str) -> None:
         self.session.headers['Authorization'] = f"Bearer {token}"    
+        self._heartbeat_session.headers['Authorization'] = f"Bearer {token}"
 
     # request helper - generic
     def request(self, method: str, path: str, **kwargs) -> requests.Response:
@@ -42,6 +46,12 @@ class ServerManager():
     # cleanup :D
     def close(self) -> None:
         self.session.close()
+        self._heartbeat_session.close()
+
+    def heartbeat(self) -> None:
+        self._heartbeat_session.verify = self.session.verify
+        response = self._heartbeat_session.post(f"{self.base_url}/provider/heartbeat", timeout=15)
+        response.raise_for_status()
 
     def getDockerManifest(self, jobId):
         res = self.request("GET", f"/jobManifest/{jobId}")
