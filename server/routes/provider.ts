@@ -2,7 +2,7 @@
 import { Router } from "express";
 import { hourlyPrice } from "../adapters/repository.ts";
 import { requireAuth } from "../middleware/auth.ts";
-import { HardwareModel, JobStatus, TutorialModel } from "../models/index.ts";
+import { HardwareModel, JobModel, JobStatus, TutorialModel } from "../models/index.ts";
 import { errorMessage } from "../services/chain.ts";
 import { providerControlRoutes } from "../services/providers.ts";
 import { loadJob, type Deps } from "./deps.ts";
@@ -96,28 +96,42 @@ export function providerRoutes({ chain, matcher }: Deps): Router {
 			return;
 		}
 
-		const existing = job.results.find((r) => r.provider.equals(me));
-		if (existing?.receiptVerified) {
-			res.status(409).json({ error: "your delivery is already verified" });
+		// Atomic updates guarded by status, so a concurrent delivery or phase event
+		// (e.g. DELIVERED -> PAYOUT) is never overwritten by a stale copy of the job.
+		const deliveryTime = new Date();
+		const open = { _id: job._id, status: { $in: [JobStatus.AWAITING_DELIVERY, JobStatus.DELIVERY_RECEIPT_VALIDATION] } };
+		const status = { status: JobStatus.DELIVERY_RECEIPT_VALIDATION };
+		let saved = await JobModel.updateOne(
+			{ ...open, "results.provider": { $ne: me } },
+			{ $push: { results: { provider: me, hash, location, deliveryTime } }, $set: status },
+			{ runValidators: true },
+		);
+		if (!saved.matchedCount) {
+			// redelivery: replace an unverified result
+			saved = await JobModel.updateOne(
+				{ ...open, results: { $elemMatch: { provider: me, receiptVerified: false } } },
+				{ $set: { "results.$.hash": hash, "results.$.location": location, "results.$.deliveryTime": deliveryTime, ...status } },
+				{ runValidators: true },
+			);
+		}
+		if (!saved.matchedCount) {
+			const latest = await JobModel.findById(job._id);
+			const verified = latest?.results.some((r) => r.provider.equals(me) && r.receiptVerified);
+			res.status(409).json({ error: verified ? "your delivery is already verified" : `job is ${latest?.status}, not taking deliveries` });
 			return;
 		}
-		if (existing) existing.set({ hash, location, deliveryTime: new Date() });
-		else job.results.push({ provider: me, hash, location, deliveryTime: new Date() });
-		job.status = JobStatus.DELIVERY_RECEIPT_VALIDATION;
-		await job.save();
 
-		const result = job.results.find((r) => r.provider.equals(me))!;
 		if (chain?.canWrite) {
 			try {
 				const hw = await HardwareModel.findOne({ userRef: me });
 				await chain.verifyReceipt(job.onChainJobId, hw?.address ?? res.locals.wallet);
-				result.receiptVerified = true;
-				await job.save();
+				await JobModel.updateOne({ _id: job._id, "results.provider": me }, { $set: { "results.$.receiptVerified": true } });
 			} catch (e) {
 				console.error(`Job ${job.onChainJobId}: verifyReceipt failed:`, errorMessage(e));
 			}
 		}
-		res.status(201).json({ results: serializeResults(job).filter((r) => r.provider === String(me)) });
+		const latest = (await JobModel.findById(job._id))!;
+		res.status(201).json({ results: serializeResults(latest).filter((r) => r.provider === String(me)) });
 	});
 
 	return router;
