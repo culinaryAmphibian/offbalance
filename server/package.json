@@ -7,14 +7,16 @@
     "test": "npm run test:dev && npm run test:real",
     "test:dev": "SERVER_FILE=dev-server.ts node --test \"test/**/*.test.ts\"",
     "test:real": "SERVER_FILE=server.ts node --test \"test/**/*.test.ts\"",
-    "dev:mock": "node dev-server.ts"
+    "dev:mock": "node dev-server.ts",
+    "test:managers": "node --test test/matching.test.js test/match-manager.test.js test/agent*.test.js test/protocol.test.js test/blockchain-manager.test.js test/managers.test.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "express": "^5.3.0"
+    "express": "^5.3.0",
+    "ethers": "^6.17.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6"
