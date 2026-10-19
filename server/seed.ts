@@ -7,8 +7,8 @@
 //   dev, dev2, dev3, dev4   provider 1-4 (`python3 main.py --dev --provider N`)
 //   dev-buyer               the buyer
 //
-// Job 1 is a fixture: alpine writing /output/result.txt, assigned to provider 1,
-// matching what dev-server.ts hands out, so `assign 1 p1` in event_controller.py works.
+// Normal startup leaves every provider free and creates no jobs.
+// Opt in to the mock job-1 manifest with `npm run seed -- --fixtures`.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { connectDB, disconnectDB } from "./db.ts";
@@ -50,31 +50,33 @@ for (const n of [1, 2, 3, 4]) {
 	providers.push(await account(env[`PROVIDER_${n}_ADDRESS`], n === 1 ? "dev" : `dev${n}`));
 }
 
-const job = await JobModel.findOneAndUpdate(
-	{ onChainJobId: 1 },
-	{
-		$setOnInsert: {
-			owner: buyer._id,
-			providers: [providers[0]._id],
-			submittedAt: new Date(),
-			dockerImageDigest: ALPINE,
-			command: ["sh", "-c", 'echo "result for job 1" > /output/result.txt'],
-			cpuLimit: 1,
-			memLimitMb: 256,
-			maxPrice: "1",
-			runningPrice: "1",
-			minNodesToRunOn: 1,
-			minNodesToAgree: 1,
-			timeWindow: 60,
+if (process.argv.includes("--fixtures")) {
+	const job = await JobModel.findOneAndUpdate(
+		{ onChainJobId: 1 },
+		{
+			$setOnInsert: {
+				owner: buyer._id,
+				providers: [providers[0]._id],
+				submittedAt: new Date(),
+				dockerImageDigest: ALPINE,
+				command: ["sh", "-c", 'echo "result for job 1" > /output/result.txt'],
+				cpuLimit: 1,
+				memLimitMb: 256,
+				maxPrice: "1",
+				runningPrice: "1",
+				minNodesToRunOn: 1,
+				minNodesToAgree: 1,
+				timeWindow: 60,
+			},
 		},
-	},
-	{ upsert: true, returnDocument: "after", runValidators: true },
-);
-await AccountModel.updateOne({ _id: buyer._id }, { $addToSet: { submittedJobs: job._id } });
-await AccountModel.updateOne({ _id: providers[0]._id }, { $addToSet: { takenJobs: job._id } });
-// new jobs get ids after the fixture
-await CounterModel.updateOne({ _id: "jobId" }, { $max: { seq: 1 } }, { upsert: true });
-console.log("job 1 -> provider 1");
+		{ upsert: true, returnDocument: "after", runValidators: true },
+	);
+	await AccountModel.updateOne({ _id: buyer._id }, { $addToSet: { submittedJobs: job._id } });
+	await AccountModel.updateOne({ _id: providers[0]._id }, { $addToSet: { takenJobs: job._id } });
+	// new jobs get ids after the fixture
+	await CounterModel.updateOne({ _id: "jobId" }, { $max: { seq: 1 } }, { upsert: true });
+	console.log("fixture job 1 -> provider 1");
+}
 
 if (!(await TutorialModel.exists({}))) {
 	await TutorialModel.create({

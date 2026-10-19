@@ -77,7 +77,7 @@ describe('real HTTPS server and provider client', { skip: !mongodbUri && 'set MO
       DEPLOYMENT_FILE: deployment, REGISTRY_NAMESPACE: '', NODE_EXTRA_CA_CERTS: ca };
     delete environment.NODE_TEST_CONTEXT;
     delete environment.NODE_TLS_REJECT_UNAUTHORIZED;
-    await run(process.execPath, ['seed.ts']);
+    await run(process.execPath, ['seed.ts', '--fixtures']);
     await connectDB(uri.toString());
     child = spawn(process.execPath, ['server.ts'], {
       cwd: serverDirectory, env: environment, stdio: ['ignore', 'pipe', 'pipe'],

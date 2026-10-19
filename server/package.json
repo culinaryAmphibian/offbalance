@@ -10,7 +10,7 @@
     "test": "npm run typecheck && npm run test:managers && npm run test:unit && npm run test:dev && npm run test:db && npm run test:https",
     "test:managers": "node --test test/matching.test.js test/match-manager.test.js test/agent-manager.test.js test/blockchain-manager.test.js test/managers.test.js",
     "test:unit": "node --test test/models.test.ts test/registry.test.ts test/https.test.ts",
-    "test:db": "node --test test/api.test.ts test/mongo-*.test.ts test/checkpoints.test.ts test/frontend-contract.test.ts",
+    "test:db": "node --test test/api.test.ts test/mongo-*.test.ts test/checkpoints.test.ts test/frontend-contract.test.ts test/seed.test.ts",
     "test:dev": "SERVER_FILE=dev-server.ts node --test test/client-contract.test.ts",
     "test:real": "MONGODB_URI=${MONGODB_URI:-mongodb://127.0.0.1:27017} node --test test/https-client.test.ts",
     "dev:mock": "node dev-server.ts",

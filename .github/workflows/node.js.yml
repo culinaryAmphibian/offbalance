@@ -41,8 +41,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install requests
-      - name: Check provider availability loop
+      - run: python -m pip install requests docker
+      - name: Check provider availability and execution
         run: python -m unittest discover -s ../client/test -v
       - run: npm ci
       - run: npm ci --prefix ../server

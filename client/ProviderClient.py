@@ -21,6 +21,8 @@ class ProviderClient():
         self.blockchain = blockchain
         self.server = server
         self.runner = runner
+        self._job_lock = threading.Lock()
+        self._running_jobs = set()
 
     # mediator methods here...
     def run(self, stop_event: threading.Event | None = None) -> None:
@@ -102,16 +104,39 @@ class ProviderClient():
     
     def handleAssignment(self, jobId):
         print(f"Handling assignment for: {jobId}")
-        manifest = self.server.getDockerManifest(jobId)
-        self.runner.prepareJob(manifest, jobId)
+        try:
+            manifest = self.server.getDockerManifest(jobId)
+            self.runner.prepareJob(manifest, jobId)
+        except Exception as error:
+            self._report_error(jobId, f'Job preparation failed: {error}')
 
     def handleCommitPhaseStart(self, jobId, deadline):
-        threading.Thread(target=self._runAndCommit, args=(jobId, deadline), daemon=True).start() 
-        # timer, when the runner is ready, then he should return the result..?
-    
-    def _runAndCommit(self, jobId, deadline):
-        result = self.runner.startJob(jobId, deadline)
-        if result.status == 'ok' and result.output_dir:
-            print(f"Result was obtained: {result.output_dir}")
-            self.blockchain.commit(jobId, self.runner.hash_dir(result.output_dir))
+        with self._job_lock:
+            # Commit-phase events are broadcast to every provider, including
+            # machines that were not selected for this job.
+            if self.runner.currentJobId != jobId or jobId in self._running_jobs:
+                return
+            self._running_jobs.add(jobId)
+        threading.Thread(target=self._runAndCommit, args=(jobId, deadline), daemon=True).start()
 
+    def _report_error(self, jobId, message):
+        print(f'Job {jobId}: {message}', file=sys.stderr)
+        try:
+            self.server.report_error(jobId, message)
+        except requests.RequestException as error:
+            print(f'Job {jobId}: error report failed: {error}', file=sys.stderr)
+
+    def _runAndCommit(self, jobId, deadline):
+        try:
+            result = self.runner.startJob(jobId, deadline)
+            if result.status == 'ok' and result.output_dir:
+                print(f"Result was obtained: {result.output_dir}")
+                self.blockchain.commit(jobId, self.runner.hash_dir(result.output_dir))
+            else:
+                details = getattr(result, 'message', None) or 'No output was produced.'
+                self._report_error(jobId, f'Execution {result.status} (exit code {result.exitCode}): {details}')
+        except Exception as error:
+            self._report_error(jobId, f'Execution or commitment failed: {error}')
+        finally:
+            with self._job_lock:
+                self._running_jobs.discard(jobId)

@@ -17,56 +17,76 @@ class RunManager():
         self.out_dir = None
 
     def prepareJob(self, manifest, jobId):
+        self.currentJobId = None
+        self.currentManifest = None
+        self.out_dir = None
+        out_dir = self.jobs_dir / str(jobId) / 'output'
+        out_dir.mkdir(parents=True, exist_ok=True)
         self.currentJobId = jobId
         self.currentManifest = manifest
-        self.out_dir = self.jobs_dir / str(jobId) / 'output'
-        self.out_dir.mkdir(parents=True, exist_ok = True)
+        self.out_dir = out_dir
 
 
-    def startJob(self, jobId: int, deadline: int): 
-        if jobId != self.currentJobId or self.currentManifest == None or self.out_dir == None:
-            raise Exception("Current jobId does not match the job I need to start. Did you load it from the server first?")
+    def container_user(self):
+        # Rootless container root maps to the ordinary user running the daemon.
+        options = self.client.info().get('SecurityOptions') or []
+        if any(option.split(',')[0] == 'name=rootless' for option in options):
+            return '0:0'
+        return f"{os.getuid()}:{os.getgid()}"
+
+    @staticmethod
+    def _remove_container(container):
+        if container is not None:
+            container.remove(force=True)
+
+    @staticmethod
+    def _logs(container):
+        return container.logs(tail=20).decode('utf-8', errors='replace')[-2000:]
+
+    def startJob(self, jobId: int, deadline: int):
+        if jobId != self.currentJobId or self.currentManifest is None or self.out_dir is None:
+            raise RuntimeError("Load the assigned job manifest before starting it.")
+        if deadline <= 0:
+            raise ValueError('Execution window must be positive.')
 
         print(f"Running Job: {jobId}")
-        
         self.isActive = True
-
-        image = self.currentManifest['image']
-
+        container = None
         try:
-            self.client.images.get(image)
-        except ImageNotFound:
-            self.client.images.pull(image)
+            image = self.currentManifest['image']
+            try:
+                self.client.images.get(image)
+            except ImageNotFound:
+                self.client.images.pull(image)
 
-        env = dict(self.currentManifest.get('env') or {})
-        if self.currentManifest.get('input_url'):
-            env['INPUT_URL'] = self.currentManifest['input_url']
+            user = self.container_user()
+            volumes = {str(self.out_dir): {'bind': '/output', 'mode': 'rw'}}
+            env = dict(self.currentManifest.get('env') or {})
+            if self.currentManifest.get('input_url'):
+                env['INPUT_URL'] = self.currentManifest['input_url']
 
-        container = self.client.containers.run(
-            image,
-            command = self.currentManifest['command'],
-            environment=env,
-            network_disabled = not self.currentManifest.get('input_url'),
-            volumes={str(self.out_dir): {'bind': '/output', 'mode': 'rw'}},
-            user = f"{os.getuid()}:{os.getgid()}",
-            detach=True,
-        )
+            container = self.client.containers.run(
+                image, command=self.currentManifest['command'], environment=env,
+                network_disabled=not self.currentManifest.get('input_url'),
+                volumes=volumes, user=user, detach=True,
+            )
+            try:
+                result = container.wait(timeout=deadline)
+            except (ReadTimeout, ConnectionError):
+                return JobResult(status='timeout', message='Container exceeded its execution window.')
 
-        try:
-            result = container.wait(timeout = deadline)
-        
-        except (ReadTimeout, ConnectionError):
-            container.kill()
-            return JobResult(status="timeout")
-
-        container.reload()
-        if container.attrs['State']['OOMKilled']:
-            return JobResult(status='oom')
-        if result['StatusCode'] != 0:
-            return JobResult(status='failed', exitCode=result['StatusCode'])
-        
-        return JobResult(status='ok', output_dir=self.out_dir)
-        
+            container.reload()
+            if container.attrs['State'].get('OOMKilled'):
+                return JobResult(status='oom', message='Container was killed for exceeding memory.')
+            if result['StatusCode'] != 0:
+                return JobResult(status='failed', exitCode=result['StatusCode'], message=self._logs(container))
+            return JobResult(status='ok', output_dir=self.out_dir)
+        finally:
+            try:
+                # Force removal also stops a timed-out or otherwise failed container.
+                self._remove_container(container)
+            finally:
+                self.isActive = False
 
     # deterministic sha256 over the contents of out_dir, so every honest provider
     # that ran the same image gets the same digest. Only relative paths and file

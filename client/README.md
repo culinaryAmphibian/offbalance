@@ -50,11 +50,29 @@ Temporary network/server errors retry at the next heartbeat. Invalid/revoked
 credentials (401/403) and TLS trust failures stop the client. When the client
 stops or loses connectivity, availability expires automatically.
 
-Test the availability loop without Docker or a blockchain node:
+Test availability and execution handling without a running Docker daemon or blockchain node:
 
 ```bash
+python3 -m pip install requests docker
 python3 -m unittest discover -s test -v
 ```
+
+## Docker output and failures
+
+The runner reads the daemon's security options before launching a job. Rootless
+Docker uses container UID/GID `0:0`, which maps to the ordinary daemon user's
+host identity; ordinary Docker uses the provider process's host UID/GID. The
+provider process and rootless daemon should run as the same local user, and the
+output directory must be available on the daemon's host. Set `DOCKER_HOST` when
+using a nondefault socket. Existing directory permissions are preserved.
+
+A failed container reports its exit code and recent logs to the authenticated
+`POST /provider/jobs/:jobId/error` endpoint. Timeouts, OOM kills, preparation,
+Docker and commitment errors are also reported. Containers are removed after
+execution, including on failure or timeout. If the error report cannot reach the
+server, the client prints that failure locally. Reporting an error does not
+release an unfinished blockchain assignment. Unassigned commit-phase broadcasts
+are ignored.
 
 ---
 
