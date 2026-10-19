@@ -66,6 +66,9 @@ contract OffBalance {
 
     event CANCELED(JobID_t jobId);
     event NO_QUORUM(JobID_t jobId);
+
+    // debug event for visibility, not needed for functionality
+    event COMMIT_SUBMITTED_BY(address provider);
     // -------- end of defining events ------
 
     // ------- data variables necessary for the contract -------//
@@ -107,6 +110,7 @@ contract OffBalance {
     // ==========functions for providers========== //
     function submitCommitment(JobID_t jobId, Commitment_t commitment) public {
         require(block.timestamp < jobs[jobId].commitDeadline);
+        emit COMMIT_SUBMITTED_BY(msg.sender);
         // logic for commitment - using sha256 to hash the commits, then encrypt them i think?
     }
 

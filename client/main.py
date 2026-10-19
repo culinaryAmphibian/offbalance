@@ -109,6 +109,7 @@ def main():
 
     run_mgr = RunManager()
 
+    print("Client started...")
     mediator = ProviderClient(be_mgr, bc_mgr, s_mgr, run_mgr)
     try:
         mediator.run()
