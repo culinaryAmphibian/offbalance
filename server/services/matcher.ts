@@ -1,78 +1,70 @@
-// Match manager: event-based, top-k matching of submitted jobs to idle providers.
-import type { HydratedDocument, Types } from "mongoose";
-import { AccountModel, HardwareModel, JobModel, JobStatus, TERMINAL_STATUSES, type Hardware, type Job } from "../models/index.ts";
-import { errorMessage, type Chain } from "./chain.ts";
-
-// Providers that fit the job, cheapest first (ties: strongest CPU), at most k.
-// Excludes providers already on an unfinished job (one job at a time) and the
-// buyer's own machine, since a buyer shouldn't verify their own job.
-export async function findMatchingScores(job: Job & { _id: Types.ObjectId }): Promise<HydratedDocument<Hardware>[]> {
-	const busy = await JobModel.distinct("providers", { status: { $nin: TERMINAL_STATUSES } });
-	const req = job.requirements ?? { minCpuScore: 0, minGpuScore: 0, minMemoryScore: 0 };
-
-	const filter: Record<string, unknown> = {
-		userRef: { $nin: [...busy, job.owner] },
-		price: { $ne: null, $lte: Number(job.maxPrice.toString()) },
-		cpuScore: { $gte: req.minCpuScore },
-		memoryScore: { $gte: req.minMemoryScore },
-	};
-	if (req.minGpuScore > 0) filter.gpuScore = { $gte: req.minGpuScore };
-
-	return HardwareModel.find(filter)
-		.sort({ price: 1, cpuScore: -1, gpuScore: -1, memoryScore: -1 })
-		.limit(job.minNodesToRunOn);
-}
+import { AccountModel, JobModel, JobStatus } from '../models/index.ts';
+import { MongoRepository } from '../adapters/repository.ts';
+import { MatchManager } from '../matching/MatchManager.ts';
+import type { AvailableProvider, SchedulingJob } from '../matching/types.ts';
+import type { Chain } from './chain.ts';
 
 export class Matcher {
-	private queue: Promise<void> = Promise.resolve();
-	private chain: Chain | null;
+  readonly repository: MongoRepository;
+  readonly manager: MatchManager;
+  private queue: Promise<void> = Promise.resolve();
+  private chain: Pick<Chain, 'assignProviders'> | null;
+  private now: () => number;
 
-	constructor(chain: Chain | null) {
-		this.chain = chain;
-	}
+  constructor(chain: Pick<Chain, 'assignProviders'> | null, { now = Date.now, heartbeatTimeoutMs = 30_000 } = {}) {
+    this.chain = chain;
+    this.now = now;
+    this.repository = new MongoRepository();
+    this.manager = new MatchManager({ repository: this.repository, now, heartbeatTimeoutMs,
+      onMatched: (job, providers) => this.assign(job, providers) });
+  }
 
-	// Something changed (job submitted, provider scored/priced, a job finished):
-	// try to match every waiting job. Runs are serialized so a provider is never
-	// handed two jobs by overlapping runs.
-	ping(): Promise<void> {
-		this.queue = this.queue
-			.then(() => this.run())
-			.catch((e) => console.error("Matching failed:", e));
-		return this.queue;
-	}
+  // A benchmark or price update never establishes liveness. Authenticated
+  // HTTPS heartbeats explicitly call this method instead.
+  async heartbeat(wallet: string): Promise<boolean> {
+    const provider = await this.repository.getProvider(wallet);
+    if (!provider) return false;
+    this.manager.pool.register({ ...provider, lastHeartbeat: this.now() });
+    await this.ping();
+    return true;
+  }
 
-	private async run(): Promise<void> {
-		const waiting = await JobModel.find({
-			status: JobStatus.PENDING,
-			submittedAt: { $ne: null },
-			providers: { $size: 0 },
-		}).sort({ submittedAt: 1 });
+  release(jobId: number): void {
+    const id = String(jobId);
+    this.manager.forgetAssignment(id);
+    this.manager.pool.release(id);
+  }
 
-		for (const job of waiting) {
-			const matches = await findMatchingScores(job);
-			if (matches.length < job.minNodesToRunOn) continue; // wait for more providers
-			await this.assign(job, matches);
-		}
-	}
+  async idle(): Promise<void> { await this.queue; }
 
-	private async assign(job: HydratedDocument<Job>, matches: HydratedDocument<Hardware>[]): Promise<void> {
-		const accountIds = matches.map((h) => h.userRef);
-		const runningPrice = Math.max(...matches.map((h) => h.price ?? 0));
+  ping(): Promise<void> {
+    const pending = this.queue.catch(() => {}).then(() => this.run());
+    this.queue = pending;
+    return pending;
+  }
 
-		// database first: providers fetch /jobManifest as soon as they see PROVIDER_SELECTED
-		job.set({ providers: accountIds, runningPrice: String(runningPrice) });
-		await job.save();
-		await AccountModel.updateMany({ _id: { $in: accountIds } }, { $addToSet: { takenJobs: job._id } });
+  private async run(): Promise<void> {
+    const waiting = await JobModel.find({ status: JobStatus.PENDING,
+      submittedAt: { $ne: null }, providers: { $size: 0 } }).sort({ createdAt: 1 });
+    for (const job of waiting) await this.manager.onJobSubmitted(String(job.onChainJobId));
+    await this.manager.matchNext();
+  }
 
-		try {
-			await this.chain?.assignProviders(job.onChainJobId, matches.map((h) => h.address));
-			console.log(`Job ${job.onChainJobId}: assigned ${matches.map((h) => h.address).join(", ")}`);
-		} catch (e) {
-			// undo so the next ping retries
-			console.error(`Job ${job.onChainJobId}: assignProviders failed, unassigning:`, errorMessage(e));
-			job.set({ providers: [], runningPrice: "0" });
-			await job.save();
-			await AccountModel.updateMany({ _id: { $in: accountIds } }, { $pull: { takenJobs: job._id } });
-		}
-	}
+  private async assign(job: SchedulingJob, providers: AvailableProvider[]): Promise<void> {
+    const accountIds = providers.map(p => p.accountId);
+    const runningPrice = providers.reduce((max, p) => Math.max(max, Number(p.pricePerHour)), 0);
+    const claimed = await JobModel.findOneAndUpdate({ onChainJobId: Number(job.id), status: JobStatus.PENDING,
+      submittedAt: { $ne: null }, providers: { $size: 0 } },
+      { $set: { providers: accountIds, runningPrice: String(runningPrice) } }, { returnDocument: 'after' });
+    if (!claimed) throw new Error(`Job ${job.id} is no longer waiting.`);
+    try {
+      // Persist before broadcasting: providers fetch their manifest on selection.
+      await AccountModel.updateMany({ _id: { $in: accountIds } }, { $addToSet: { takenJobs: claimed._id } });
+      await this.chain?.assignProviders(claimed.onChainJobId, providers.map(p => p.wallet));
+    } catch (error) {
+      await JobModel.updateOne({ _id: claimed._id }, { $set: { providers: [], runningPrice: '0' } });
+      await AccountModel.updateMany({ _id: { $in: accountIds } }, { $pull: { takenJobs: claimed._id } });
+      throw error;
+    }
+  }
 }

@@ -1,8 +1,10 @@
 // /provider: tutorial, the provider's machine and pricing, and result delivery.
 import { Router } from "express";
+import { hourlyPrice } from "../adapters/repository.ts";
 import { requireAuth } from "../middleware/auth.ts";
 import { HardwareModel, JobStatus, TutorialModel } from "../models/index.ts";
 import { errorMessage } from "../services/chain.ts";
+import { providerControlRoutes } from "../services/providers.ts";
 import { loadJob, type Deps } from "./deps.ts";
 import { serializeHardware, serializeResults } from "./serialize.ts";
 
@@ -24,6 +26,7 @@ async function suggestedPrice(cpuScore: number, exclude: unknown): Promise<numbe
 
 export function providerRoutes({ chain, matcher }: Deps): Router {
 	const router = Router();
+	router.use(providerControlRoutes(matcher));
 
 	router.get("/provider/tutorial", async (_req, res) => {
 		const tutorial = await TutorialModel.findOne().sort({ updatedAt: -1 });
@@ -46,21 +49,31 @@ export function providerRoutes({ chain, matcher }: Deps): Router {
 	// per-hour rate; machines aren't matched until they have one
 	router.post("/provider/price", requireAuth, async (req, res) => {
 		const price = Number(req.body?.price);
-		if (req.body?.price === undefined || !Number.isFinite(price) || price < 0) {
-			res.status(400).json({ error: "price must be a non-negative number" });
+		let validPrice = req.body?.price !== undefined;
+		try { hourlyPrice(price); } catch { validPrice = false; }
+		if (!validPrice) {
+			res.status(400).json({ error: "price must be non-negative finite ETH with at most 18 decimal places" });
 			return;
 		}
 		const hw = await HardwareModel.findOneAndUpdate(
 			{ userRef: res.locals.account._id },
 			{ price },
-			{ returnDocument: "after" },
+			{ returnDocument: "after", runValidators: true },
 		);
 		if (!hw) {
 			res.status(404).json({ error: "no machine yet; run the provider client to benchmark it" });
 			return;
 		}
-		void matcher.ping();
+		void matcher.ping().catch(error => console.error("Matching failed:", error));
 		res.json({ hardware: serializeHardware(hw) });
+	});
+
+	router.post("/provider/heartbeat", requireAuth, async (_req, res) => {
+		if (!(await matcher.heartbeat(res.locals.wallet))) {
+			res.status(409).json({ error: "no machine yet; report /scores first" });
+			return;
+		}
+		res.json({ ok: true, heartbeatTimeoutMs: matcher.manager.pool.heartbeatTimeoutMs });
 	});
 
 	// Delivery receipt: the provider uploaded its output and says where. The

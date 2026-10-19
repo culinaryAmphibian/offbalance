@@ -9,7 +9,7 @@ import { jobRoutes } from "./routes/jobs.ts";
 import { providerRoutes } from "./routes/provider.ts";
 import { RegistryError } from "./services/registry.ts";
 
-const CORS_ORIGINS = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173").split(",");
+const CORS_ORIGINS = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173,https://localhost:5173,https://127.0.0.1:5173").split(",");
 
 export function createApp(deps: Deps, { log = true } = {}) {
 	const app = express();

@@ -1,4 +1,5 @@
 import { Schema, model, type InferSchemaType } from "mongoose";
+import { decimalString } from "./decimal.ts";
 
 // A provider's benchmarked machine. Scores come from the client's POST /scores.
 const hardwareSchema = new Schema(
@@ -11,7 +12,9 @@ const hardwareSchema = new Schema(
 		cpuScore: { type: Number, required: true, min: 0 },
 		gpuScore: { type: Number, default: null, min: 0 }, // null when the machine has no GPU
 		memoryScore: { type: Number, required: true, min: 0 },
-		price: { type: Number, default: null, min: 0 }, // per hour, set by the provider; unpriced machines aren't matched
+		price: { type: Number, default: null, min: 0, validate: (value: number | null) => {
+			try { if (value != null) decimalString(value); return true; } catch { return false; }
+		} }, // per hour, set by the provider; unpriced machines aren't matched
 	},
 	// updatedAt drives the "update your pricing after your specs change" reminder
 	{ timestamps: { createdAt: false, updatedAt: true } },

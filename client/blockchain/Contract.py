@@ -16,7 +16,11 @@ class ProviderContractWrapper():
         })
 
         signed = signer.sign_transaction(tx)
-        return w3.eth.wait_for_transaction_receipt(w3.eth.send_raw_transaction(signed.raw_transaction))
+        receipt = w3.eth.wait_for_transaction_receipt(w3.eth.send_raw_transaction(signed.raw_transaction))
+        print(f"Receipt for commitment: {receipt}")
+        
+        return receipt 
+    
 
     def submitReveal(self, jobId):
         self.contract.functions.submitReveal(jobId)

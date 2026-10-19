@@ -12,7 +12,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 	}
 	const auth = await AuthTokenModel.findOne({ tokenHash: hashToken(token) });
 	const account = auth && (await AccountModel.findById(auth.account));
-	if (!auth || !account) {
+	if (!auth || !account || !account.walletIds.includes(auth.wallet)) {
 		res.status(401).json({ error: "invalid or revoked token" });
 		return;
 	}

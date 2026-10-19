@@ -13,6 +13,8 @@ const accountSchema = new Schema(
 			},
 		},
 
+		processedChainEvents: { type: [String], default: [] },
+
 		// buyer
 		submittedJobs: { type: [{ type: Schema.Types.ObjectId, ref: "Job" }], default: [] },
 		completedJobs: { type: [{ type: Schema.Types.ObjectId, ref: "Job" }], default: [] },

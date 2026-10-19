@@ -1,5 +1,5 @@
 // Keeps the database in step with contract events.
-import { AccountModel, HardwareModel, JobModel, TERMINAL_STATUSES } from "../models/index.ts";
+import { AccountModel, ChainEventModel, HardwareModel, JobModel, TERMINAL_STATUSES } from "../models/index.ts";
 import { STATUS_FOR_EVENT } from "../models/JobStatus.ts";
 import type { ChainEvent } from "./chain.ts";
 import type { Matcher } from "./matcher.ts";
@@ -9,8 +9,16 @@ async function accountForAddress(address: unknown) {
 	return hw?.userRef ?? (await AccountModel.findOne({ walletIds: String(address).toLowerCase() }))?._id ?? null;
 }
 
-export async function handleChainEvent({ name, args }: ChainEvent, matcher: Matcher): Promise<void> {
+export async function handleChainEvent(event: ChainEvent, matcher: Matcher): Promise<void> {
+	if (event.id && await ChainEventModel.exists({ _id: event.id })) return;
+	await applyChainEvent(event, matcher);
+	if (event.id) await ChainEventModel.updateOne({ _id: event.id }, {}, { upsert: true });
+}
+
+async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher): Promise<void> {
 	const jobId = Number(args.jobId);
+	if (!Number.isSafeInteger(jobId) || jobId < 0) throw new TypeError("Invalid event jobId.");
+	const effectId = id ?? `${jobId}:${name}:${String(args.provider ?? "").toLowerCase()}`;
 	const job = await JobModel.findOne({ onChainJobId: jobId });
 	if (!job) {
 		console.warn(`${name}: job ${jobId} isn't in the database; ignoring`);
@@ -43,17 +51,17 @@ export async function handleChainEvent({ name, args }: ChainEvent, matcher: Matc
 			const account = await accountForAddress(args.provider);
 			if (account) {
 				await AccountModel.updateOne(
-					{ _id: account },
-					{ $inc: { reputation: 1, totalEarned: job.runningPrice } },
+					{ _id: account, processedChainEvents: { $ne: `${effectId}:provider` } },
+					{ $inc: { reputation: 1, totalEarned: job.runningPrice }, $addToSet: { processedChainEvents: `${effectId}:provider` } },
 				);
 			}
-			await AccountModel.updateOne({ _id: job.owner }, { $inc: { totalSpent: job.runningPrice } });
+			await AccountModel.updateOne({ _id: job.owner, processedChainEvents: { $ne: `${effectId}:buyer` } }, { $inc: { totalSpent: job.runningPrice }, $addToSet: { processedChainEvents: `${effectId}:buyer` } });
 			return;
 		}
 
 		case "SLASHED": {
 			const account = await accountForAddress(args.provider);
-			if (account) await AccountModel.updateOne({ _id: account }, { $inc: { reputation: -1 } });
+			if (account) await AccountModel.updateOne({ _id: account, processedChainEvents: { $ne: effectId } }, { $inc: { reputation: -1 }, $addToSet: { processedChainEvents: effectId } });
 			return;
 		}
 	}
@@ -68,6 +76,7 @@ export async function handleChainEvent({ name, args }: ChainEvent, matcher: Matc
 
 	if (TERMINAL_STATUSES.includes(status)) {
 		await AccountModel.updateOne({ _id: job.owner }, { $addToSet: { completedJobs: job._id } });
+		matcher.release(job.onChainJobId);
 		await matcher.ping(); // its providers are free again
 	}
 }

@@ -175,6 +175,11 @@ class EventController(cmd.Cmd):
         job, = self.parse(arg, 1, "noquorum JOB")
         self.send("noQuorum", int(job))
 
+    def do_committed(self, arg):
+        "committed WHO           emit COMMIT_SUBMITTED_BY"
+        who, = self.parse(arg, 1, "committed WHO")
+        self.send("commitSubmittedBy", self.resolve(who))
+
     # ---------- sequences ----------
     def do_assign(self, arg):
         "assign JOB WHO [WHO..] [--deadline D]  PROVIDER_SELECTED for each + COMMIT_PHASE_START (like assignProviders)"

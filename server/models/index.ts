@@ -7,3 +7,4 @@ export { HardwareModel, type Hardware } from "./Hardware.ts";
 export { JobModel, type Job } from "./Job.ts";
 export { ACTIVE_STATUSES, JobStatus, JOB_STATUSES, TERMINAL_STATUSES } from "./JobStatus.ts";
 export { TutorialModel, type Tutorial } from "./Tutorial.ts";
+export { ChainEventModel } from "./ChainEvent.ts";

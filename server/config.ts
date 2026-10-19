@@ -17,6 +17,8 @@ export const config = {
 	// created, and matching only updates the database
 	chainEnabled: process.env.CHAIN !== "off",
 	chainPollMs: Number(process.env.CHAIN_POLL_MS ?? 1000),
+	chainConfirmations: process.env.CHAIN_CONFIRMATIONS === undefined ? undefined : Number(process.env.CHAIN_CONFIRMATIONS),
+	chainStartBlock: Number(process.env.CHAIN_START_BLOCK ?? 0),
 
 	// Where buyers' Dockerfiles are pushed after the server builds them. Any OCI
 	// registry works: docker.io, ghcr.io, registry.gitlab.com, or a local

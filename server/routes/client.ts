@@ -1,6 +1,7 @@
 // Routes the provider client calls (client/server/ServerManager.py, client/main.py).
 // Kept in step with dev-server.ts by test/client-contract.test.ts.
 import { Router } from "express";
+import { numericJobId } from "../adapters/repository.ts";
 import { requireAuth } from "../middleware/auth.ts";
 import { HardwareModel, JobModel } from "../models/index.ts";
 import { readDeployment } from "../services/chain.ts";
@@ -45,17 +46,17 @@ export function clientRoutes({ matcher }: Deps): Router {
 			account.hardware = hw._id;
 			await account.save();
 		}
-		void matcher.ping();
+		void matcher.ping().catch(error => console.error("Matching failed:", error));
 		res.status(201).json({ ok: true, scores: { cpu: hw.cpuScore, gpu: hw.gpuScore, mem: hw.memoryScore } });
 	});
 
 	// what to run; only for providers assigned to the job
 	router.get("/jobManifest/:jobId", requireAuth, async (req, res) => {
-		if (!/^\d+$/.test(req.params.jobId)) {
+		const jobId = numericJobId(String(req.params.jobId));
+		if (jobId === null) {
 			res.status(400).json({ error: "jobId must be a non-negative integer" });
 			return;
 		}
-		const jobId = Number(req.params.jobId);
 		const job = await JobModel.findOne({ onChainJobId: jobId });
 		if (!job) {
 			res.status(404).json({ error: `no job ${jobId}` });

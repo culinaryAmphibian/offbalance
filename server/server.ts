@@ -1,27 +1,49 @@
-// The real backend: MongoDB + the OffBalance contract.
-//
-//   cd server && npm start      # needs MongoDB; the chain is optional (see config.ts)
-//   npm run seed                # dev accounts/API keys from ../dev.env
-import { createApp } from "./app.ts";
-import { config } from "./config.ts";
-import { connectDB } from "./db.ts";
-import { Builder } from "./services/builder.ts";
-import { Chain } from "./services/chain.ts";
-import { handleChainEvent } from "./services/events.ts";
-import { Matcher } from "./services/matcher.ts";
+import type { Server } from 'node:http';
+import { createApp } from './app.ts';
+import { config } from './config.ts';
+import { connectDB, disconnectDB } from './db.ts';
+import { Builder } from './services/builder.ts';
+import { Chain } from './services/chain.ts';
+import { handleChainEvent } from './services/events.ts';
+import { Matcher } from './services/matcher.ts';
+import { createHttpsServer, httpsOptions } from './https.ts';
 
+const tlsOptions = await httpsOptions();
 await connectDB(config.mongodbUri);
 const chain = await Chain.connect();
 const matcher = new Matcher(chain);
 const builder = new Builder();
-await builder.failInterrupted();
-console.log(builder.enabled
-	? `Builds: pushing to ${builder.repository}`
-	: "Builds: off (set REGISTRY_NAMESPACE, see config.ts); jobs can still use existing images");
+let server: Server | undefined;
+let stopping = false;
 
-createApp({ chain, matcher, builder }).listen(config.port, () => {
-	console.log(`Server on http://localhost:${config.port} (${chain ? `chain: ${config.contract} contract` : "no chain"})`);
-});
+async function shutdown(): Promise<void> {
+  if (stopping) return;
+  stopping = true;
+  const closed = server && new Promise<void>((resolve, reject) => {
+    server!.close(error => error ? reject(error) : resolve());
+    server!.closeIdleConnections();
+  });
+  // Stop incoming provider requests and event callbacks before closing MongoDB.
+  await Promise.all([closed, chain?.stop()]);
+  await matcher.idle().catch(error => console.error('Pending matching failed:', error));
+  await disconnectDB();
+}
 
-void chain?.listen((event) => handleChainEvent(event, matcher));
-void matcher.ping(); // jobs left waiting from before a restart
+try {
+  await builder.failInterrupted();
+  server = createHttpsServer(createApp({ chain, matcher, builder }), tlsOptions).listen(config.port);
+  await new Promise<void>((resolve, reject) => {
+    server!.once('listening', resolve);
+    server!.once('error', reject);
+  });
+  console.log(`Server on https://localhost:${config.port} (${chain ? `chain: ${config.contract}` : 'database-only'})`);
+  console.log(builder.enabled ? `Builds: pushing to ${builder.repository}` : 'Builds: off (set REGISTRY_NAMESPACE to enable)');
+  await chain?.listen(event => handleChainEvent(event, matcher));
+  await matcher.ping();
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => { void shutdown().catch(error => { console.error(error); process.exitCode = 1; }); });
+  }
+} catch (error) {
+  await shutdown();
+  throw error;
+}

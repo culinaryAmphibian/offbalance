@@ -130,6 +130,7 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 				});
 				assert.equal(res.status, 201);
 				assert.equal((await call("POST", "/provider/price", { as: who, body: { price } })).status, 200);
+				assert.equal((await call("POST", "/provider/heartbeat", { as: who })).status, 200);
 			}
 			const { body } = await call("GET", "/provider/hardware", { as: "p1" });
 			assert.equal(body.hardware.address, wallets.p1.address.toLowerCase());

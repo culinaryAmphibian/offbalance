@@ -1,6 +1,6 @@
-// Blockchain manager: reads the deployment, sends the server-only transactions
-// (assignProviders, verifyReceipt) and polls contract events in block order.
+// Reads confirmed contract events through the shared monitor and submits server-only transactions.
 import { readFileSync } from "node:fs";
+import { Interface, JsonRpcProvider, getAddress, type InterfaceAbi } from "ethers";
 import {
 	createPublicClient,
 	createWalletClient,
@@ -12,81 +12,116 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { config } from "../config.ts";
-import { getSeq, setSeq } from "../models/index.ts";
+import { BlockchainMonitor, type MonitorEvent } from "../blockchain-manager/index.ts";
+import { MongoCheckpointStore, checkpointNamespace } from "../adapters/checkpoints.ts";
 
-type Deployment = {
-	chainId: number;
-	address: Address;
-	abi: Abi;
-	eventMock: { address: Address; abi: Abi };
-};
+type ContractDeployment = { address: Address; abi: Abi; chainId: number };
+type Deployment = ContractDeployment & { eventMock: { address: Address; abi: Abi } };
 
-// read on every call so a redeploy is picked up without restarting
-export function readDeployment(): { address: Address; abi: Abi; chainId: number } {
-	const d: Deployment = JSON.parse(readFileSync(config.deploymentFile, "utf8"));
-	return config.contract === "mock"
-		? { ...d.eventMock, chainId: d.chainId }
-		: { address: d.address, abi: d.abi, chainId: d.chainId };
+// Writes read this again, but refuse deployment changes until the server reconnects.
+export function readDeployment(): ContractDeployment {
+	const d = JSON.parse(readFileSync(config.deploymentFile, "utf8")) as Deployment;
+	const contract = config.contract === "mock" ? d.eventMock : d;
+	if (!Number.isSafeInteger(d.chainId) || d.chainId < 1 || !contract || !Array.isArray(contract.abi)) {
+		throw new TypeError("Deployment must supply a positive chain ID, contract address, and ABI.");
+	}
+	return { address: getAddress(contract.address) as Address, abi: contract.abi, chainId: d.chainId };
 }
 
-// viem errors carry a one-line shortMessage; the full message is a page long
-export function errorMessage(e: unknown): string {
-	return (e as { shortMessage?: string }).shortMessage ?? (e as Error).message;
+export function errorMessage(error: unknown): string {
+	if (error && typeof error === "object" && "shortMessage" in error && typeof error.shortMessage === "string") {
+		return error.shortMessage;
+	}
+	return error instanceof Error ? error.message : String(error);
 }
 
-export type ChainEvent = { name: string; args: Record<string, unknown>; blockNumber: bigint };
+export type ChainEvent = { id?: string; name: string; args: Record<string, unknown>; blockNumber: bigint };
 
-const CURSOR = "chainCursor"; // last fully processed block
+/** Preserve ABI parameter names and bigint values when crossing into the database event handler. */
+export function chainEvent(event: MonitorEvent, abi: Interface): ChainEvent {
+	const fragment = abi.getEvent(event.signature);
+	if (!fragment) throw new Error(`Event ABI missing for ${event.signature}.`);
+	const args: Record<string, unknown> = {};
+	for (const [index, input] of fragment.inputs.entries()) {
+		args[input.name || String(index)] = event.args[index] as unknown;
+	}
+	return { id: event.id, name: event.name, args, blockNumber: BigInt(event.blockNumber) };
+}
 
 export class Chain {
+	private readonly publicClient: PublicClient;
+	private readonly walletClient: WalletClient | null;
+	private readonly provider: JsonRpcProvider;
+	private readonly deployment: ContractDeployment;
+	private readonly monitor: BlockchainMonitor;
+	private handle: ((event: ChainEvent) => Promise<void>) | null = null;
 	private stopped = false;
-	private publicClient: PublicClient;
-	private walletClient: WalletClient | null;
 
-	private constructor(publicClient: PublicClient, walletClient: WalletClient | null) {
+	private constructor(publicClient: PublicClient, walletClient: WalletClient | null,
+		provider: JsonRpcProvider, deployment: ContractDeployment) {
 		this.publicClient = publicClient;
 		this.walletClient = walletClient;
+		this.provider = provider;
+		this.deployment = deployment;
+		const abi = new Interface(deployment.abi as InterfaceAbi);
+		this.monitor = new BlockchainMonitor({
+			provider, address: deployment.address, abi: deployment.abi as InterfaceAbi, chainId: deployment.chainId,
+			checkpointStore: new MongoCheckpointStore(checkpointNamespace(deployment.chainId, deployment.address)),
+			startBlock: config.chainStartBlock,
+			confirmations: config.chainConfirmations ?? ([1337, 31337].includes(deployment.chainId) ? 0 : 6),
+			pollIntervalMs: config.chainPollMs,
+			onEvent: async event => {
+				if (!this.handle) throw new Error("A chain event handler is required before polling.");
+				await this.handle(chainEvent(event, abi));
+			},
+			onError: error => { console.error("Chain poll failed:", errorMessage(error)); },
+		});
 	}
 
-	// null when the chain is turned off or unreachable; the server then runs database-only
+	// null when disabled or unreachable; database-only operation remains available.
 	static async connect(): Promise<Chain | null> {
 		if (!config.chainEnabled) return null;
+		let provider: JsonRpcProvider | undefined;
 		try {
-			const { address, chainId } = readDeployment();
+			const deployment = readDeployment();
 			const publicClient = createPublicClient({ transport: http(config.rpcUrl) });
 			const actual = await publicClient.getChainId();
-			if (actual !== chainId) throw new Error(`node is chain ${actual}, deployment is for ${chainId}`);
-			if (!(await publicClient.getCode({ address }))) throw new Error(`no contract at ${address}`);
-
-			let walletClient: WalletClient | null = null;
-			if (config.serverPrivateKey) {
-				walletClient = createWalletClient({
-					account: privateKeyToAccount(config.serverPrivateKey),
-					transport: http(config.rpcUrl),
-				});
-			} else {
-				console.warn("SERVER_PRIVATE_KEY not set: listening to the chain, but can't assign providers on-chain");
+			if (actual !== deployment.chainId) {
+				throw new Error(`node is chain ${actual}, deployment is for ${deployment.chainId}`);
 			}
-			console.log(`Chain: ${config.contract} contract ${address} via ${config.rpcUrl}`);
-			return new Chain(publicClient as PublicClient, walletClient);
-		} catch (e) {
-			console.warn(`Chain unavailable (${errorMessage(e)}); running database-only. Set CHAIN=off to silence this.`);
+			const code = await publicClient.getCode({ address: deployment.address });
+			if (!code || code === "0x") throw new Error(`no contract at ${deployment.address}`);
+			const walletClient = config.serverPrivateKey ? createWalletClient({
+				account: privateKeyToAccount(config.serverPrivateKey), transport: http(config.rpcUrl),
+			}) : null;
+			if (!walletClient && config.contract === "real") {
+				console.warn("SERVER_PRIVATE_KEY not set: chain events are enabled; server transactions will fail.");
+			}
+			provider = new JsonRpcProvider(config.rpcUrl, deployment.chainId, { staticNetwork: true });
+			const chain = new Chain(publicClient, walletClient, provider, deployment);
+			console.log(`Chain: ${config.contract} contract ${deployment.address} via ${config.rpcUrl}`);
+			return chain;
+		} catch (error) {
+			provider?.destroy();
+			console.warn(`Chain unavailable (${errorMessage(error)}); running database-only. Set CHAIN=off to silence this.`);
 			return null;
 		}
 	}
 
-	// the event mock has no server functions; matching then only updates the database
 	get canWrite(): boolean {
-		return this.walletClient !== null && config.contract === "real";
+		return !this.stopped && this.walletClient !== null && config.contract === "real";
 	}
 
 	private async write(functionName: string, args: unknown[]): Promise<void> {
-		if (!this.canWrite) return;
-		const { address, abi } = readDeployment();
-		const wallet = this.walletClient!;
-		const hash = await wallet.writeContract({
-			address, abi, functionName, args, account: wallet.account!, chain: null,
-		});
+		if (config.contract === "mock") return;
+		if (this.stopped) throw new Error("Chain connection has stopped.");
+		const wallet = this.walletClient;
+		if (!wallet?.account) throw new Error("SERVER_PRIVATE_KEY is required for server contract transactions.");
+		const { address, abi, chainId } = readDeployment();
+		if (chainId !== this.deployment.chainId || address.toLowerCase() !== this.deployment.address.toLowerCase()) {
+			throw new Error("Contract deployment changed; restart the chain connection before submitting transactions.");
+		}
+		const hash = await wallet.writeContract({ address, abi, functionName, args, account: wallet.account, chain: null });
 		const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 		if (receipt.status !== "success") throw new Error(`${functionName} reverted (tx ${hash})`);
 	}
@@ -99,49 +134,16 @@ export class Chain {
 		return this.write("verifyReceipt", [BigInt(jobId), provider]);
 	}
 
-	// Polls for contract events and hands them to `handle` one at a time, in order.
-	// The cursor lives in Mongo, so a restart resumes where it left off.
-	async listen(handle: (e: ChainEvent) => Promise<void>): Promise<void> {
-		while (!this.stopped) {
-			try {
-				await this.pollOnce(handle);
-			} catch (e) {
-				console.error("Chain poll failed:", errorMessage(e));
-			}
-			await new Promise((r) => setTimeout(r, config.chainPollMs));
-		}
+	async listen(handle: (event: ChainEvent) => Promise<void>): Promise<void> {
+		if (this.stopped) throw new Error("Chain connection has stopped.");
+		if (this.handle) throw new Error("Chain listener is already registered.");
+		this.handle = handle;
+		this.monitor.start();
 	}
 
-	private async pollOnce(handle: (e: ChainEvent) => Promise<void>): Promise<void> {
-		const latest = await this.publicClient.getBlockNumber();
-		let cursor = BigInt((await getSeq(CURSOR)) ?? -1);
-		// a fresh `hardhat node` starts over at block 0
-		if (cursor > latest) {
-			console.warn(`Chain restarted (cursor ${cursor} > head ${latest}); rescanning from block 0`);
-			cursor = -1n;
-		}
-		if (cursor >= latest) return;
-
-		const { address, abi } = readDeployment();
-		const logs = await this.publicClient.getContractEvents({
-			address, abi, fromBlock: cursor + 1n, toBlock: latest,
-		});
-		for (const log of logs) {
-			const event = {
-				name: log.eventName as string,
-				args: log.args as Record<string, unknown>,
-				blockNumber: log.blockNumber!,
-			};
-			try {
-				await handle(event);
-			} catch (e) {
-				console.error(`Handling ${event.name} failed:`, e);
-			}
-		}
-		await setSeq(CURSOR, Number(latest));
-	}
-
-	stop(): void {
+	async stop(): Promise<void> {
 		this.stopped = true;
+		try { await this.monitor.stop(); }
+		finally { this.provider.destroy(); }
 	}
 }

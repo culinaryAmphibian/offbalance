@@ -2,25 +2,37 @@
   "name": "server",
   "version": "1.0.0",
   "description": "",
-  "main": "server.ts",
+  "main": "index.ts",
   "scripts": {
-    "start": "node server.ts",
-    "seed": "node seed.ts",
-    "test": "npm run test:dev && npm run test:real",
-    "test:dev": "SERVER_FILE=dev-server.ts node --test \"test/**/*.test.ts\"",
-    "test:real": "SERVER_FILE=server.ts node --test \"test/**/*.test.ts\"",
-    "dev:mock": "node dev-server.ts"
+    "start": "node --env-file-if-exists=.env server.ts",
+    "seed": "node --env-file-if-exists=.env seed.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run test:managers && npm run test:unit && npm run test:dev && npm run test:db && npm run test:https",
+    "test:managers": "node --test test/matching.test.js test/match-manager.test.js test/agent-manager.test.js test/blockchain-manager.test.js test/managers.test.js",
+    "test:unit": "node --test test/models.test.ts test/registry.test.ts test/https.test.ts",
+    "test:db": "node --test test/api.test.ts test/mongo-*.test.ts test/checkpoints.test.ts",
+    "test:dev": "SERVER_FILE=dev-server.ts node --test test/client-contract.test.ts",
+    "test:real": "MONGODB_URI=${MONGODB_URI:-mongodb://127.0.0.1:27017} node --test test/https-client.test.ts",
+    "dev:mock": "node dev-server.ts",
+    "cert:dev": "node scripts/dev-cert.ts",
+    "test:https": "node --test test/https-client.test.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "ethers": "^6.17.0",
     "express": "^5.3.0",
     "mongoose": "^9.11.2",
     "viem": "^2.57.7"
   },
   "devDependencies": {
-    "@types/express": "^5.0.6"
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=22.18.0"
   }
 }

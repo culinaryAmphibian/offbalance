@@ -53,7 +53,7 @@ export function jobRoutes({ chain, matcher }: Deps): Router {
 		if (!chain) job.submittedAt = new Date(); // no chain to wait for
 		await job.save();
 		await AccountModel.updateOne({ _id: job.owner }, { $addToSet: { submittedJobs: job._id } });
-		if (!chain) void matcher.ping();
+		if (!chain) void matcher.ping().catch(error => console.error("Matching failed:", error));
 		res.status(201).json({ job: serializeJob(job) });
 	});
 

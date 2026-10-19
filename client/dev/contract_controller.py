@@ -10,6 +10,8 @@ import cmd
 import json
 import shlex
 import sys
+import threading
+import time
 
 from web3 import Web3
 from web3.exceptions import ContractLogicError
@@ -47,6 +49,8 @@ class ContractController(cmd.Cmd):
             sys.exit(f"No contract at {address}. Restart the node and redeploy.")
         self.contract = self.w3.eth.contract(address=address, abi=deployment["abi"])
         self.functions = {f["name"]: f for f in deployment["abi"] if f["type"] == "function"}
+        self.sent = set()               # tx hashes sent from this shell; their events print inline
+        self.lock = threading.Lock()    # keeps the watcher from racing a send
 
         # aliases -> signing accounts: server, buyer, p1..p4
         self.accounts = {
@@ -127,7 +131,10 @@ class ContractController(cmd.Cmd):
             print(f"  reverted: {e.message or 'a require() failed'} (sent as {sender})")
             return
         signed = account.sign_transaction(tx)
-        receipt = self.w3.eth.wait_for_transaction_receipt(self.w3.eth.send_raw_transaction(signed.raw_transaction))
+        with self.lock:
+            tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
+            self.sent.add(tx_hash)
+        receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
         block = self.w3.eth.get_block(receipt["blockNumber"])
         print(f"  {name} ok as {sender}, block {receipt['blockNumber']} @ timestamp {block['timestamp']}")
         for log in receipt["logs"]:
@@ -142,6 +149,40 @@ class ContractController(cmd.Cmd):
                 if Web3.keccak(text=sig) == topic:
                     return abi["name"]
         raise ValueError(f"unknown log topic {topic.hex()}")
+
+    # ---------- events from other senders (clients, server) ----------
+    def watch_events(self, interval=1.0):
+        # own Web3 so the thread doesn't share a connection with the shell
+        w3 = Web3(Web3.HTTPProvider(self.env["RPC_URL"]))
+        next_block = w3.eth.block_number + 1
+        while True:
+            time.sleep(interval)
+            try:
+                latest = w3.eth.block_number
+                if latest < next_block:
+                    continue
+                with self.lock:
+                    logs = w3.eth.get_logs({"address": self.contract.address, "fromBlock": next_block, "toBlock": latest})
+                    for log in logs:
+                        if log["transactionHash"] in self.sent:
+                            continue
+                        event = self.contract.events[self._event_name(log)]().process_log(log)
+                        sender = w3.eth.get_transaction(log["transactionHash"])["from"]
+                        print(f"\n  [block {log['blockNumber']}] {event['event']}({dict(event['args'])}) from {self.alias(sender)}")
+                    if logs:
+                        print(self.prompt, end="", flush=True)
+                next_block = latest + 1
+            except Exception as e:  # node restarting etc.; keep watching
+                print(f"\n  [watcher] {e}")
+
+    def alias(self, address: str) -> str:
+        for name, account in self.accounts.items():
+            if account.address == address:
+                return name
+        return address
+
+    def preloop(self):
+        threading.Thread(target=self.watch_events, daemon=True).start()
 
     def default(self, line):
         name, *words = shlex.split(line)

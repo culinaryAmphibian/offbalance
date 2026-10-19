@@ -47,7 +47,7 @@ const jobSchema = new Schema(
 
 		maxPrice: money({ required: true }), // highest per-hour rate the buyer pays each provider
 		runningPrice: money({ default: 0 }), // clearing rate: the priciest assigned provider's rate
-		minNodesToRunOn: { type: Number, required: true, min: 1 }, // k
+		minNodesToRunOn: { type: Number, required: true, min: 1, validate: Number.isSafeInteger }, // k
 		minNodesToAgree: {
 			type: Number,
 			required: true,
@@ -64,12 +64,12 @@ const jobSchema = new Schema(
 					} else {
 						k = this.minNodesToRunOn;
 					}
-					return k === undefined || v <= k;
+					return Number.isSafeInteger(v) && (k === undefined || v <= k);
 				},
 				message: "minNodesToAgree can't exceed minNodesToRunOn",
 			},
 		}, // quorum
-		timeWindow: { type: Number, required: true, min: 1 }, // seconds
+		timeWindow: { type: Number, required: true, min: 1, validate: Number.isSafeInteger }, // seconds
 		requirements: { type: jobRequirementsSchema, default: () => ({}) },
 		results: { type: [providerResultSchema], default: [] },
 	},
