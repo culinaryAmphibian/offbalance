@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { jobPayload, validateJob, normalizeJob, jobPhase, timeLabel, windowMinutes } from '../src/jobs.js';
+import { jobPayload, validateJob, normalizeJob, jobPhase, timeLabel, windowMinutes, resultUrl } from '../src/jobs.js';
 
 const valid = () => ({ name: 'Example job', dockerImage: 'registry.example/workload:latest', maxPrice: '0.01', k: '3', quorum: '2', window: '10', minCpuScore: '0', minGpuScore: '1', minMemoryScore: '100' });
 
@@ -12,7 +12,7 @@ test('valid submission accepts zero hardware requirements and exact decimal budg
 
 test('job payload trims text and converts only integer fields to numbers', () => {
   assert.deepEqual(jobPayload({ ...valid(), name: '  Example job  ', dockerImage: '  registry.example/workload:latest  ' }), {
-    name: 'Example job', dockerImage: 'registry.example/workload:latest', maxPrice: '0.01', k: 3, quorum: 2, window: 600,
+    name: 'Example job', image: 'registry.example/workload:latest', maxPrice: '0.01', minNodesToRunOn: 3, minNodesToAgree: 2, timeWindow: 600,
     requirements: { minCpuScore: 0, minGpuScore: 1, minMemoryScore: 100 },
   });
 });
@@ -62,7 +62,7 @@ test('execution windows use whole minutes in the form and seconds in API payload
   for (const minutes of ['1', '60', '10080']) {
     const values = { ...valid(), window: minutes };
     assert.equal(validateJob(values).window, undefined);
-    assert.equal(jobPayload(values).window, Number(minutes) * 60);
+    assert.equal(jobPayload(values).timeWindow, Number(minutes) * 60);
   }
   assert.ok(validateJob({ ...valid(), window: '10081' }).window);
   assert.equal(windowMinutes(3600), '60');
@@ -77,7 +77,7 @@ test('USD budgets validate with a quote and send only the converted ETH limit', 
   assert.equal(jobPayload(values, '3000').maxPrice, '0.0085');
   assert.equal(jobPayload(values, '3000').budgetCurrency, undefined);
   assert.match(validateJob(values).maxPrice, /valid ETH\/USD rate/);
-  assert.match(validateJob({ ...values, maxPrice: '1.001' }, '3000').maxPrice, /positive USD budget/);
+  assert.match(validateJob({ ...values, maxPrice: '1.001' }, '3000').maxPrice, /positive USD hourly cap/);
   assert.match(validateJob({ ...values, maxPrice: '0.01' }, '10000000000000001').maxPrice, /less than 1 wei/);
   assert.throws(() => jobPayload(values), /valid ETH\/USD rate/);
 });
@@ -160,4 +160,19 @@ test('normalization preserves explicit unavailable output and reported settlemen
   assert.equal(normalized.result.available, false);
   assert.equal(normalized.delivery.verifiedAt, null);
   assert.equal(normalized.payment.status, 'PAID');
+});
+
+test('pinned images bypass tag resolution and legacy field names are not submitted', () => {
+  const image = `registry.example/workload@sha256:${'a'.repeat(64)}`;
+  const payload = jobPayload({ ...valid(), dockerImage: image });
+  assert.equal(payload.dockerImageDigest, image);
+  for (const field of ['image', 'dockerImage', 'k', 'quorum', 'window']) assert.equal(payload[field], undefined);
+  assert.equal(payload.minNodesToRunOn, 3);
+  assert.equal(payload.timeWindow, 600);
+});
+
+test('provider output links allow HTTP(S) URLs without embedded credentials', () => {
+  assert.equal(resultUrl('https://storage.example/result?signature=abc'), 'https://storage.example/result?signature=abc');
+  assert.equal(resultUrl('http://localhost:8080/result'), 'http://localhost:8080/result');
+  for (const url of ['javascript:alert(1)', 'data:text/html,test', '/relative', 'file:///etc/passwd', 'https://user:secret@example.com/result', '', null]) assert.equal(resultUrl(url), null);
 });

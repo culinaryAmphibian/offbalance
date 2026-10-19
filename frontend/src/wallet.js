@@ -1,9 +1,13 @@
-export function createSignInMessage({ address, chainId, nonce, issuedAt = new Date().toISOString() }, location = window.location) {
-  if (typeof address !== 'string' || address.length !== 42 || !/^0x[\da-f]{40}$/i.test(address) || !Number.isSafeInteger(chainId) || chainId < 1 || typeof nonce !== 'string' || nonce.length < 8 || /[^a-z\d]/i.test(nonce)) {
+// Sign the server's canonical challenge verbatim; reject unrelated signing requests.
+export function createSignInMessage({ message, address, chainId }) {
+  if (typeof address !== 'string' || !/^0x[\da-f]{40}$/i.test(address) || !Number.isSafeInteger(chainId) || chainId < 1) {
     throw new Error('Invalid wallet or sign-in challenge.');
   }
-  if (typeof issuedAt !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(issuedAt) || /\s/.test(issuedAt) || Number.isNaN(Date.parse(issuedAt))) throw new Error('Invalid sign-in timestamp.');
-  return `${location.host} wants you to sign in with your Ethereum account:\n${address}\n\nSign in to Offbalance.\n\nURI: ${location.origin}\nVersion: 1\nChain ID: ${chainId}\nNonce: ${nonce}\nIssued At: ${issuedAt}`;
+  const expected = /^Sign in to OffBalance\n\nWallet: (0x[\da-f]{40})\nNonce: ([\da-f]{32})$/i.exec(message);
+  if (!expected || expected[1].toLowerCase() !== address.toLowerCase()) {
+    throw new Error('The server returned an invalid sign-in challenge for this wallet.');
+  }
+  return message;
 }
 
 export function walletError(error) {

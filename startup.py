@@ -8,6 +8,8 @@ import socket
 import subprocess
 import threading
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+from uuid import uuid4
 from time import sleep
 
 ROOT = Path(__file__).resolve().parent   # repo root, wherever you run the script from
@@ -89,15 +91,42 @@ def deploy_contracts():
     if result.returncode != 0:
         raise RuntimeError(f"deploy failed with code {result.returncode} -- see {LOG_DIR / 'deploy.log'}")
 
-def start_server():
-    # CONTRACT=real: hand out OffBalance, not OffBalanceEventMock, so the client sees contract_controller's txs
-    return start("server", ["npm", "run", "dev:mock"], "server", env={"CONTRACT": "real"})
+def development_database():
+    # A fresh Hardhat chain must not reuse jobs/checkpoints from a previous chain.
+    source = urlsplit(os.environ.get("MONGODB_URI", "mongodb://127.0.0.1:27017"))
+    options = dict(parse_qsl(source.query))
+    if source.username and "authSource" not in options:
+        options["authSource"] = source.path.strip("/") or "admin"
+    database = f"offbalance_dev_{uuid4().hex}"
+    return urlunsplit(source._replace(path=f"/{database}", query=urlencode(options))), database
+
+
+def start_server(mongodb_uri):
+    # This launcher creates a fresh local Hardhat chain; its public development
+    # deployer key is the server signer. The real API persists to MongoDB.
+    dev_env = dict(line.split("=", 1) for line in (ROOT / "dev.env").read_text().splitlines()
+                   if line.strip() and not line.lstrip().startswith("#") and "=" in line)
+    subprocess.run(["npm", "run", "seed"], cwd=ROOT / "server", check=True,
+                   env={**os.environ, "MONGODB_URI": mongodb_uri})
+    return start("server", ["npm", "start"], "server", env={
+        "CONTRACT": "real", "CHAIN": "on", "SERVER_PRIVATE_KEY": dev_env["SERVER_PRIVATE_KEY"], "MONGODB_URI": mongodb_uri,
+        "RPC_URL": RPC_URL, "PORT": "5000",
+        "DEPLOYMENT_FILE": str(ROOT / "blockchain" / "deployments" / "localhost.json"),
+        "TLS_KEY_FILE": str(ROOT / "server" / ".local" / "tls" / "key.pem"),
+        "TLS_CERT_FILE": str(ROOT / "server" / ".local" / "tls" / "cert.pem"),
+    })
 
 def start_frontend():
-    return start("frontend", ["npm", "run", "dev"], "frontend")
+    return start("frontend", ["npm", "run", "dev"], "frontend", env={
+        "VITE_API_MODE": "api", "VITE_API_BASE_URL": "/api", "API_PROXY_TARGET": "https://localhost:5000",
+        "API_CA_FILE": str(ROOT / "server" / ".local" / "tls" / "cert.pem"),
+    })
 
 def start_client():
-    return start("client", [CLIENT_PYTHON, "-u", "main.py", "--dev"], "client")  # -u: unbuffered, so prints reach client.log immediately
+    return start("client", [CLIENT_PYTHON, "-u", "main.py", "--dev"], "client", env={
+        "OFFBALANCE_SERVER_URL": "https://localhost:5000", "RPC_URL": RPC_URL,
+        "REQUESTS_CA_BUNDLE": str(ROOT / "server" / ".local" / "tls" / "cert.pem"),
+    })  # -u: unbuffered, so prints reach client.log immediately
 
 def watch(running):
     # report each process as it exits; returns once all of them have
@@ -122,15 +151,19 @@ def main():
 
     running = {}
     try:
+        # Vite loads its trusted CA at startup, before the real HTTPS API starts.
+        subprocess.run(["npm", "run", "cert:dev"], cwd=ROOT / "server", check=True)
         running["blockchain"] = start_blockchain()
         running["frontend"] = start_frontend()
         wait_for_rpc(running["blockchain"])
         print("[startup] hardhat node up, deploying contracts...")
         deploy_contracts()
         print("[startup] contracts deployed")
-        running["server"] = start_server()
-        wait_for_port("server", running["server"], 5000)
-    except (RuntimeError, TimeoutError, KeyboardInterrupt) as e:
+        mongodb_uri, database = development_database()
+        print(f"[startup] using fresh local database {database} (retained after shutdown)")
+        running["server"] = start_server(mongodb_uri)
+        wait_for_port("server", running["server"], 5000, timeout=60)
+    except (RuntimeError, TimeoutError, subprocess.CalledProcessError, KeyboardInterrupt) as e:
         print(f"[startup] {e or 'interrupted'}")
         for p in running.values():
             stop(p)

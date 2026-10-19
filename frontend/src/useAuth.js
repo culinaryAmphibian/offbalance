@@ -13,6 +13,7 @@ export function useAuth(api, demo) {
 		(message = "") => {
 			generation.current++;
 			identity.current = null;
+			void api.logout?.().catch(() => {});
 			api.setToken(null);
 			setSession(null);
 			setPending(false);
@@ -56,7 +57,7 @@ export function useAuth(api, demo) {
 	);
 
 	useEffect(() => {
-		if (!session) return;
+		if (!session?.expiresAt) return;
 		let timer;
 		function checkExpiry() {
 			const remaining = Date.parse(session.expiresAt) - Date.now();
@@ -77,8 +78,8 @@ export function useAuth(api, demo) {
 		identity.current = null;
 		setPending(true);
 		setError("");
+		let verified;
 		try {
-			let verified;
 			if (demo) {
 				verified = await api.demoLogin();
 			} else {
@@ -96,7 +97,7 @@ export function useAuth(api, demo) {
 				identity.current = { address, chainId };
 				const challenge = await api.nonce(address, chainId);
 				if (attempt !== generation.current) return;
-				const signingAddress = challenge.address || address;
+				const signingAddress = challenge.wallet || address;
 				if (signingAddress.toLowerCase() !== address.toLowerCase())
 					throw new Error(
 						"The sign-in challenge belongs to a different wallet.",
@@ -122,7 +123,11 @@ export function useAuth(api, demo) {
 				)
 					throw new Error("Your wallet changed. Sign in again.");
 				if (attempt !== generation.current) return;
-				verified = await api.verify(message, signature);
+				verified = await api.verify(address, signature);
+				if (attempt !== generation.current) {
+					void api.logout?.(verified.token).catch(() => {});
+					return;
+				}
 				if (
 					verified.account?.wallet?.toLowerCase() !==
 					address.toLowerCase()
@@ -135,14 +140,18 @@ export function useAuth(api, demo) {
 			if (
 				!verified.token ||
 				!verified.account?.wallet ||
-				!Number.isFinite(Date.parse(verified.expiresAt)) ||
-				Date.parse(verified.expiresAt) <= Date.now()
+				!verified.account?.id ||
+				(verified.expiresAt !== undefined && (
+					!Number.isFinite(Date.parse(verified.expiresAt)) ||
+					Date.parse(verified.expiresAt) <= Date.now()
+				))
 			) {
 				throw new Error("The server returned an invalid session.");
 			}
 			api.setToken(verified.token);
 			setSession(verified);
 		} catch (problem) {
+			if (verified?.token) void api.logout?.(verified.token).catch(() => {});
 			if (attempt === generation.current) setError(walletError(problem));
 		} finally {
 			if (attempt === generation.current) setPending(false);

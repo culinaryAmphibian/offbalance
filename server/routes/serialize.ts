@@ -1,14 +1,16 @@
 // API shapes: `id` instead of `_id`, decimals as strings.
 import type { Types } from "mongoose";
+import { decimalString } from "../models/decimal.ts";
 import type { Account, Hardware, Job } from "../models/index.ts";
 
 type WithId<T> = T & { _id: Types.ObjectId };
 
-const dec = (v: Types.Decimal128 | null | undefined) => (v == null ? null : v.toString());
+const dec = (v: Types.Decimal128 | null | undefined) => (v == null ? null : decimalString(v));
 
 export function serializeJob(job: WithId<Job>) {
 	return {
 		id: job.onChainJobId,
+		name: job.name,
 		owner: String(job.owner),
 		status: job.status,
 		submittedAt: job.submittedAt,

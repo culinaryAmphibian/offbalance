@@ -7,6 +7,8 @@ import { clientRoutes } from "./routes/client.ts";
 import type { Deps } from "./routes/deps.ts";
 import { jobRoutes } from "./routes/jobs.ts";
 import { providerRoutes } from "./routes/provider.ts";
+import { config } from "./config.ts";
+import { readDeployment } from "./services/chain.ts";
 import { RegistryError } from "./services/registry.ts";
 
 const CORS_ORIGINS = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173,https://localhost:5173,https://127.0.0.1:5173").split(",");
@@ -22,7 +24,7 @@ export function createApp(deps: Deps, { log = true } = {}) {
 		if (origin && CORS_ORIGINS.includes(origin)) {
 			res.setHeader("Access-Control-Allow-Origin", origin);
 			res.setHeader("Vary", "Origin");
-			res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+			res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key");
 			res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
 		}
 		if (req.method === "OPTIONS") {
@@ -39,6 +41,11 @@ export function createApp(deps: Deps, { log = true } = {}) {
 		});
 	}
 
+	app.get("/config", (_req, res) => {
+		const deployment = deps.chain ? readDeployment() : null;
+		res.json({ executionMode: deps.chain ? "chain" : "local",
+			chain: deployment ? { chainId: deployment.chainId, address: deployment.address, kind: config.contract } : null });
+	});
 	app.use(authRoutes());
 	app.use(clientRoutes(deps));
 	app.use(imageRoutes(deps));

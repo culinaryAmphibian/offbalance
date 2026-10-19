@@ -28,6 +28,9 @@ const jobSchema = new Schema(
 	{
 		// the id used everywhere else: contract calls, events, the client's /jobManifest/:jobId
 		onChainJobId: { type: Number, required: true, unique: true, min: 0 },
+		name: { type: String, trim: true, maxlength: 120, default: "" },
+		requestKey: { type: String },
+		requestHash: { type: String },
 		owner: { type: Schema.Types.ObjectId, ref: "Account", required: true },
 		status: { type: String, enum: JOB_STATUSES, default: JobStatus.PENDING },
 		submittedAt: { type: Date, default: null }, // JOB_SUBMITTED seen on-chain; only then is it matched
@@ -76,6 +79,7 @@ const jobSchema = new Schema(
 	{ timestamps: { createdAt: true, updatedAt: false } },
 );
 
+jobSchema.index({ owner: 1, requestKey: 1 }, { unique: true, partialFilterExpression: { requestKey: { $type: "string" } } });
 jobSchema.index({ owner: 1, createdAt: -1 }); // dashboard: my jobs, newest first
 jobSchema.index({ status: 1 }); // matcher / event listener lookups
 jobSchema.index({ providers: 1, status: 1 }); // provider's jobs, busy check
