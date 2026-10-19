@@ -31,6 +31,9 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       await page.getByLabel('Job name',{exact:true}).fill('Browser workload');
       await page.getByLabel('Container image',{exact:true}).fill('ghcr.io/team/workload:latest');
       await page.getByLabel('Maximum budget (ETH)',{exact:true}).fill('0.005');
+      assert.equal(await page.getByLabel('Container image',{exact:true}).getAttribute('placeholder'),null);
+      assert.equal(await page.getByLabel('Execution window (minutes)',{exact:true}).inputValue(),'60');
+      await page.getByLabel('Execution window (minutes)',{exact:true}).fill('10');
       await page.getByLabel('Required matching results',{exact:true}).fill('4');
       await page.getByRole('button',{name:'Submit job',exact:true}).click();
       await page.getByText('Agreement cannot exceed the provider count.',{exact:true}).waitFor();
@@ -41,6 +44,7 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       await page.getByRole('button',{name:'Submit job',exact:true}).click();
       await page.getByRole('heading',{name:'Browser workload',exact:true}).waitFor();
       await page.getByText('Job submitted.',{exact:true}).waitFor();
+      await page.getByText('10 minutes',{exact:true}).waitFor();
       assert.equal(await page.getByRole('button',{name:'Download result'}).count(),0);
       await page.getByRole('link',{name:'← Overview',exact:true}).click();
       await page.getByRole('link',{name:'Browser workload',exact:true}).waitFor();
@@ -111,6 +115,14 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
     let listFail=false;
     const submitted=[];
     const routes=[];
+    let rateFailure=true;
+    let rateAmount='2500';
+    let rateRequests=0;
+    await apiPage.route('https://api.coinbase.com/v2/prices/ETH-USD/spot',async route=>{
+      rateRequests+=1;
+      assert.equal(route.request().headers().authorization,undefined);
+      return route.fulfill({status:rateFailure?503:200,contentType:'application/json',body:JSON.stringify(rateFailure?{}:{data:{base:'ETH',currency:'USD',amount:rateAmount}})});
+    });
     await apiPage.route('**/api/**',async route=>{
       const request=route.request();
       const url=new URL(request.url());
@@ -195,6 +207,57 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       assert.equal(await fs.readFile(await download.path(),'utf8'),'verified artifact');
       assert.ok(routes.find(item=>item.path==='/api/jobs/api-job/result').headers.authorization);
     });
+    await check('USD budgets block unavailable rates and convert minutes and dollars for submission',async()=>{
+      await apiPage.getByRole('link',{name:'← Overview',exact:true}).click();
+      await apiPage.getByRole('link',{name:'Submit job',exact:true}).click();
+      await apiPage.getByLabel('Job name',{exact:true}).fill('API submission');
+      await apiPage.getByLabel('Container image',{exact:true}).fill('ghcr.io/team/workload:latest');
+      await apiPage.getByLabel('Budget currency',{exact:true}).selectOption('USD');
+      await apiPage.getByLabel('Maximum budget (USD)',{exact:true}).fill('25');
+      await apiPage.getByLabel('Execution window (minutes)',{exact:true}).fill('1');
+      await apiPage.locator('#budget-conversion .field-error').waitFor();
+      const before=submitted.length;
+      await apiPage.getByRole('button',{name:'Submit job',exact:true}).click();
+      await apiPage.getByText('Refresh the ETH/USD rate to continue.',{exact:true}).waitFor();
+      assert.equal(submitted.length,before);
+      rateFailure=false;
+      await apiPage.getByRole('button',{name:'Refresh rate',exact:true}).click();
+      await apiPage.getByText(/≈ 0\.01 ETH/).waitFor();
+      await apiPage.setViewportSize({width:320,height:900});
+      assert.equal(await apiPage.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
+      await apiPage.screenshot({path:`${root}/budget-usd-320.png`,fullPage:true});
+      await apiPage.setViewportSize({width:1280,height:960});
+      failSubmission=true;
+      await apiPage.getByRole('button',{name:'Submit job',exact:true}).click();
+      await apiPage.getByRole('alert').filter({hasText:'Submission unavailable.'}).waitFor();
+      assert.equal(submitted.at(-1).body.maxPrice,'0.01');
+      assert.equal(submitted.at(-1).body.window,60);
+      assert.equal(submitted.at(-1).body.budgetCurrency,undefined);
+    });
+    await check('USD retries retain their exact ETH limit and key after a new rate is fetched',async()=>{
+      const original=submitted.at(-1);
+      rateAmount='5000';
+      const before=rateRequests;
+      const refreshed=apiPage.waitForResponse('https://api.coinbase.com/v2/prices/ETH-USD/spot');
+      await apiPage.getByLabel('Budget currency',{exact:true}).selectOption('ETH');
+      await apiPage.getByLabel('Budget currency',{exact:true}).selectOption('USD');
+      await refreshed;
+      assert.equal(rateRequests,before+1);
+      await apiPage.getByText(/≈ 0\.01 ETH/).waitFor();
+      await apiPage.getByText('Conversion kept for retry.',{exact:true}).waitFor();
+      rateFailure=true;
+      const unavailable=apiPage.waitForResponse('https://api.coinbase.com/v2/prices/ETH-USD/spot');
+      await apiPage.getByLabel('Budget currency',{exact:true}).selectOption('ETH');
+      await apiPage.getByLabel('Budget currency',{exact:true}).selectOption('USD');
+      assert.equal((await unavailable).status(),503);
+      await apiPage.getByText(/≈ 0\.01 ETH/).waitFor();
+      assert.equal(await apiPage.locator('#budget-conversion .field-error').count(),0);
+      failSubmission=false;
+      await apiPage.getByRole('button',{name:'Submit job',exact:true}).click();
+      await apiPage.getByRole('heading',{name:'API submission',exact:true}).waitFor();
+      assert.deepEqual(submitted.at(-1),original);
+      await apiPage.getByText('1 minute',{exact:true}).waitFor();
+    });
     await check('wallet/chain changes and authenticated 401 clear the session',async()=>{
       await apiPage.evaluate(()=>window.walletEmit('chainChanged','0xa'));
       await apiPage.getByRole('button',{name:'Connect wallet & sign in',exact:true}).waitFor();
@@ -274,6 +337,35 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       assert.equal(await latePage.getByRole('heading',{name:'Overview',exact:true}).count(),0);
     });
     await lateContext.close();
+    await check('USD quotes expire before first submission and refresh restores submission',async()=>{
+      const currencyContext=await browser.newContext();
+      const currencyPage=await currencyContext.newPage();
+      currencyPage.setDefaultTimeout(10000);
+      currencyPage.on('pageerror',error=>errors.push(error.message));
+      await currencyPage.clock.install({time:new Date('2026-10-18T12:00:00Z')});
+      await currencyPage.route('https://api.coinbase.com/v2/prices/ETH-USD/spot',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({data:{base:'ETH',currency:'USD',amount:'2500'}})}));
+      await currencyPage.goto('http://127.0.0.1:5173');
+      await currencyPage.getByRole('button',{name:'Enter demo',exact:true}).click();
+      await currencyPage.getByRole('link',{name:'Submit job',exact:true}).click();
+      await currencyPage.getByLabel('Job name',{exact:true}).fill('USD expiry fixture');
+      await currencyPage.getByLabel('Container image',{exact:true}).fill('example/workload:latest');
+      await currencyPage.getByLabel('Budget currency',{exact:true}).selectOption('USD');
+      await currencyPage.getByLabel('Maximum budget (USD)',{exact:true}).fill('25');
+      await currencyPage.getByText(/≈ 0\.01 ETH/).waitFor();
+      assert.ok(!(await currencyPage.locator('#budget-conversion').innerText()).includes('$$'));
+      // Move wall time without firing the expiry timer: submit must recheck the clock.
+      await currencyPage.clock.setFixedTime(new Date(await currencyPage.evaluate(()=>Date.now())+60001));
+      await currencyPage.getByRole('button',{name:'Submit job',exact:true}).click();
+      await currencyPage.getByText('Refresh the ETH/USD rate to continue.',{exact:true}).waitFor();
+      await currencyPage.getByText(/Rate expired/).waitFor();
+      await currencyPage.getByRole('button',{name:'Refresh rate',exact:true}).click();
+      await currencyPage.getByText(/Rate expired/).waitFor({state:'hidden'});
+      await currencyPage.getByText(/≈ 0\.01 ETH/).waitFor();
+      await currencyPage.getByRole('button',{name:'Submit job',exact:true}).click();
+      await currencyPage.getByRole('heading',{name:'USD expiry fixture',exact:true}).waitFor();
+      await currencyPage.getByText('60 minutes',{exact:true}).waitFor();
+      await currencyContext.close();
+    });
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({checks:done.length,pageErrors:errors,screenshots:root},null,2));
   } finally { await browser.close(); }

@@ -34,6 +34,10 @@ npm run preview
 
 Hash routes (`#/`, `#/jobs/new`, `#/jobs/:id`, `#/provider`) support refresh and browser history without server-side route rewrites. Overview refreshes every 10 seconds; job details every 5 seconds. Provider setup has a manual status refresh that preserves an edited price. Leaving a page cancels its reads. Forms preserve input on errors; unchanged job submissions reuse their idempotency key on retry.
 
+Execution windows are entered as whole minutes (1–10080, default 60) and shown in minutes on job details; API requests/responses continue to use seconds. Budgets can be entered in ETH (up to 18 decimal places) or USD (up to two decimal places). USD mode fetches an anonymous [Coinbase ETH/USD spot quote](https://docs.cdp.coinbase.com/coinbase-app/track-apis/prices), shows the ETH equivalent, and converts to the API's ETH limit using exact integer arithmetic, rounded down to wei. The browser sends no wallet/session information to the price service. ETH mode needs no price lookup.
+
+USD quotes expire after 60 seconds before an initial submission; use **Refresh rate** when needed. Unavailable/invalid quotes block USD submission without a fallback price. After an uncertain submission response, an unchanged retry retains its original conversion, payload and idempotency key even if a newer quote is fetched. USD is an entry/conversion option, not fiat payment or a guaranteed future USD spending cap. Demo mode uses the same public quote lookup; tests intercept it with fixed fixtures.
+
 ## API integration contract
 
 These are the frontend integration contracts. `src/api.js` adapts and normalizes responses; no backend implementation is included in this frontend change. Existing UML establishes nonce/verify, submission, and job detail; listing and result download complete the browser integration. Error responses use `{ "message": "Human-readable error" }` with a non-2xx status. API mode requires a compatible server rather than falling back to sample data.
@@ -70,9 +74,9 @@ These are the frontend integration contracts. `src/api.js` adapts and normalizes
 }
 ```
 
-`maxPrice` is a positive decimal string, currently displayed in ETH, with up to 18 fractional digits. Counts, scores, and the window in seconds are safe integers; `1 <= quorum <= k <= 255` matches the UML's uint8 counts; zero hardware scores mean no minimum. The backend must validate these independently. Honor the idempotency key per wallet/payload to avoid creating duplicate jobs after an uncertain response.
+`maxPrice` is always a positive ETH decimal string with up to 18 fractional digits, including when the user enters USD. `budgetCurrency` and quote metadata are frontend state and are not submitted as extra API fields. Counts, scores, and the API window in seconds are safe integers; `1 <= quorum <= k <= 255` matches the UML's uint8 counts; zero hardware scores mean no minimum. The backend must validate these independently. Honor the idempotency key per wallet/payload to avoid creating duplicate jobs after an uncertain response.
 
-Image input is a registry reference, not an archive upload. Rates and budgets are displayed in ETH. Provider transport and matching belong to the coordinator. Submission creates a job request; this frontend does not submit an escrow or staking transaction.
+Image input is a registry reference, not an archive upload. Stored budgets, provider rates and settlement amounts use ETH; USD entry is converted before submission. Provider transport and matching belong to the coordinator. Submission creates a job request; this frontend does not submit an escrow or staking transaction.
 
 Example `Job` (the list can omit detail-only fields):
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { dateLabel, jobPhase, statusLabel, timeLabel } from '../jobs';
+import { dateLabel, jobPhase, statusLabel, timeLabel, windowMinutes } from '../jobs';
 import { useResource } from '../useResource';
 
 export function Status({ value }) {
@@ -58,7 +58,7 @@ export default function JobDetail({ api, id, notice }) {
           <Item label="Job ID" mono>{job.id}</Item><Item label="Submitted">{dateLabel(job.createdAt)}</Item>
           <Item label="Container image" mono>{job.dockerImage || '—'}</Item><Item label="Maximum budget">{job.maxPrice ?? '—'} ETH</Item>
           <Item label="Providers assigned">{job.providerCount ?? '—'} / {job.k ?? '—'}</Item><Item label="Matching results">{job.consensus?.agreeing ?? '—'} / {job.consensus?.required ?? job.quorum ?? '—'}</Item>
-          <Item label="Runtime">{job.runtimeSeconds == null ? '—' : `${job.runtimeSeconds} seconds`}</Item><Item label="Execution window">{job.window == null ? '—' : `${job.window} seconds`}</Item>
+          <Item label="Runtime">{job.runtimeSeconds == null ? '—' : `${job.runtimeSeconds} seconds`}</Item><Item label="Execution window">{job.window == null ? '—' : `${windowMinutes(job.window)} ${job.window === 60 ? 'minute' : 'minutes'}`}</Item>
           <Item label="Minimum scores">CPU {job.requirements?.minCpuScore ?? '—'} · GPU {job.requirements?.minGpuScore ?? '—'} · Memory {job.requirements?.minMemoryScore ?? '—'}</Item>
           <Item label="Amount spent">{job.spent == null ? '—' : `${job.spent} ETH`}</Item>
           {job.onChainJobId != null && <Item label="On-chain job ID" mono>{job.onChainJobId}</Item>}

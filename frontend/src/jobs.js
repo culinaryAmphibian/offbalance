@@ -1,3 +1,5 @@
+import { convertBudget } from './budget.js';
+
 export const statusLabel = status => String(status || 'UNKNOWN').toLowerCase().replaceAll('_', ' ').replace(/^./, letter => letter.toUpperCase());
 export const shortWallet = wallet => `${wallet.slice(0, 6)}…${wallet.slice(-4)}`;
 export const dateLabel = date => date && Number.isFinite(Date.parse(date)) ? new Date(date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '—';
@@ -40,11 +42,12 @@ export function normalizeJob(job) {
   return Object.fromEntries(Object.entries(normalized).filter(([, value]) => value !== undefined));
 }
 
-export function validateJob(values) {
+export function validateJob(values, usdPerEth = null) {
   const errors = {};
   if (!values.name.trim()) errors.name = 'Enter a job name.';
   if (!values.dockerImage.trim() || /\s/.test(values.dockerImage.trim())) errors.dockerImage = 'Enter a container image reference without spaces.';
-  if (!/^\d+(\.\d{1,18})?$/.test(values.maxPrice) || !/[1-9]/.test(values.maxPrice)) errors.maxPrice = 'Enter a positive budget with up to 18 decimal places.';
+  try { convertBudget(values.maxPrice, values.budgetCurrency ?? 'ETH', usdPerEth); }
+  catch (error) { errors.maxPrice = error.message; }
   for (const field of ['k', 'quorum', 'window', 'minCpuScore', 'minGpuScore', 'minMemoryScore']) {
     const minimum = field.startsWith('min') ? 0 : 1;
     if (!/^\d+$/.test(values[field]) || !Number.isSafeInteger(Number(values[field])) || Number(values[field]) < minimum) errors[field] = `Enter a whole number of ${minimum} or more.`;
@@ -52,14 +55,18 @@ export function validateJob(values) {
   for (const field of ['k', 'quorum']) {
     if (!errors[field] && Number(values[field]) > 255) errors[field] = 'Enter a value of 255 or less.';
   }
+  if (!errors.window && Number(values.window) > 10080) errors.window = 'Enter an execution window of 1–10080 minutes.';
   if (!errors.quorum && !errors.k && Number(values.quorum) > Number(values.k)) errors.quorum = 'Agreement cannot exceed the provider count.';
   return errors;
 }
 
-export function jobPayload(values) {
+export function jobPayload(values, usdPerEth = null) {
   return {
-    name: values.name.trim(), dockerImage: values.dockerImage.trim(), maxPrice: values.maxPrice,
-    k: Number(values.k), quorum: Number(values.quorum), window: Number(values.window),
+    name: values.name.trim(), dockerImage: values.dockerImage.trim(), maxPrice: convertBudget(values.maxPrice, values.budgetCurrency ?? 'ETH', usdPerEth),
+    k: Number(values.k), quorum: Number(values.quorum), window: Number(values.window) * 60,
     requirements: Object.fromEntries(['minCpuScore', 'minGpuScore', 'minMemoryScore'].map(field => [field, Number(values[field])])),
   };
+}
+export function windowMinutes(seconds) {
+  return Number.isFinite(seconds) && seconds > 0 ? String(Number((seconds / 60).toFixed(6))) : '—';
 }

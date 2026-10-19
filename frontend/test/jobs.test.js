@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { jobPayload, validateJob, normalizeJob, jobPhase, timeLabel } from '../src/jobs.js';
+import { jobPayload, validateJob, normalizeJob, jobPhase, timeLabel, windowMinutes } from '../src/jobs.js';
 
-const valid = () => ({ name: 'Example job', dockerImage: 'registry.example/workload:latest', maxPrice: '0.01', k: '3', quorum: '2', window: '600', minCpuScore: '0', minGpuScore: '1', minMemoryScore: '100' });
+const valid = () => ({ name: 'Example job', dockerImage: 'registry.example/workload:latest', maxPrice: '0.01', k: '3', quorum: '2', window: '10', minCpuScore: '0', minGpuScore: '1', minMemoryScore: '100' });
 
 test('valid submission accepts zero hardware requirements and exact decimal budgets', () => {
   assert.deepEqual(validateJob(valid()), {});
@@ -56,6 +56,30 @@ test('provider count and quorum fit the contract uint8 fields', () => {
   assert.deepEqual(validateJob({ ...valid(), k: '255', quorum: '255' }), {});
   assert.ok(validateJob({ ...valid(), k: '256' }).k);
   assert.ok(validateJob({ ...valid(), k: '256', quorum: '256' }).quorum);
+});
+
+test('execution windows use whole minutes in the form and seconds in API payloads', () => {
+  for (const minutes of ['1', '60', '10080']) {
+    const values = { ...valid(), window: minutes };
+    assert.equal(validateJob(values).window, undefined);
+    assert.equal(jobPayload(values).window, Number(minutes) * 60);
+  }
+  assert.ok(validateJob({ ...valid(), window: '10081' }).window);
+  assert.equal(windowMinutes(3600), '60');
+  assert.equal(windowMinutes(90), '1.5');
+  assert.equal(windowMinutes(604800), '10080');
+  for (const seconds of [null, undefined, '60', 0, -1, NaN, Infinity]) assert.equal(windowMinutes(seconds), '—');
+});
+
+test('USD budgets validate with a quote and send only the converted ETH limit', () => {
+  const values = { ...valid(), maxPrice: '25.50', budgetCurrency: 'USD' };
+  assert.deepEqual(validateJob(values, '3000'), {});
+  assert.equal(jobPayload(values, '3000').maxPrice, '0.0085');
+  assert.equal(jobPayload(values, '3000').budgetCurrency, undefined);
+  assert.match(validateJob(values).maxPrice, /valid ETH\/USD rate/);
+  assert.match(validateJob({ ...values, maxPrice: '1.001' }, '3000').maxPrice, /positive USD budget/);
+  assert.match(validateJob({ ...values, maxPrice: '0.01' }, '10000000000000001').maxPrice, /less than 1 wei/);
+  assert.throws(() => jobPayload(values), /valid ETH\/USD rate/);
 });
 
 test('Lucidchart aliases normalize without mutating the source job', () => {
