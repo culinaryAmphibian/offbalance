@@ -1,55 +1,34 @@
 # Agent manager
 
-`index.js` exports `ProtocolServer` and `AgentManager`. This module transports provider commands and retrieves output. Authentication, assignment persistence, execution policy, blockchain consensus and object storage remain external adapters. There is no database, JWT issuer, container executor or local quorum implementation here.
+`index.ts` exports `AgentManager` and its strict TypeScript adapter contracts. The server uses the same HTTPS API for provider control, benchmark reports, manifests and result receipts. There is no separate socket listener or newline-delimited message protocol.
 
-## Protocol ports
+## Provider control
 
-`new ProtocolServer(options)` requires these adapters:
+Every control request uses `Authorization: Bearer <token>` from wallet sign-in. Credentials are checked for revocation and current linked-wallet membership on every request.
 
-| Port | Contract |
+| Request | Behavior |
 | --- | --- |
-| `authenticate(token)` | Resolve `{ id, wallet }` only for a current provider credential; reject expired, revoked or unauthorized credentials. An optional `scope` must equal `provider`. Called again after mapping HELLO and for each incoming frame. |
-| `repository.getAssignedJob(jobId, providerId)` | Return the provider's authorized job or `null`. The repository owns assignment/status policy. Jobs expose `id`, `dockerImage`, `requirements`, `window` and `deadlineAt` for image handoff. |
-| `onHello(provider, specs)` | Record an authenticated provider connection and optional specs. |
-| `onHeartbeat(provider)` | Refresh the coordinator's provider availability. |
-| `onAccept(provider, jobId)` | Record acceptance; its return value becomes the `ACCEPTED` payload. It does not automatically start execution. |
-| `onFailure(provider, jobId, message)` / `onIdle(provider, jobId)` | Delegate execution failure and stopped-workload acknowledgement. |
-| `getAssignment(provider)` | Return a reconnect assignment `{ id, ... }` or `null`. Ownership is rechecked before notification. |
+| `POST /provider/heartbeat` | Refresh benchmarked hardware availability; returns `{ ok, heartbeatTimeoutMs }`. Send periodically within that timeout, including while executing a job. Request body cannot replace benchmark scores. |
+| `GET /provider/assignment` | Read `{ assignment }` from MongoDB, or `{ assignment: null }`. Providers can poll or recover an assignment after restarting. |
+| `POST /provider/jobs/:jobId/accept` | Check assignment ownership and return `{ ok, assignment }`; retries are safe. |
+| `POST /provider/jobs/:jobId/idle` | Acknowledge a stopped workload without releasing unfinished on-chain work. |
+| `POST /provider/jobs/:jobId/error` | Report `{ message }` for an assigned job, without releasing unfinished on-chain work. |
+| `GET /jobManifest/:jobId` | Retrieve the authorized manifest using the Python client's existing HTTP contract. |
+| `POST /provider/results/:jobId` | Record `{ hash, location }` after output has been uploaded to object storage; preserve delivery-phase and assignment checks. |
 
-Optional `pool` implements `get(wallet)`, `register(provider)` and `remove(wallet)`: disconnect removes idle capacity and preserves busy reservations with `lastHeartbeat: 0`. Optional `onDisconnect(provider)` receives a best-effort notification. Asynchronous availability adapters must avoid refreshing disconnected sessions after delayed work completes.
+Blockchain events continue to trigger execution and govern terminal status. Assignment polling is a recovery mechanism and does not authorize a provider to start a workload ahead of the contract. Heartbeat expiry removes idle capacity from matching; an HTTP disconnect does not abandon a running assignment. Only terminal lifecycle events release it.
 
-`listen({ key, cert, host = '127.0.0.1', port = 4001 })` accepts PEM certificate material and requires TLS 1.3. Clients must verify the certificate and hostname. `close()` closes connections and rejects outstanding output requests. The certificate helper under `test/` is solely for local tests.
+## Output retrieval adapters
 
-Frames are UTF-8 JSON followed by a newline. HELLO must arrive within five seconds. One connection per wallet is allowed; handlers run in order. Input frames default to 12 MiB, buffered writes to twice that limit, output bytes to 8 MiB, and heartbeat/output timeouts to 30 seconds. No authentication fallback exists. Fatal authentication/framing errors close the connection; recoverable business errors return `ERROR`.
+`new AgentManager({ providerTransport, objectStorage, repository, maxOutputBytes })` remains available for verified output collection:
 
-The coordinator calls asynchronous `sendAssignment(wallet, jobId)` and `sendDockerImage(wallet, job)` explicitly. The latter sends the stored registry image reference, not image bytes. The coordinator owns the decision to start execution; an `ACCEPT_ACK` alone does not trigger it. Callbacks should finish promptly and must not await output from their own paused connection.
+- `providerTransport.requestOutput(jobId, wallet, { signal, providerId })` returns `{ bytes, sha256, filename, providerId, wallet }`.
+- `repository.getAssignedJob(jobId, providerId)` checks assignment access.
+- `objectStorage.put(bytes, { jobId, providerId, hash, filename })` returns an opaque reference.
+- `objectStorage.get(reference, { signal })` returns a `Uint8Array` or `Buffer`.
 
-## Output retrieval
+The transport is an injected adapter; the HTTPS server does not implement remote byte collection or initiate a request back to a provider. An application using `AgentManager` must supply an adapter that retrieves an uploaded artifact or calls an authenticated HTTP service. The result-receipt endpoint records an artifact location, not its bytes.
 
-`requestOutput(jobId, wallet, { signal, timeoutMs, providerId })` sends:
+`collectOutput({ jobId, providerId, wallet, expectedHash, signal })` requires an externally supplied expected SHA-256, such as one observed from the blockchain. It verifies assignment, provider identity, byte size, actual SHA-256 and the declared hash before storage. `requestAnswer(reference, { expectedHash, signal })` verifies retrieved bytes again. Hashes accept 64 hexadecimal characters with an optional `0x` prefix; metadata uses lowercase hexadecimal without the prefix.
 
-```json
-{ "type": "REQUEST_OUTPUT", "requestId": "generated-id", "jobId": "assigned-job" }
-```
-
-The provider echoes the exact job ID and request ID:
-
-```json
-{
-  "type": "RESULT",
-  "requestId": "generated-id",
-  "jobId": "assigned-job",
-  "payload": { "resultBase64": "b3V0cHV0", "sha256": "64 hexadecimal characters", "filename": "result.txt" }
-}
-```
-
-Only the requested provider/session/job can complete the request. Unsolicited or late results are rejected. Timeout, cancellation, disconnect and explicit revocation remove pending requests. At most four requests per session and 128 overall may be pending. The transport returns `{ bytes, sha256, filename, providerId, wallet }`; transport acknowledgement confirms receipt only.
-
-`new AgentManager({ providerTransport, objectStorage, repository, maxOutputBytes })` uses:
-
-- `providerTransport.requestOutput(jobId, wallet, { signal, providerId })` with the response above.
-- `repository.getAssignedJob(jobId, providerId)` to check assignment access.
-- `objectStorage.put(bytes, { jobId, providerId, hash, filename })` returning an opaque storage reference.
-- `objectStorage.get(reference, { signal })` returning a `Uint8Array` or `Buffer`.
-
-`collectOutput({ jobId, providerId, wallet, expectedHash, signal })` requires an expected SHA-256 hash supplied by the caller, such as one observed from the blockchain manager. It checks provider identity, byte size, actual SHA-256 and the provider's declared hash before storage. It returns the reference and verified metadata. `requestAnswer(reference, { expectedHash, signal })` verifies retrieved bytes against that external hash again. Hash inputs accept 64 hexadecimal characters with an optional `0x` prefix; stored metadata uses lowercase hexadecimal without the prefix.
+`AssignmentRepository.getAssignedJob` accepts string or numeric job IDs and returns an authorized `Assignment`, `null` or `undefined`, synchronously or through a promise. `AgentManager<Reference>` and `ObjectStorage<Reference>` support a storage-specific reference type; the default is a string.
