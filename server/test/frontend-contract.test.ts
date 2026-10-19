@@ -198,6 +198,16 @@ describe("frontend/server database contracts", { skip: !uri && "set MONGODB_URI 
 		assert.equal(dashboard.body.account.currentStake, "0");
 	});
 
+	test("small persisted ETH caps are returned as exact wallet-compatible decimal strings", async () => {
+		for (const maxPrice of ["0.0000001", "0.000000000000000001"]) {
+			const created = await call("POST", "/jobs", { as: "buyer", body: job({ maxPrice }) });
+			assert.equal(created.status, 201, JSON.stringify(created.body));
+			assert.equal(created.body.job.maxPrice, maxPrice);
+			const detail = await call("GET", `/jobs/${created.body.job.id}`, { as: "buyer" });
+			assert.equal(detail.body.job.maxPrice, maxPrice);
+		}
+	});
+
 	test("unsafe IDs and malformed retry keys fail before persisting a job", async () => {
 		for (const id of ["-1", "1.5", "9007199254740992", "not-a-job"]) {
 			assert.equal((await call("GET", `/jobs/${id}`, { as: "buyer" })).status, 400, id);
