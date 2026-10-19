@@ -244,6 +244,57 @@ endDeliveryPhase 1       # DELIVERED
 
 Also: `advance SECONDS`, `mine`, `accounts`, `help`. On startup it warns if `OffBalance` was recompiled after it was deployed; restart `npm run dev` to redeploy.
 
+## Real server (`server/server.ts`)
+
+Needs MongoDB (`MONGODB_URI`, default `mongodb://127.0.0.1:27017/offbalance`). The chain is optional: if the node or deployment file isn't there it logs a warning and runs database-only (`CHAIN=off` to skip the check).
+
+```bash
+cd server
+npm run seed                                   # dev accounts + API keys from dev.env, job 1 fixture (idempotent)
+SERVER_PRIVATE_KEY=<SERVER_PRIVATE_KEY from dev.env> npm start   # port 5000, real contract
+CONTRACT=mock npm start                        # listen to OffBalanceEventMock instead (no on-chain writes)
+```
+
+Seeded API keys: `dev`, `dev2`, `dev3`, `dev4` are providers 1–4 (matching `python3 main.py --dev --provider N`), `dev-buyer` is the buyer. Job 1 is assigned to provider 1 and runs the same alpine command as the mock, so `assign 1 p1` in the event controller works against the real server too.
+
+**Job flow.** `POST /jobs` saves the job and reserves its on-chain id → the buyer's wallet calls `submitJob(id, …)` → on `JOB_SUBMITTED` the matcher picks the cheapest `k` idle providers that meet the requirements and are priced at or under `maxPrice`, saves them, and calls `assignProviders` → phase events (`COMMIT_PHASE_START`, …, `DELIVERED`) update the job's status → in the delivery phase providers `POST /provider/results/:jobId` and the server calls `verifyReceipt`. A provider is only matched once it has posted `/scores` (the client does) **and** set a price (`POST /provider/price {"price": 1}`). The matcher also reruns when a provider scores or prices, and when a job finishes.
+
+| Routes | |
+|---|---|
+| `GET /auth/nonce?wallet=`, `POST /auth {wallet, signature}`, `POST /auth/logout` | Sign in with a wallet (a new wallet signs up). The token is the web session **and** the client's API key |
+| `GET /contract_address`, `POST /scores`, `GET /jobManifest/:jobId` | Provider client (manifest: assigned providers only) |
+| `POST /jobs`, `GET /jobs[?role=provider]`, `GET /jobs/:jobId`, `POST /jobs/:jobId/cancel`, `GET /jobs/:jobId/result` | Buyers; `:jobId` is the on-chain id |
+| `GET /provider/tutorial`, `GET /provider/hardware` (with a suggested price), `POST /provider/price`, `POST /provider/results/:jobId` | Providers |
+| `GET /account/:id/dashboard`, `POST /account/:id/wallets`, `DELETE /account/:id/wallets/:wallet`, `DELETE /account/:id` | Own account only; `:id` may be `me` |
+| `POST /images/resolve`, `POST /builds`, `GET /builds`, `GET /builds/:buildId` | Job images (below) |
+
+### Job images and the Docker registry
+
+Every provider must run byte-identical code, so a job's image is always pinned by digest to one platform (`IMAGE_PLATFORM`, default `linux/amd64`). `POST /jobs` takes exactly one of:
+
+- `image`: any reference (`python:3.12`, `ghcr.io/org/app:v2`). The server looks it up in its registry and pins it (`docker.io/library/python@sha256:…`). It must be public, because providers pull it themselves.
+- `buildId`: a finished build. `POST /builds` takes JSON `{"dockerfile": "FROM …"}` (no build context, so no `COPY` of local files) or a tar / tar.gz body with a `Dockerfile` at its root (`Content-Type: application/gzip`, up to `BUILD_MAX_CONTEXT_MB`, default 50). The server builds it with its own `docker` CLI, pushes it to the registry and pins it. It answers `202`; poll `GET /builds/:buildId` until `DONE` (use `build.image`) or `FAILED` (see `error` and `log`).
+- `dockerImageDigest`: an already-pinned `repo@sha256:…`, used as is.
+
+Resolving public images needs no credentials. Builds need a registry to push to, and stay off until `REGISTRY_NAMESPACE` is set. Any OCI registry works:
+
+| | `REGISTRY` | `REGISTRY_NAMESPACE` | `REGISTRY_USERNAME` | `REGISTRY_TOKEN` |
+|---|---|---|---|---|
+| Docker Hub | `docker.io` (default) | your user or org | your user | a personal access token (Read & Write) |
+| GitHub | `ghcr.io` | your user or org | your user | a PAT with `write:packages` |
+| Local `registry:2` | `localhost:5001` | anything, e.g. `offbalance` | | |
+
+Images go to `<REGISTRY>/<REGISTRY_NAMESPACE>/<REGISTRY_REPOSITORY>:build-<id>` (repository default `offbalance-jobs`). **Make that repository public** (on GHCR, new packages start private), or providers can't pull. The server logs in with its own docker config (`DOCKER_CONFIG_DIR`, default `~/.offbalance/server-docker-config`), so the token never lands in your `~/.docker`. For local dev without an account:
+
+```bash
+docker run -d --rm --name registry -p 5001:5000 registry:2
+REGISTRY=localhost:5001 REGISTRY_NAMESPACE=offbalance npm start
+```
+
+Builds run `RUN` steps from buyers' Dockerfiles on the server machine (inside build containers), so run the server somewhere you're happy to dedicate to that.
+
+`npm run test:real` needs MongoDB running and `npm run seed` done first. [`server/test/api.test.ts`](server/test/api.test.ts) covers the rest of the API. It runs when `MONGODB_URI` is set and uses a throwaway database: `MONGODB_URI=mongodb://127.0.0.1:27017 node --test test/api.test.ts`.
+
 ## Server contract tests (`server/test/`)
 
 The client depends on three server routes. [`server/test/client-contract.test.ts`](server/test/client-contract.test.ts) sends exactly what the client sends and checks what the client reads back. The same suite runs against the dev mock and the real server, so the real server is done when it passes the tests the mock already passes.
@@ -277,8 +328,13 @@ When the client starts calling a new route or reading a new field, add it here f
 - `require`s have no revert messages.
 - `OffBalanceEventMock` has no provider functions, so a client listening to it crashes when it tries to commit. Use `CONTRACT=real` to test commits.
 - `Commitment_t` is a `uint256`, so the client converts its 32-byte sha256 to an int. A `bytes32` would fit the hash directly.
-- The Python execution loop does not yet send the heartbeats required for automatic provider matching.
-- Provider reveal/delivery behavior and contract consensus/payment logic are unfinished; connected API and browser tests do not establish full job settlement.
+- `verifyReceipt` always reverts because nothing sets `answers[jobId].winning` yet, so deliveries stay `receiptVerified: false`.
+- `PAID`/`SLASHED` carry no amounts, so the server books the job's `runningPrice` and moves reputation ±1. Stakes aren't tracked yet.
+- The server's job statuses (`PENDING`, `COMMIT_PHASE`, …) differ from the contract's `Status` enum. The event → status mapping is in `server/models/JobStatus.ts`.
+- Results aren't stored by the server: providers upload to object storage themselves and post the `location`.
+- No heartbeats: a provider stays matchable after its client goes offline.
+- Builds run one at a time with no per-account limit, and a server restart fails builds in progress (they have to be resubmitted). Pushed `build-*` tags are never deleted from the registry.
+- The frontend still shows hardcoded demo data.
 
 ## TODO
 
