@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { MatchManager } from '../matching/MatchManager.js';
-import { ProviderPoolCache } from '../matching/ProviderPoolCache.js';
+import { MatchManager } from '../matching/MatchManager.ts';
+import { ProviderPoolCache } from '../matching/ProviderPoolCache.ts';
 
 const epoch = 1_000_000;
 const job = (id, changes = {}) => ({ id, owner: 'buyer', k: 1, quorum: 1, window: 3600, maxPrice: '10',

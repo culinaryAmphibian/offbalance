@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Interface } from 'ethers';
-import { MatchManager, AgentManager, BlockchainMonitor } from '../index.js';
+import { MatchManager, AgentManager, BlockchainMonitor } from '../index.ts';
 
 test('the three managers integrate through owner-supplied ports without a database or chain writer', async () => {
   const now = 1_000_000;

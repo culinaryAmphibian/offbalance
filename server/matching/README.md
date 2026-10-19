@@ -2,10 +2,12 @@
 
 `MatchManager` implements internal selection using the diagram's Match Manager boundary. It does not create database collections, implement account/login APIs, run containers, calculate result consensus, or submit blockchain transactions.
 
+The scheduler is strict TypeScript and uses Node's native type stripping with explicit `.ts` imports. Shared repository, provider, job, assignment callback, and quote contracts are exported from `matching/types.ts`.
+
 ## Required ports
 
-```js
-import { MatchManager } from './matching/MatchManager.js';
+```ts
+import { MatchManager } from './matching/MatchManager.ts';
 
 const matching = new MatchManager({
   repository: {
