@@ -47,9 +47,6 @@ class BlockchainManager():
 
     # SUBMIT phase action
     def commit(self, jobId: int, result_hash: bytes):
-        # here, we commit without encryption to start, then we can add that later
-        # need to call the web3 submitCommitment message
-        
         self.contract.submitCommitment(jobId, result_hash, self.signer, self.w3)
         
 

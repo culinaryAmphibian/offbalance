@@ -18,6 +18,7 @@ contract OffBalanceEventMock {
     event SLASHED(JobID_t jobId, address provider);
     event CANCELED(JobID_t jobId);
     event NO_QUORUM(JobID_t jobId);
+    event COMMIT_SUBMITTED_BY(address provider);
 
     function jobSubmitted(JobID_t jobId) external { emit JOB_SUBMITTED(jobId); }
 
@@ -36,4 +37,5 @@ contract OffBalanceEventMock {
     function slashed(JobID_t jobId, address provider) external { emit SLASHED(jobId, provider); }
     function canceled(JobID_t jobId) external { emit CANCELED(jobId); }
     function noQuorum(JobID_t jobId) external { emit NO_QUORUM(jobId); }
+    function commitSubmittedBy(address provider) external { emit COMMIT_SUBMITTED_BY(provider); }
 }
