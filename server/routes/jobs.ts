@@ -31,7 +31,8 @@ export function jobRoutes({ chain, matcher }: Deps): Router {
 	router.use("/jobs", requireAuth);
 
 	// Creates the job and reserves its on-chain id. The buyer's wallet then calls
-	// submitJob(id, price, k, quorum, timeWindow); matching starts on JOB_SUBMITTED.
+	// submitJob(id, price, k, quorum, timeWindow, image), escrowing the price;
+	// matching starts on JOB_SUBMITTED.
 	//
 	// The image is one of:
 	//   image             any reference ("python:3.12"); the server pins it by digest

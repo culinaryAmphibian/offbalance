@@ -18,6 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # OffBalance emits the job's executionTime as COMMIT_PHASE_START's deadline
 DEFAULT_DEADLINE = 60
+# PAID / SLASHED carry an amount in wei
+DEFAULT_AMOUNT = 10**15
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -156,14 +158,14 @@ class EventController(cmd.Cmd):
         self.send("delivered", int(job))
 
     def do_paid(self, arg):
-        "paid JOB WHO            emit PAID"
-        job, who = self.parse(arg, 2, "paid JOB WHO")
-        self.send("paid", int(job), self.resolve(who))
+        f"paid JOB WHO [WEI]      emit PAID (amount defaults to {DEFAULT_AMOUNT} wei)"
+        job, who, *amount = self.parse(arg, 2, "paid JOB WHO [WEI]")
+        self.send("paid", int(job), self.resolve(who), int(amount[0]) if amount else DEFAULT_AMOUNT)
 
     def do_slashed(self, arg):
-        "slashed JOB WHO         emit SLASHED"
-        job, who = self.parse(arg, 2, "slashed JOB WHO")
-        self.send("slashed", int(job), self.resolve(who))
+        f"slashed JOB WHO [WEI]   emit SLASHED (amount defaults to {DEFAULT_AMOUNT} wei)"
+        job, who, *amount = self.parse(arg, 2, "slashed JOB WHO [WEI]")
+        self.send("slashed", int(job), self.resolve(who), int(amount[0]) if amount else DEFAULT_AMOUNT)
 
     def do_cancel(self, arg):
         "cancel JOB              emit CANCELED"
@@ -176,9 +178,9 @@ class EventController(cmd.Cmd):
         self.send("noQuorum", int(job))
 
     def do_committed(self, arg):
-        "committed WHO           emit COMMIT_SUBMITTED_BY"
-        who, = self.parse(arg, 1, "committed WHO")
-        self.send("commitSubmittedBy", self.resolve(who))
+        "committed JOB WHO       emit COMMITTED"
+        job, who = self.parse(arg, 2, "committed JOB WHO")
+        self.send("committed", int(job), self.resolve(who))
 
     # ---------- sequences ----------
     def do_assign(self, arg):
@@ -201,8 +203,9 @@ class EventController(cmd.Cmd):
             lambda: self.do_reveal(job),
             lambda: self.do_consensus(job),
             lambda: self.do_delivery(job),
-            lambda: self.do_delivered(job),
+            # the contract pays out before it emits DELIVERED
             *[lambda w=w: self.do_paid(f"{job} {w}") for w in who],
+            lambda: self.do_delivered(job),
         ]
         for i, step in enumerate(steps):
             step()

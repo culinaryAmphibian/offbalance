@@ -5,7 +5,8 @@
 #
 #   cd blockchain && npm run dev                                    # chain + deploy
 #   client/.venv/bin/python client/dev/contract_controller.py       # shell
-#   client/.venv/bin/python client/dev/contract_controller.py submitJob 1 100 3 2 60
+#   client/.venv/bin/python client/dev/contract_controller.py submitJob 1 100 3 2 60 img --value 100
+#   (payable calls take --value WEI: submitJob escrows the price, submitCommitment posts STAKE)
 import cmd
 import json
 import shlex
@@ -108,8 +109,13 @@ class ContractController(cmd.Cmd):
             i = words.index("--as")
             sender = words[i + 1].lower()
             del words[i:i + 2]
+        value = 0
+        if "--value" in words:
+            i = words.index("--value")
+            value = int(words[i + 1], 0)
+            del words[i:i + 2]
         if len(words) != len(fn_abi["inputs"]):
-            raise ValueError(f"usage: {self.usage(name)} [--as WHO]")
+            raise ValueError(f"usage: {self.usage(name)} [--as WHO] [--value WEI]")
         args = [self.convert(w, i) for w, i in zip(words, fn_abi["inputs"])]
         fn = getattr(self.contract.functions, name)(*args)
 
@@ -124,6 +130,7 @@ class ContractController(cmd.Cmd):
         try:
             tx = fn.build_transaction({
                 "from": account.address,
+                "value": value,
                 "nonce": self.w3.eth.get_transaction_count(account.address),
             })
         except ContractLogicError as e:
@@ -209,7 +216,7 @@ class ContractController(cmd.Cmd):
         for name in sorted(self.functions):
             sender = "read" if self.functions[name]["stateMutability"] in ("view", "pure") else f"as {DEFAULT_SENDER.get(name, 'server')}"
             print(f"  {self.usage(name):<70} ({sender})")
-        print("  lists: a,b,c   tuples: v1,v2,v3   accounts: server, buyer, p1..p4 or 0x..   override sender: --as WHO")
+        print("  lists: a,b,c   tuples: v1,v2,v3   accounts: server, buyer, p1..p4 or 0x..   override sender: --as WHO   send ETH: --value WEI")
 
     def do_advance(self, arg):
         "advance SECONDS         move chain time forward and mine a block (to pass phase deadlines)"

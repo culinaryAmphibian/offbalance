@@ -7,12 +7,13 @@ class ProviderContractWrapper():
     def __init__(self, contract: contract.Contract):
         self.contract = contract
 
-    def submitCommitment(self, jobId, hash: bytes, signer, w3):
-        commit = int.from_bytes(hash, "big")
-        tx = self.contract.functions.submitCommitment(jobId, commit).build_transaction({
+    # the commitment carries the provider's stake, which the contract sets per provider
+    def submitCommitment(self, jobId, commitment: bytes, signer, w3):
+        stake = self.contract.functions.stakeFor(signer.address).call()
+        tx = self.contract.functions.submitCommitment(jobId, commitment).build_transaction({
             "from": signer.address,
+            "value": stake,
             "nonce": w3.eth.get_transaction_count(signer.address, "pending"),
- 
         })
 
         signed = signer.sign_transaction(tx)
@@ -22,8 +23,8 @@ class ProviderContractWrapper():
         return receipt 
     
 
-    def submitReveal(self, jobId, key: bytes, signer, w3):
-        tx = self.contract.functions.submitReveal(jobId, key).build_transaction({
+    def submitReveal(self, jobId, output: bytes, salt: bytes, signer, w3):
+        tx = self.contract.functions.submitReveal(jobId, output, salt).build_transaction({
             "from": signer.address,
             "nonce": w3.eth.get_transaction_count(signer.address, "pending"),
         })

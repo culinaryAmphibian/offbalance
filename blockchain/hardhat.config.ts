@@ -32,7 +32,10 @@ export default defineConfig({
         count: 20,
         accountsBalance: 10_000n * 10n ** 18n, // 10k ETH each
       },
-      mining: { auto: true, interval: 0 }, // one block per tx
+      // one block per tx, plus an empty block every second so block.timestamp
+      // keeps up with wall time. Without it an idle chain freezes time and gas
+      // estimation (which simulates on the latest block) fails deadline checks.
+      mining: { auto: true, interval: 1000 },
     },
     // Scripts connect to the running `hardhat node` through this.
     localhost: {

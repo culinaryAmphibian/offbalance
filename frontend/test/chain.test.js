@@ -7,11 +7,13 @@ const wallet = '0x1111111111111111111111111111111111111111';
 const contract = '0x2222222222222222222222222222222222222222';
 const hash = `0x${'ab'.repeat(32)}`;
 const config = () => ({ executionMode: 'chain', chain: { kind: 'real', chainId: 31337, address: contract } });
-const job = () => ({ id: '42', maxPrice: '0.000000000000000123', k: 3, quorum: 2, window: 3600, canSubmit: true, submitWallet: wallet, status: 'PENDING', submittedAt: null });
-// The production Solidity signature uses five uint256 arguments and is nonpayable.
-const abi = [{ type: 'function', name: 'submitJob', stateMutability: 'nonpayable', inputs: [
+const image = 'repo@sha256:' + 'c'.repeat(64);
+const job = () => ({ id: '42', maxPrice: '0.000000000000000123', k: 3, quorum: 2, window: 3600, dockerImage: image, canSubmit: true, submitWallet: wallet, status: 'PENDING', submittedAt: null });
+// The production Solidity signature: five uint256 arguments and the image, payable with the escrowed price.
+const abi = [{ type: 'function', name: 'submitJob', stateMutability: 'payable', inputs: [
   { name: 'jobId', type: 'uint256' }, { name: 'price', type: 'uint256' },
   { name: 'k', type: 'uint256' }, { name: 'quorum', type: 'uint256' }, { name: 'executionTime', type: 'uint256' },
+  { name: 'dockerImage', type: 'string' },
 ], outputs: [] }];
 
 function mockWallet({ accounts = [wallet], chains = ['0x7a69'], transactionHash = hash } = {}) {
@@ -32,17 +34,17 @@ function mockWallet({ accounts = [wallet], chains = ['0x7a69'], transactionHash 
 
 const sent = provider => provider.calls.filter(call => call.method === 'eth_sendTransaction');
 
-test('stored job submission encodes the real contract call, exact wei rate, and zero transaction value', async () => {
+test('stored job submission encodes the real contract call and escrows the exact wei price', async () => {
   const provider = mockWallet();
   assert.deepEqual(await submitStoredJob(job(), config(), provider), { hash });
   assert.equal(sent(provider).length, 1);
   const [transaction] = sent(provider)[0].params;
   assert.equal(transaction.from, wallet);
   assert.equal(transaction.to, contract);
-  assert.equal(transaction.value, '0x0');
+  assert.equal(BigInt(transaction.value), parseEther(job().maxPrice));
   const decoded = decodeFunctionData({ abi, data: transaction.data });
   assert.equal(decoded.functionName, 'submitJob');
-  assert.deepEqual(decoded.args, [42n, parseEther(job().maxPrice), 3n, 2n, 3600n]);
+  assert.deepEqual(decoded.args, [42n, parseEther(job().maxPrice), 3n, 2n, 3600n, image]);
 });
 
 test('wrong wallet network rejects before sending a transaction', async () => {
@@ -142,4 +144,12 @@ test('already canceled submission never accesses the wallet', async () => {
   const provider = mockWallet();
   await assert.rejects(submitStoredJob(job(), config(), provider, { signal: controller.signal }), { name: 'AbortError' });
   assert.equal(provider.calls.length, 0);
+});
+
+test('a job without a Docker image rejects before requesting wallet access', async () => {
+  for (const dockerImage of [undefined, '', '   ']) {
+    const provider = mockWallet();
+    await assert.rejects(submitStoredJob({ ...job(), dockerImage }, config(), provider), /no Docker image/);
+    assert.equal(provider.calls.length, 0);
+  }
 });

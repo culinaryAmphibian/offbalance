@@ -1,7 +1,9 @@
-import { encodeFunctionData, parseEther } from 'viem';
+import { encodeFunctionData, parseEther, toHex } from 'viem';
 
-const submitAbi = [{ type: 'function', name: 'submitJob', stateMutability: 'nonpayable',
-  inputs: ['jobId', 'price', 'k', 'quorum', 'executionTime'].map(name => ({ name, type: 'uint256' })), outputs: [] }];
+// The buyer escrows the price with the job, so the call is payable.
+const submitAbi = [{ type: 'function', name: 'submitJob', stateMutability: 'payable',
+  inputs: [...['jobId', 'price', 'k', 'quorum', 'executionTime'].map(name => ({ name, type: 'uint256' })),
+    { name: 'dockerImage', type: 'string' }], outputs: [] }];
 
 export async function submitStoredJob(job, config, provider = globalThis.window?.ethereum, { signal } = {}) {
   signal?.throwIfAborted();
@@ -17,6 +19,7 @@ export async function submitStoredJob(job, config, provider = globalThis.window?
   if (!/^\d+$/.test(String(job.id)) || !count(job.k) || !count(job.quorum) || Number(job.quorum) > Number(job.k) || !count(job.window)) {
     throw new Error('The saved job has invalid blockchain parameters.');
   }
+  if (typeof job.dockerImage !== 'string' || !job.dockerImage.trim()) throw new Error('The saved job has no Docker image.');
   const [wallet] = await provider.request({ method: 'eth_accounts' });
   signal?.throwIfAborted();
   if (!/^0x[\da-f]{40}$/i.test(wallet ?? '')) throw new Error('Connect your wallet again.');
@@ -24,14 +27,15 @@ export async function submitStoredJob(job, config, provider = globalThis.window?
   const actual = await provider.request({ method: 'eth_chainId' });
   signal?.throwIfAborted();
   if (BigInt(actual) !== BigInt(chainId)) throw new Error(`Switch your wallet to chain ${chainId} before submitting.`);
+  const price = parseEther(String(job.maxPrice));
   const data = encodeFunctionData({ abi: submitAbi, functionName: 'submitJob',
-    args: [BigInt(job.id), parseEther(String(job.maxPrice)), BigInt(job.k), BigInt(job.quorum), BigInt(job.window)] });
+    args: [BigInt(job.id), price, BigInt(job.k), BigInt(job.quorum), BigInt(job.window), job.dockerImage] });
   const [current] = await provider.request({ method: 'eth_accounts' });
   signal?.throwIfAborted();
   const currentChain = await provider.request({ method: 'eth_chainId' });
   signal?.throwIfAborted();
   if (current?.toLowerCase() !== wallet.toLowerCase() || BigInt(currentChain) !== BigInt(chainId)) throw new Error('Your wallet changed. Sign in again.');
-  const hash = await provider.request({ method: 'eth_sendTransaction', params: [{ from: wallet, to: config.chain.address, data, value: '0x0' }] });
+  const hash = await provider.request({ method: 'eth_sendTransaction', params: [{ from: wallet, to: config.chain.address, data, value: toHex(price) }] });
   if (!/^0x[\da-f]{64}$/i.test(hash ?? '')) throw new Error('The wallet returned an invalid transaction hash. Check your wallet before retrying.');
   return { hash };
 }
