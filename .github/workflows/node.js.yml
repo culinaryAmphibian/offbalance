@@ -3,10 +3,10 @@ name: Frontend and server integration
 on:
   push:
     branches: [main]
-    paths: ['frontend/**', 'server/**', 'client/**', 'startup.py', '.github/workflows/node.js.yml']
+    paths: ['frontend/**', 'server/**', 'client/**', 'blockchain/**', 'dev.env', 'startup.py', '.github/workflows/node.js.yml']
   pull_request:
     branches: [main]
-    paths: ['frontend/**', 'server/**', 'client/**', 'startup.py', '.github/workflows/node.js.yml']
+    paths: ['frontend/**', 'server/**', 'client/**', 'blockchain/**', 'dev.env', 'startup.py', '.github/workflows/node.js.yml']
 
 permissions:
   contents: read
@@ -38,6 +38,7 @@ jobs:
           cache-dependency-path: |
             frontend/package-lock.json
             server/package-lock.json
+            blockchain/package-lock.json
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -46,8 +47,13 @@ jobs:
         run: python -m unittest discover -s ../client/test -v
       - run: npm ci
       - run: npm ci --prefix ../server
+      - run: npm ci --prefix ../blockchain
+      - name: Check contract
+        working-directory: blockchain
+        run: npx hardhat test
       - run: npm test
       - run: npm run build
+      # includes test:e2e, which runs the server's orchestrator against a real Hardhat node
       - run: npm --prefix ../server test
       - run: npx playwright install --with-deps chromium
       - name: Check demo browser flows

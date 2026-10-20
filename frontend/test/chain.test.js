@@ -6,7 +6,7 @@ import { submitStoredJob } from '../src/chain.js';
 const wallet = '0x1111111111111111111111111111111111111111';
 const contract = '0x2222222222222222222222222222222222222222';
 const hash = `0x${'ab'.repeat(32)}`;
-const config = () => ({ executionMode: 'chain', chain: { kind: 'real', chainId: 31337, address: contract } });
+const config = () => ({ executionMode: 'chain', chain: { chainId: 31337, address: contract } });
 const image = 'repo@sha256:' + 'c'.repeat(64);
 const job = () => ({ id: '42', maxPrice: '0.000000000000000123', k: 3, quorum: 2, window: 3600, dockerImage: image, canSubmit: true, submitWallet: wallet, status: 'PENDING', submittedAt: null });
 // The production Solidity signature: five uint256 arguments and the image, payable with the escrowed price.
@@ -64,9 +64,8 @@ test('wallet account or network changes during preparation reject before sending
   }
 });
 
-test('local, missing, mock, and invalid contract configurations never reach the wallet', async () => {
+test('local, missing, and invalid contract configurations never reach the wallet', async () => {
   for (const value of [null, {}, { executionMode: 'local', chain: null }, { ...config(), chain: null },
-    { ...config(), chain: { ...config().chain, kind: 'mock' } },
     { ...config(), chain: { ...config().chain, address: 'bad-address' } },
     { ...config(), chain: { ...config().chain, chainId: 0 } },
   ]) {

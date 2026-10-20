@@ -1,5 +1,5 @@
 // DEV ONLY: fills the database with the dev.env wallets so the provider client,
-// the contract tests and the event mock work against the real server.
+// the contract tests and the contract controller work against the real server.
 //
 //   npm run seed      (idempotent; MONGODB_URI as for the server)
 //

@@ -40,7 +40,7 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 			await matcher.ping();
 			return;
 
-		// normally the server's own assignment; also covers assignments fired from the event mock
+		// the server's own assignment, read back from the chain
 		case "PROVIDER_SELECTED": {
 			const account = await accountForAddress(args.provider);
 			if (!account) {

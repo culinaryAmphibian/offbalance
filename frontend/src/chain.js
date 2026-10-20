@@ -8,7 +8,7 @@ const submitAbi = [{ type: 'function', name: 'submitJob', stateMutability: 'paya
 export async function submitStoredJob(job, config, provider = globalThis.window?.ethereum, { signal } = {}) {
   signal?.throwIfAborted();
   if (!provider?.request) throw new Error('Connect an Ethereum wallet to submit this job.');
-  if (config?.executionMode !== 'chain' || config.chain?.kind === 'mock' || !/^0x[\da-f]{40}$/i.test(config.chain?.address ?? '')) {
+  if (config?.executionMode !== 'chain' || !/^0x[\da-f]{40}$/i.test(config.chain?.address ?? '')) {
     throw new Error('The server has no real contract configured for this job.');
   }
   if (job.canSubmit === false || job.submittedAt || job.status !== 'PENDING') throw new Error('This job cannot be submitted to the blockchain.');

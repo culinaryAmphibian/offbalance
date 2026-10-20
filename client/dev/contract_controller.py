@@ -17,7 +17,19 @@ import time
 from web3 import Web3
 from web3.exceptions import ContractLogicError
 
-from event_controller import REPO_ROOT, load_env
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_env(path: Path) -> dict[str, str]:
+    env = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            env[key] = value
+    return env
 
 # who sends each function when --as is not given (everything else: server)
 DEFAULT_SENDER = {

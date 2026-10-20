@@ -13,13 +13,13 @@ import {
 const PRICE = parseEther("1");
 const STAKE = parseEther("0.0001");
 const EXECUTION_TIME = 60n;
-const REVEAL_WINDOW = 120;
-const DELIVERY_WINDOW = 300;
 const IMAGE = "repo@sha256:abc";
 
 // Status enum indices in OffBalance.sol
 const Status = {
 	JOB_SUBMITTED: 0,
+	COMMIT: 2,
+	REVEAL: 3,
 	DELIVERING: 5,
 	PAID: 7,
 	CANCELED: 8,
@@ -39,6 +39,11 @@ describe("OffBalance", async function () {
 	const { viem, networkHelpers } = await network.create();
 	const [server, buyer, p1, p2, p3, outsider] = await viem.getWalletClients();
 	const providers = [p1, p2, p3];
+
+	// the windows live in the contract; read them so the tests follow any retuning
+	const windows = await viem.deployContract("OffBalance");
+	const REVEAL_WINDOW = Number(await windows.read.REVEAL_WINDOW());
+	const DELIVERY_WINDOW = Number(await windows.read.DELIVERY_WINDOW());
 
 	async function deploy() {
 		const contract = await viem.deployContract("OffBalance");
@@ -164,6 +169,24 @@ describe("OffBalance", async function () {
 				"COMMIT_PHASE_START",
 				[1n, EXECUTION_TIME],
 			);
+		});
+	});
+
+	describe("getDeadlines", () => {
+		it("reports each phase's chain-time deadline as the job moves", async () => {
+			const contract = await assigned();
+			const assignedAt = BigInt(await networkHelpers.time.latest());
+			assert.deepEqual(await contract.read.getDeadlines([1n]), [
+				Status.COMMIT, assignedAt + EXECUTION_TIME, 0n, 0n,
+			]);
+
+			await networkHelpers.time.increase(Number(EXECUTION_TIME) + 1);
+			await contract.write.startRevealPhase([1n]);
+			const revealedAt = BigInt(await networkHelpers.time.latest());
+			const [status, , revealDeadline, deliveryDeadline] = await contract.read.getDeadlines([1n]);
+			assert.equal(status, Status.REVEAL);
+			assert.equal(revealDeadline, revealedAt + BigInt(REVEAL_WINDOW));
+			assert.equal(deliveryDeadline, 0n);
 		});
 	});
 

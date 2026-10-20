@@ -44,7 +44,7 @@ export function createApp(deps: Deps, { log = true } = {}) {
 	app.get("/config", (_req, res) => {
 		const deployment = deps.chain ? readDeployment() : null;
 		res.json({ executionMode: deps.chain ? "chain" : "local",
-			chain: deployment ? { chainId: deployment.chainId, address: deployment.address, kind: config.contract } : null });
+			chain: deployment ? { chainId: deployment.chainId, address: deployment.address } : null });
 	});
 	app.use(authRoutes());
 	app.use(clientRoutes(deps));

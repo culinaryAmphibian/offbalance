@@ -66,7 +66,7 @@ The database branch's other job, provider, account and build routes are retained
 ## Validation
 
 ```sh
-npm test                         # typecheck, managers, schemas, registry, mock HTTP, optional DB tests
+npm test                         # typecheck, managers, schemas, registry, mock HTTP, optional DB and end-to-end chain tests
 MONGODB_URI=mongodb://127.0.0.1:27017 npm test
 npm run test:real                # real HTTPS + unchanged client contracts; MongoDB must be reachable
 ```

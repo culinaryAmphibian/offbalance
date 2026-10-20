@@ -109,7 +109,7 @@ def start_server(mongodb_uri):
     subprocess.run(["npm", "run", "seed"], cwd=ROOT / "server", check=True,
                    env={**os.environ, "MONGODB_URI": mongodb_uri})
     return start("server", ["npm", "start"], "server", env={
-        "CONTRACT": "real", "CHAIN": "on", "SERVER_PRIVATE_KEY": dev_env["SERVER_PRIVATE_KEY"], "MONGODB_URI": mongodb_uri,
+        "CHAIN": "on", "SERVER_PRIVATE_KEY": dev_env["SERVER_PRIVATE_KEY"], "MONGODB_URI": mongodb_uri,
         "RPC_URL": RPC_URL, "PORT": "5000",
         "DEPLOYMENT_FILE": str(ROOT / "blockchain" / "deployments" / "localhost.json"),
         "TLS_KEY_FILE": str(ROOT / "server" / ".local" / "tls" / "key.pem"),

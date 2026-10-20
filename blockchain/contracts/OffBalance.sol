@@ -81,8 +81,9 @@ contract OffBalance {
     mapping(address => Provider) private providers;
     mapping(address => uint256) public credits;
 
-    uint256 public constant REVEAL_WINDOW = 120;
-    uint256 public constant DELIVERY_WINDOW = 300;
+    // short windows sized for live demos; the server reads them through getDeadlines
+    uint256 public constant REVEAL_WINDOW = 15;
+    uint256 public constant DELIVERY_WINDOW = 30;
     uint256 public constant STAKE = 0.0001 ether;
 
     modifier onlyServer() {
@@ -346,6 +347,14 @@ contract OffBalance {
 
     function getJobStatus(JobID_t jobId) external view returns (Status) {
         return jobs[jobId].status;
+    }
+
+    // The phase deadlines in chain time (0 until the phase starts). Whoever drives the job's
+    // transitions (normally the server) schedules from these.
+    function getDeadlines(JobID_t jobId)
+        external view returns (Status status, uint256 commitDeadline, uint256 revealDeadline, uint256 deliveryDeadline) {
+        Job storage job = jobs[jobId];
+        return (job.status, job.commitDeadline, job.revealDeadline, job.deliveryDeadline);
     }
 
     function getAssignedProviders(JobID_t jobId) external view returns (address[] memory) {

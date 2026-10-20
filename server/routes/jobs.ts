@@ -26,7 +26,7 @@ export function jobRoutes({ chain, matcher }: Deps): Router {
 		...serializeJob(job), executionMode: chain ? "chain" : "local",
 		canViewResults: String(job.owner) === String(me),
 		...(String(job.owner) === String(me) ? { submitWallet: wallet } : {}),
-		canSubmit: String(job.owner) === String(me) && Boolean(chain) && config.contract === "real" && !job.submittedAt && job.status === JobStatus.PENDING,
+		canSubmit: String(job.owner) === String(me) && Boolean(chain) && !job.submittedAt && job.status === JobStatus.PENDING,
 	});
 	router.use("/jobs", requireAuth);
 

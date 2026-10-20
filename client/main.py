@@ -3,8 +3,7 @@
 #   python3 main.py                        # prompts for API key, session key + key seed
 #   python3 main.py --dev --provider 2     # keys from dev.env, against server/dev-server.ts
 #
-# the contract address always comes from the server; the dev server picks
-# OffBalance vs OffBalanceEventMock with CONTRACT=real|mock
+# the contract address always comes from the server
 from blockchain.BlockchainManager import BlockchainManager
 from benchmark.BenchmarkManager import BenchmarkManager
 from server.ServerManager import ServerManager
@@ -107,12 +106,7 @@ def main():
 
     contract_addr = Web3.to_checksum_address(addr_str)
 
-    # the server may hand out the event mock, which has its own ABI
-    deployment = json.loads(DEPLOYMENT_FILE.read_text())
-    if contract_addr == Web3.to_checksum_address(deployment['eventMock']['address']):
-        contract_abi = deployment['eventMock']['abi']
-    else:
-        contract_abi = deployment['abi']
+    contract_abi = json.loads(DEPLOYMENT_FILE.read_text())['abi']
 
     # make sure it's valid
     if not w3.eth.get_code(contract_addr):

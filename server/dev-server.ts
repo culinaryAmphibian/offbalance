@@ -12,9 +12,6 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const DEV_PORT = Number(process.env.PORT ?? 5000);
-// which deployed contract to hand out: "mock" (OffBalanceEventMock, driven by
-// client/dev/event_controller.py) or "real" (OffBalance)
-const CONTRACT = process.env.CONTRACT ?? "mock";
 // DEPLOYMENT_FILE override lets the contract tests run without a chain
 const DEPLOYMENT_FILE = process.env.DEPLOYMENT_FILE ?? path.join(
 	import.meta.dirname,
@@ -58,10 +55,7 @@ function requireToken(req: Request, res: Response, next: NextFunction) {
 
 // read on every request so a redeploy is picked up without restarting
 function contractAddress(): string {
-	const deployment = JSON.parse(readFileSync(DEPLOYMENT_FILE, "utf8"));
-	return CONTRACT === "real"
-		? deployment.address
-		: deployment.eventMock.address;
+	return JSON.parse(readFileSync(DEPLOYMENT_FILE, "utf8")).address;
 }
 
 app.get("/contract_address", requireToken, (_req: Request, res: Response) => {
@@ -127,7 +121,7 @@ app.get("/jobManifest/:jobId", requireToken, (req: Request, res: Response) => {
 });
 
 app.get("/dev/state", (_req: Request, res: Response) => {
-	res.json({ contract: CONTRACT, scores: Object.fromEntries(scoresByToken), heartbeats: Object.fromEntries(heartbeatByToken) });
+	res.json({ scores: Object.fromEntries(scoresByToken), heartbeats: Object.fromEntries(heartbeatByToken) });
 });
 
 app.use((req: Request, res: Response) => {
@@ -138,6 +132,6 @@ app.use((req: Request, res: Response) => {
 
 app.listen(DEV_PORT, () => {
 	console.log(
-		`Mock server on http://localhost:${DEV_PORT}, handing out the ${CONTRACT} contract (CONTRACT=real|mock)`,
+		`Mock server on http://localhost:${DEV_PORT}, handing out the OffBalance contract`,
 	);
 });
