@@ -11,7 +11,10 @@ using {compareJobIds as ==} for JobID_t global;
 
 contract OffBalance {
     // ------ necessary types ----------
-    type Result_t is uint256; // not sure how to represent results yet either
+    struct Result_t { 
+        uint256 answer; // not sure how to represent results yet either
+        bool submitted;
+    } 
     type Commitment_t is uint256;
     enum Status { JOB_SUBMITTED, PROVIDER_SELECTED, COMMIT, REVEAL, CONSENSUS, DELIVERING, DELIVERED, PAID, CANCELED, NO_QUORUM }
 
@@ -69,6 +72,7 @@ contract OffBalance {
 
     // debug event for visibility, not needed for functionality
     event COMMIT_SUBMITTED_BY(address provider);
+    event QUORUM_RESULT(address[] providers);
     // -------- end of defining events ------
 
     // ------- data variables necessary for the contract -------//
@@ -110,13 +114,23 @@ contract OffBalance {
     // ==========functions for providers========== //
     function submitCommitment(JobID_t jobId, Commitment_t commitment) public {
         require(block.timestamp < jobs[jobId].commitDeadline);
+        
+        // commitment = resultHash ^ keccak256(key, jobId, provider); the key is only posted at reveal
+        providers[msg.sender].answers[jobId].hash = Commitment_t.unwrap(commitment);
         emit COMMIT_SUBMITTED_BY(msg.sender);
-        // logic for commitment - using sha256 to hash the commits, then encrypt them i think?
     }
 
-    function submitReveal(JobID_t jobId) public {
+    function submitReveal(JobID_t jobId, bytes32 key) public {
         require(block.timestamp < jobs[jobId].revealDeadline);
-        // logic for revealing -
+        uint commitment = providers[msg.sender].answers[jobId].hash;
+        require(commitment != 0, "no commitment");
+        Result_t storage result = jobs[jobId].answers[msg.sender];
+        require(!result.submitted, "already revealed");
+
+        // decrypt: the pad includes msg.sender, so a copied commitment + key decrypts to garbage
+        uint pad = uint(keccak256(abi.encodePacked(key, JobID_t.unwrap(jobId), msg.sender)));
+        result.answer = commitment ^ pad;
+        result.submitted = true;
     }
     // ==========functions for providers========== //
 
@@ -160,20 +174,77 @@ contract OffBalance {
 
     //  end commit phase, start reveal
     function startRevealPhase(JobID_t jobId) public {
-        require(block.timestamp > jobs[jobId].commitDeadline);
-        require(jobs[jobId].status == Status.COMMIT); // must be in commit phase before this
+        require(block.timestamp > jobs[jobId].commitDeadline, "before deadline..."); // this is wrong...
+        require(jobs[jobId].status == Status.COMMIT, "the job is not in commit state"); // must be in commit phase before this
         jobs[jobId].revealDeadline = block.timestamp + REVEAL_WINDOW;
         jobs[jobId].status = Status.REVEAL;
         emit REVEAL_PHASE_START(jobId);
     }
 
-    function calculateConsensus(JobID_t jobId) public {
+    function calculateConsensus(JobID_t jobId) internal {
         require (jobs[jobId].status == Status.REVEAL);
         require (block.timestamp > jobs[jobId].revealDeadline);
         
         jobs[jobId].status = Status.CONSENSUS;
         
-        // logic for calculating the quorum
+        // how would we calculate consensus? 
+        // walk through assigned providers for a job and look into their answer
+        
+        address[] storage providers = jobs[jobId].assignedProviders;
+        uint n = providers.length;
+        uint[] memory vals = new uint[](n);
+        uint[] memory counts = new uint[](n);
+        uint unique = 0;
+
+        for (uint i = 0; i < n; i++) {
+            Result_t storage res = jobs[jobId].answers[providers[i]];
+            
+            if (!res.submitted)
+                continue;
+            
+            uint j = 0;
+            while (j < unique && vals[j] != res.answer) {
+                j++;
+            }
+
+            if (j == unique) {
+                vals[unique] = res.answer;
+                unique++;
+            }
+
+            counts[j]++;
+        }
+
+        uint quorum = 0;
+        uint quorum_index = 0;
+        for (uint i = 0; i < counts.length; i++) {
+            if (quorum < counts[i]) {
+                quorum = counts[i];
+                quorum_index = i;
+            }
+        }
+
+        address[] memory winners = new address[](quorum);
+        uint bestAnswer = vals[quorum_index];
+        uint w = 0;
+        for (uint i = 0; i < n; i++) {
+            
+            Result_t storage res = jobs[jobId].answers[providers[i]];
+            if (res.submitted && res.answer == bestAnswer) {
+                winners[w++] = providers[i];
+            }
+        }
+
+    
+        // now at best_index is the best response
+        if (uint256(quorum) < jobs[jobId].quorum) {
+            emit NO_QUORUM(jobId);
+        }
+
+        else {
+            emit QUORUM_RESULT(winners);
+        }
+
     }
 
     // end reveal, start delivery
