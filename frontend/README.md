@@ -1,138 +1,61 @@
-# Offbalance frontend
+# OffBalance frontend
 
-Minimal React/Vite frontend for wallet sign-in, buyer/provider job lists, job submission, job details/results, and provider setup/pricing. Provider selection and matching belong to the coordinator; there is no marketplace browser.
+React/Vite UI connected to the repository's HTTPS API and MongoDB. Buyers save workloads, inspect assigned providers and delivery records, and submit saved jobs through their wallet when a real contract is configured. Providers inspect their benchmarked machine and set an hourly rate. Matching remains internal; there is no public marketplace browser.
 
-Requires Node.js 20.19+ or 22.12+.
+## Run with the real server
+
+Use Node 22.18+ and a running MongoDB instance. First start the backend:
+
+```sh
+cd server
+npm ci
+cp .env.example .env
+npm run cert:dev
+npm run seed
+npm start
+```
+
+In another terminal:
 
 ```sh
 cd frontend
 npm ci
-npm run dev:demo
-```
-
-Open the URL printed by Vite and choose **Enter demo**. Demo mode is explicitly labeled, uses an in-memory adapter, and never connects a wallet, funds a job, or runs a container. New jobs remain pending; the included completed job has a downloadable sample result. Provider setup shows sample hardware/rates/stake; saved rates persist only until reload. The client download is unavailable until a real release URL is supplied. Reloading resets the data.
-
-For the real API:
-
-```sh
 npm run dev
 ```
 
-API mode expects a backend implementing the contract below. Vite proxies `/api` to `http://127.0.0.1:3001`; no frontend environment file is needed when a compatible API listens there. To use another local API address, copy `.env.example` to `.env.local` and set `VITE_API_BASE_URL` (including any API prefix). The full coordinator implementation is maintained separately from this frontend change; demo mode works independently.
+Open the Vite URL and sign in with an injected Ethereum wallet. Vite sends `/api/*` requests to `https://localhost:5000/*`, removing the `/api` prefix and verifying the backend certificate against `server/.local/tls/cert.pem`. Generate the certificate before starting Vite. Neither credentials nor MongoDB connection strings belong in frontend configuration.
 
-Normal mode uses an injected Ethereum wallet (`window.ethereum`). It requests accounts and a signature only when the user clicks sign in. The frontend signs a SIWE message, exchanges it for a bearer token, and keeps the token in memory. Reloading requires signing in again. Sign out discards the local session; account/chain changes, wallet disconnects, token expiry, and authenticated 401 responses also clear it. A sign-in signature does not transfer funds.
+`VITE_API_BASE_URL` defaults to `/api`. For another backend set `API_PROXY_TARGET=https://...` and, for a private/local CA, `API_CA_FILE=/absolute/path/to/ca.pem` in the frontend's `.env.local` or shell environment. The proxy requires HTTPS and retains certificate verification. A deployed static frontend needs its host/reverse proxy to forward `/api`, or a public HTTPS `VITE_API_BASE_URL` with the frontend origin permitted by the server's `CORS_ORIGINS`. Vite's development proxy is not included in a static production build.
 
-`VITE_API_BASE_URL` defaults to `/api`; a cross-origin backend must allow the frontend origin, `Authorization`, `Content-Type`, and `Idempotency-Key` in CORS. `VITE_` variables are public build configuration and must not contain secrets. `.env.demo` enables the local adapter only for `--mode demo`; there is no automatic fallback to sample data when the API fails.
+The example backend configuration uses database-only mode (`CHAIN=off`). Jobs persist and providers can be matched, but this mode does not run blockchain execution or settlement. For the local chain, configure the real server as described in [server/README.md](../server/README.md). The root `startup.py` now starts the real HTTPS API, seeds a fresh development database for its fresh Hardhat chain, and configures the frontend proxy and provider client to trust the local certificate. MongoDB and all Node/Python dependencies must already be installed. Each launcher database is retained after shutdown; its name is printed so it can be inspected or removed later. `MONGODB_URI` selects its Mongo host/authentication; the launcher uses a new database name on that host for each fresh chain.
+
+## Connected workflows
+
+- Wallet sign-in signs the exact server-issued OffBalance challenge and exchanges `{ wallet, signature }` at `POST /auth`. Tokens stay in memory. Signing out revokes the server token; account/network changes and authenticated 401s clear the session. The server's current tokens have no automatic expiry; the UI does not invent one.
+- Buyer/provider lists use `/jobs?role=...`; dashboard totals come from `/account/me/dashboard`, without replacing the full jobs list with the dashboard's 20 recent jobs.
+- **Save job** persists its name, image, hourly cap, provider/quorum counts, execution window and hardware requirements. The server honors `Idempotency-Key` per account and payload, including concurrent retries. Registry tags are resolved to pinned image digests; a supplied `repo@sha256:...` is already pinned and needs no registry lookup.
+- The price is the maximum **ETH per hour per provider**, not a total job budget. USD entry converts that hourly cap using a public ETH/USD quote with exact integer arithmetic. Quotes expire before a first save; retries preserve the original conversion/payload/key. Minutes are converted to API seconds.
+- With a configured real contract, the owner's saved job has a separate **Submit to blockchain** action. It verifies the authenticated wallet and chain, then asks the wallet to call `submitJob` with zero ETH transferred. The UI waits for the server's chain observation before reporting submission. A wallet rejection leaves the database job available to retry. Navigation or identity changes cancel preparation before a transaction is requested.
+- Provider setup offers a masked, copyable client API key for the active session (sign-out revokes it), reads `/provider/hardware`, including current heartbeat state, and writes `/provider/price`. An account without benchmarks sees an unregistered machine state. Stored machine rates use the database's numeric representation; unsupported precision is rejected rather than silently rounded. Benchmark reports alone do not establish liveness. The Python execution loop still needs periodic calls to the heartbeat endpoint.
+- Delivery records come from `/jobs/:id/result` as JSON. Each record shows its provider, reported hash, output location and receipt verification state. HTTP(S) output links open separately without forwarding the session token. A reported location is not proof of verified computation or payment. Non-web locations remain visible as text; the server does not stream artifact bytes.
+
+Full commit/reveal/consensus/payment execution still depends on unfinished client and contract work. This integration does not simulate or claim successful settlement.
+
+## Demo and tests
+
+`npm run dev:demo` remains a visibly labeled in-memory demo. It needs no backend or wallet and never falls back silently from API mode. Reloading resets demo data.
 
 ```sh
 npm test
 npm run build
-npm run preview
+npx playwright install chromium
+# Start demo on port 5173 for the standalone demo smoke checks:
+npm run dev:demo -- --port 5173 --strictPort
+npm run test:browser
+# Real browser test orchestrates its own Vite/HTTPS server and isolated database:
+MONGODB_URI=mongodb://127.0.0.1:27017 npm run test:integration
 ```
 
-`npm test` uses Node's built-in test runner. Browser regression checks are in `test/browser-smoke.cjs`: start demo mode on port 5173 and API mode on port 5174, then run `npx playwright install chromium` once and `npm run test:browser`. Playwright is included as a development dependency. If using an external Playwright installation or system Chrome, set `PLAYWRIGHT_MODULE` to its package path and `BROWSER_EXECUTABLE` to the Chrome executable. The checks inject a test wallet and intercept localhost API requests; they do not use a real account or backend. Screenshots go to the temporary `offbalance-browser` directory (`BROWSER_ARTIFACTS` overrides it).
+The real integration runner requires `npm ci` in both `frontend/` and `server/`, OpenSSL, MongoDB and Playwright's Chromium. It uses a wallet fixture that signs real challenges with public development keys; API requests are not mocked. It checks wallet rejection/identity changes, persisted named jobs, provider pricing, delivery metadata and revoked-token logout. The delivery test explicitly sets a lifecycle fixture in its isolated database; it does not execute a blockchain job. The temporary database, certificates and child services are cleaned up. Screenshots go to ignored `frontend/.local/screens/`; `BROWSER_ARTIFACTS` overrides that location.
 
-Hash routes (`#/`, `#/jobs/new`, `#/jobs/:id`, `#/provider`) support refresh and browser history without server-side route rewrites. Overview refreshes every 10 seconds; job details every 5 seconds. Provider setup has a manual status refresh that preserves an edited price. Leaving a page cancels its reads. Forms preserve input on errors; unchanged job submissions reuse their idempotency key on retry.
-
-Execution windows are entered as whole minutes (1–10080, default 60) and shown in minutes on job details; API requests/responses continue to use seconds. Budgets can be entered in ETH (up to 18 decimal places) or USD (up to two decimal places). USD mode fetches an anonymous [Coinbase ETH/USD spot quote](https://docs.cdp.coinbase.com/coinbase-app/track-apis/prices), shows the ETH equivalent, and converts to the API's ETH limit using exact integer arithmetic, rounded down to wei. The browser sends no wallet/session information to the price service. ETH mode needs no price lookup.
-
-USD quotes expire after 60 seconds before an initial submission; use **Refresh rate** when needed. Unavailable/invalid quotes block USD submission without a fallback price. After an uncertain submission response, an unchanged retry retains its original conversion, payload and idempotency key even if a newer quote is fetched. USD is an entry/conversion option, not fiat payment or a guaranteed future USD spending cap. Demo mode uses the same public quote lookup; tests intercept it with fixed fixtures.
-
-## API integration contract
-
-These are the frontend integration contracts. `src/api.js` adapts and normalizes responses; no backend implementation is included in this frontend change. Existing UML establishes nonce/verify, submission, and job detail; listing and result download complete the browser integration. Error responses use `{ "message": "Human-readable error" }` with a non-2xx status. API mode requires a compatible server rather than falling back to sample data.
-
-| Method | Path | Response |
-| --- | --- | --- |
-| GET | `/auth/nonce?wallet=0x…&chainId=1&origin=http%3A%2F%2F127.0.0.1%3A5174` | `{ "nonce": "alphanumericNonce", "address": "0x…", "issuedAt": "ISO timestamp", "expiresAt": "ISO timestamp" }`; the Origin header can supply the origin instead |
-| POST | `/auth/verify` | `{ "token": "JWT", "expiresAt": "ISO timestamp", "account": { "id": "account-id", "wallet": "0x…" } }` |
-| GET | `/jobs?view=buyer` or `provider` | `{ "jobs": [Job], "summary": { "activeJobs": 1, "completedJobs": 2, "totalSpent": "0.004", "totalEarned": "0.003" } }` |
-| POST | `/jobs` | `{ "job": Job }`; receives an `Idempotency-Key` header |
-| GET | `/jobs/:id` | `{ "job": Job }` |
-| GET | `/jobs/:id/result` | Authenticated binary/text artifact bytes; errors remain non-2xx JSON |
-| GET | `/provider/profile` | `{ "provider": Provider }`, scoped to the signed-in account |
-| GET | `/provider/tutorial` | `{ "tutorial": { "title": "Client setup", "steps": ["…"], "downloadUrl": "https://…", "sourceUrl": "https://…" } }`; URLs optional |
-| POST | `/provider/pricing` | Receives `{ "pricePerHour": "0.002" }`, returns `{ "provider": Provider }` |
-
-`POST /auth/verify` receives `{ "message": "full SIWE message", "signature": "0x…" }`. The message binds the wallet to the browser host/origin, current wallet chain, nonce, and issue time. A nonce response can supply the EIP-55 checksummed `address` for strict SIWE verifiers; it must match the connected account, ignoring case. Otherwise the frontend preserves the address supplied by the wallet. The server must verify the signature and message fields, enforce allowed domains/chains and nonce expiry/single use, and issue a session for that wallet. It must authorize every job/result request against the session; the view query is not an authorization rule. The frontend does not select or switch a production chain. Server-side chain restrictions remain required.
-
-`POST /jobs` receives:
-
-```json
-{
-  "name": "Matrix computation",
-  "dockerImage": "ghcr.io/your-team/workload:latest",
-  "maxPrice": "0.008",
-  "k": 3,
-  "quorum": 2,
-  "window": 3600,
-  "requirements": {
-    "minCpuScore": 0,
-    "minGpuScore": 0,
-    "minMemoryScore": 0
-  }
-}
-```
-
-`maxPrice` is always a positive ETH decimal string with up to 18 fractional digits, including when the user enters USD. `budgetCurrency` and quote metadata are frontend state and are not submitted as extra API fields. Counts, scores, and the API window in seconds are safe integers; `1 <= quorum <= k <= 255` matches the UML's uint8 counts; zero hardware scores mean no minimum. The backend must validate these independently. Honor the idempotency key per wallet/payload to avoid creating duplicate jobs after an uncertain response.
-
-Image input is a registry reference, not an archive upload. Stored budgets, provider rates and settlement amounts use ETH; USD entry is converted before submission. Provider transport and matching belong to the coordinator. Submission creates a job request; this frontend does not submit an escrow or staking transaction.
-
-Example `Job` (the list can omit detail-only fields):
-
-```json
-{
-  "id": "job-024",
-  "name": "Matrix computation",
-  "status": "COMPLETED",
-  "createdAt": "2026-10-18T16:00:00Z",
-  "dockerImage": "ghcr.io/your-team/workload:latest",
-  "maxPrice": "0.008",
-  "spent": "0.004",
-  "earnings": "0.003",
-  "k": 3,
-  "quorum": 2,
-  "window": 3600,
-  "providerCount": 3,
-  "runtimeSeconds": 68,
-  "requirements": { "minCpuScore": 0, "minGpuScore": 0, "minMemoryScore": 0 },
-  "consensus": { "agreeing": 3, "required": 2 },
-  "consensusResultHash": "0x…",
-  "result": { "available": true, "filename": "result.json" }
-}
-```
-
-Use string IDs, ISO dates, and decimal strings for money. Summary totals come from the API; absent values display as a dash. Provider summary may also include `currentStake`. Failed jobs may include an `error` string. The server should expose `result.available` only when the authorized result can be retrieved. The frontend downloads artifact bytes through the API and does not render arbitrary result HTML or follow result-location URLs.
-
-The read adapter accepts Lucidchart job fields alongside the canonical names above: `_id` (including Mongo extended JSON `$oid`) → `id`, `dockerImageDigest` → `dockerImage`, `minNodesToRunOn` → `k`, `minNodesToAgree` → `quorum`, `timeWindow` → `window`, `providers.length` → `providerCount`, `result.hash` → result hash, and `result.deliveryTime` → output-received time. Explicit canonical values win. These aliases do not infer a downloadable result, successful receipt, payment, or consensus from a stored location/hash.
-
-Job statuses support both the repository UML and the Lucidchart phases: `PENDING`, `PICKED_UP`, `RUNNING`, `COMMIT_PHASE`, `REVEAL_PHASE`, `VERIFYING`, `CONSENSUS_VERIFICATION`, `AWAITING_DELIVERY`, `DELIVERY_RECEIPT_VALIDATION`, `PAYOUT`, `COMPLETED`, `CANCELED`, and `NO_QUORUM`/`FAILED`. Unknown names remain visible. There is no invented linear state machine or automatic claim that `COMPLETED`/`PAYOUT` means money was paid.
-
-Optional job evidence fields are displayed independently:
-
-```json
-{
-  "onChainJobId": 24,
-  "delivery": { "status": "VERIFIED", "receivedAt": "2026-10-18T16:02:00Z", "verifiedAt": "2026-10-18T16:03:00Z" },
-  "payment": { "status": "PAID", "settledAt": "2026-10-18T16:04:00Z" },
-  "result": { "available": true, "filename": "result.json", "retainedUntil": "2026-10-25T16:02:00Z" }
-}
-```
-
-Delivery/payment statuses and timestamps must come from the backend's actual evidence. Either object may include an `error` string. `STORED` and `NOT_CONFIGURED` are supported for local-only delivery/payment. The `VERIFIED`/`PAID` example above illustrates reported evidence; neither is inferred from job completion. Receipt schema and result retention remain backend decisions.
-
-Example `Provider`:
-
-```json
-{
-  "registered": true,
-  "online": true,
-  "lastSeen": "2026-10-18T16:00:00Z",
-  "currentStake": "0.050",
-  "pricePerHour": "0.002",
-  "suggestedPricePerHour": "0.002",
-  "machine": { "cpuScore": 8420, "gpuScore": 12680, "memoryScore": 6240, "updatedAt": "2026-10-18T16:00:00Z" }
-}
-```
-
-Profile/pricing routes must be scoped to the authenticated account. Machine registration, session keys, VM resource configuration, benchmarks and container execution belong to the provider client/coordinator. The browser reads their reported state and changes one hourly price; it does not register an on-chain provider or place stake. Unknown stake/suggested pricing should be `null`; the numeric values above are illustrative. A tutorial can supply public HTTP(S) release/source links; absent links remain unavailable. No client binary is bundled with this frontend.
+`test:browser` covers the independent demo, validation, navigation, USD quote expiry and mobile widths. `test:integration` covers the actual API. CI runs both plus frontend unit/build and the server's TypeScript/MongoDB/HTTPS contract suites.

@@ -7,7 +7,7 @@ const publicUrl = value => {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url.href : null; } catch { return null; }
 };
 
-export default function ProviderSetup({ api }) {
+export default function ProviderSetup({ api, clientKey }) {
   const loadProvider = useCallback(signal => api.getProvider(signal), [api]);
   const loadTutorial = useCallback(signal => api.getProviderTutorial(signal), [api]);
   const providerResource = useResource(loadProvider);
@@ -19,6 +19,7 @@ export default function ProviderSetup({ api }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [keyNotice, setKeyNotice] = useState('');
   const dirty = useRef(false);
   const saving = useRef(false);
   const active = useRef(false);
@@ -26,6 +27,15 @@ export default function ProviderSetup({ api }) {
   useEffect(() => {
     if (!dirty.current && !saving.current) setPrice(provider?.pricePerHour ?? '');
   }, [provider]);
+
+  async function copyKey() {
+    try {
+      await navigator.clipboard.writeText(clientKey);
+      if (active.current) setKeyNotice('Client API key copied.');
+    } catch {
+      if (active.current) setKeyNotice('Clipboard access was denied. Allow clipboard access and try again.');
+    }
+  }
 
   async function save(event) {
     event.preventDefault();
@@ -75,13 +85,20 @@ export default function ProviderSetup({ api }) {
       </dl>
       {!provider.registered && <p className="muted">Connect the provider client to register this machine.</p>}
       {!machine && <p className="muted">Waiting for hardware scores from the provider client.</p>}
-      <p className="muted">The client reports hardware scores and availability. Jobs are assigned automatically.</p>
+      <p className="muted">Hardware scores come from client benchmark uploads. Online status requires recent coordinator heartbeats; benchmark uploads alone do not keep a provider online.</p>
     </section>}
     <div className="form-grid">
       <section className="panel" aria-labelledby="client-heading">
         <div className="section-heading"><h2 id="client-heading">{tutorial?.title || 'Client setup'}</h2></div>
         {tutorialResource.error && <ResourceError message={tutorialResource.error} retry={tutorialResource.refresh} />}
         {tutorialResource.loading && !tutorial && <p className="muted" role="status">Loading setup instructions…</p>}
+        {clientKey && <div className="field">
+          <label htmlFor="client-api-key">Client API key</label>
+          <input id="client-api-key" type="password" readOnly value={clientKey} autoComplete="off" />
+          <p className="muted">Use this key when your provider client asks for its API key. Signing out revokes it.</p>
+          <button className="text-button" type="button" onClick={copyKey}>Copy client API key</button>
+          {keyNotice && <p role="status">{keyNotice}</p>}
+        </div>}
         {Array.isArray(tutorial?.steps) && tutorial.steps.length > 0 && <ol>{tutorial.steps.map((step, index) => <li key={index}>{step}</li>)}</ol>}
         {!tutorialResource.loading && !tutorialResource.error && !downloadUrl && <p className="muted">A client download is not available yet.</p>}
         <div className="form-actions">

@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { JobQueue } from '../matching/JobQueue.js';
-import { ProviderPoolCache } from '../matching/ProviderPoolCache.js';
-import { MatchingEngine, parseEthAmount, formatEthAmount, quoteProviders } from '../matching/MatchingEngine.js';
+import { JobQueue } from '../matching/JobQueue.ts';
+import { ProviderPoolCache } from '../matching/ProviderPoolCache.ts';
+import { MatchingEngine, parseEthAmount, formatEthAmount, quoteProviders } from '../matching/MatchingEngine.ts';
 
 const epoch = 1_000_000;
 const provider = (wallet, changes = {}) => ({ wallet, accountId: `account-${wallet}`, registered: true,

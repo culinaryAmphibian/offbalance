@@ -28,6 +28,7 @@ type Scores = { cpu: number; gpu: number | null; mem: number };
 
 // in-memory state, keyed by bearer token (= the client's API key)
 const scoresByToken = new Map<string, Scores>();
+const heartbeatByToken = new Map<string, number>();
 
 const app = express();
 app.use(express.json());
@@ -90,6 +91,15 @@ app.post("/scores", requireToken, (req: Request, res: Response) => {
 	res.status(201).json({ ok: true, scores });
 });
 
+app.post("/provider/heartbeat", requireToken, (_req: Request, res: Response) => {
+	if (!scoresByToken.has(res.locals.token)) {
+		res.status(409).json({ error: "no machine yet; report /scores first" });
+		return;
+	}
+	heartbeatByToken.set(res.locals.token, Date.now());
+	res.json({ ok: true, heartbeatTimeoutMs: 30_000 });
+});
+
 app.get("/jobManifest/:jobId", requireToken, (req: Request, res: Response) => {
 	const jobId = Number(req.params.jobId);
 	if (!Number.isInteger(jobId) || jobId < 0) {
@@ -117,7 +127,7 @@ app.get("/jobManifest/:jobId", requireToken, (req: Request, res: Response) => {
 });
 
 app.get("/dev/state", (_req: Request, res: Response) => {
-	res.json({ contract: CONTRACT, scores: Object.fromEntries(scoresByToken) });
+	res.json({ contract: CONTRACT, scores: Object.fromEntries(scoresByToken), heartbeats: Object.fromEntries(heartbeatByToken) });
 });
 
 app.use((req: Request, res: Response) => {

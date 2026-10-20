@@ -22,6 +22,58 @@ Has the following responsibilities:
 
 GPU is reported as unavailable (`null`) until a GPU benchmark backend is implemented; it must not be interpreted as a measured zero. Compare scores only when the benchmark implementation and settings match. Re-run the benchmark after changing the VM's CPU or memory allocation. These client-reported measurements help with provider matching but do not prove hardware identity or guarantee job performance.
 
+## Provider availability
+
+After uploading benchmarks, the client immediately sends an authenticated
+`POST /provider/heartbeat`, then repeats every 10 seconds on a dedicated worker.
+Slow chain requests and container execution do not stop the heartbeats.
+The server stops considering the provider online after 30 seconds
+without a heartbeat. Existing assignments are retained when a provider goes offline.
+
+With the real HTTPS server, from `client/`:
+
+```bash
+OFFBALANCE_SERVER_URL=https://localhost:5000 \
+REQUESTS_CA_BUNDLE=../server/.local/tls/cert.pem \
+python3 main.py --dev --provider 1
+```
+
+The local launcher sets the URL and certificate trust automatically. `--dev`
+uses the seeded token `dev` for provider 1, and `dev2`–`dev4` for providers 2–4;
+`OFFBALANCE_API_KEY` overrides it. For ordinary sign-in, use the API key shown
+in the frontend's provider setup and its corresponding wallet private key.
+Set a positive hourly price in the frontend after the machine's benchmark appears.
+Benchmarks and pricing alone do not establish availability; matching also requires
+a live heartbeat and hardware that meets the job's requirements.
+
+Temporary network/server errors retry at the next heartbeat. Invalid/revoked
+credentials (401/403) and TLS trust failures stop the client. When the client
+stops or loses connectivity, availability expires automatically.
+
+Test availability and execution handling without a running Docker daemon or blockchain node:
+
+```bash
+python3 -m pip install requests docker
+python3 -m unittest discover -s test -v
+```
+
+## Docker output and failures
+
+The runner reads the daemon's security options before launching a job. Rootless
+Docker uses container UID/GID `0:0`, which maps to the ordinary daemon user's
+host identity; ordinary Docker uses the provider process's host UID/GID. The
+provider process and rootless daemon should run as the same local user, and the
+output directory must be available on the daemon's host. Set `DOCKER_HOST` when
+using a nondefault socket. Existing directory permissions are preserved.
+
+A failed container reports its exit code and recent logs to the authenticated
+`POST /provider/jobs/:jobId/error` endpoint. Timeouts, OOM kills, preparation,
+Docker and commitment errors are also reported. Containers are removed after
+execution, including on failure or timeout. If the error report cannot reach the
+server, the client prints that failure locally. Reporting an error does not
+release an unfinished blockchain assignment. Unassigned commit-phase broadcasts
+are ignored.
+
 ---
 
 ## Example flow

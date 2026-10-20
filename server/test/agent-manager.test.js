@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { AgentManager } from '../agent-manager/index.js';
+import { AgentManager } from '../agent-manager/index.ts';
 
 const wallet = `0x${'1'.repeat(40)}`;
 const bytes = Buffer.from('verified provider output');
