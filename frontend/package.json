@@ -9,11 +9,13 @@
     "build": "vite build",
     "test": "node --test test/*.test.js",
     "test:browser": "node test/browser-smoke.cjs",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "test:integration": "node test/server-browser.cjs"
   },
   "dependencies": {
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "viem": "^2.57.7"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.1.1",

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Interface } from 'ethers';
-import { BlockchainMonitor, ServerBlockchainManager, ReorgError } from '../blockchain-manager/index.js';
+import { BlockchainMonitor, ServerBlockchainManager, ReorgError } from '../blockchain-manager/index.ts';
 
 // Event declarations are supplied by the contract owner; no contract/wallet/RPC is deployed here.
 const abi = [

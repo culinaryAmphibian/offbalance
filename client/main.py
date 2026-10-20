@@ -32,7 +32,7 @@ DEPLOYMENT_FILE = REPO_ROOT / os.environ.get('OFFBALANCE_DEPLOYMENT', 'blockchai
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="OffBalance provider client")
     parser.add_argument('--dev', action='store_true',
-                        help="local hardhat mode: session key from dev.env, API key defaults to 'dev'")
+                        help="local hardhat mode: session key from dev.env, API key defaults to dev/dev2/dev3/dev4")
     parser.add_argument('--provider', type=int, default=1,
                         help="with --dev: which PROVIDER_N_PRIVATE_KEY from dev.env to use (default 1)")
     return parser.parse_args()
@@ -96,7 +96,8 @@ def main():
         raise ConnectionError(f"Hardhat node is not reachable at {RPC_URL}")
 
     # create server manager
-    api_key = os.environ.get('OFFBALANCE_API_KEY', 'dev') if args.dev else ask_for_api_key()
+    dev_api_key = 'dev' if args.provider == 1 else f'dev{args.provider}'
+    api_key = os.environ.get('OFFBALANCE_API_KEY', dev_api_key) if args.dev else ask_for_api_key()
     s_mgr = ServerManager(BASE_URL, api_key)
     # obtain contract addr from server via network call
     addr_str = ask_for_contract_addr(s_mgr)
