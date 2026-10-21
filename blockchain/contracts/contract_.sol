@@ -78,6 +78,7 @@ contract OffBalance {
     mapping(JobID_t => Job) private jobs;
     mapping(address => Provider) private providers;
     mapping(address => uint256) public credits;
+	mapping(bytes32 => uint256) private temp_hashes;
 
     uint256 public constant REVEAL_WINDOW = 120;
     uint256 public constant DELIVERY_WINDOW = 300;
@@ -228,19 +229,19 @@ contract OffBalance {
         require(block.timestamp > job.revealDeadline, "Reveal phase not ended");
         emit CONSENSUS_VERIFICATION_START(jobId);
 
+		for (uint256 i = 0; i < job.assignedProviders.length; i++) {
+			address candidate = job.assignedProviders[i];
+            bytes32 candidateCommit = providers[candidate].answers[jobId].outputHash;
+			temp_hashes[candidateCommit] = 0;
+		}
         bytes32 bestHash;
         uint256 bestCount = 0;
-		mapping(bytes32 => uint256) memory hashes;
         for (uint256 i = 0; i < job.assignedProviders.length; ++i) {
             address candidate = job.assignedProviders[i];
             Commitment_t storage candidateCommit = providers[candidate].answers[jobId];
             if (!candidateCommit.revealed) continue;
-			
-			if (!hashes[candidateCommit.outputHash]) {
-				hashes[candidateCommit.outputHash] = 0;
-			}
-			uint256 count = ++hashes[candidateCommit.outputHash];
 
+			uint256 count = ++temp_hashes[candidateCommit.outputHash];
             if (count > bestCount) {
                 bestCount = count;
                 bestHash = candidateCommit.outputHash;
