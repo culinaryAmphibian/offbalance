@@ -84,6 +84,7 @@ class ProviderClient():
 
         elif isinstance(event, RevealPhaseStartEvent):
             print("Handling reveal phase start")
+            self.blockchain.reveal(event.jobId)
 
         elif isinstance(event, DeliveryPhaseStartEvent):
             print("Handling delivery phase start")

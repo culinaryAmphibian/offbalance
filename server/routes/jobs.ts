@@ -26,12 +26,13 @@ export function jobRoutes({ chain, matcher }: Deps): Router {
 		...serializeJob(job), executionMode: chain ? "chain" : "local",
 		canViewResults: String(job.owner) === String(me),
 		...(String(job.owner) === String(me) ? { submitWallet: wallet } : {}),
-		canSubmit: String(job.owner) === String(me) && Boolean(chain) && config.contract === "real" && !job.submittedAt && job.status === JobStatus.PENDING,
+		canSubmit: String(job.owner) === String(me) && Boolean(chain) && !job.submittedAt && job.status === JobStatus.PENDING,
 	});
 	router.use("/jobs", requireAuth);
 
 	// Creates the job and reserves its on-chain id. The buyer's wallet then calls
-	// submitJob(id, price, k, quorum, timeWindow); matching starts on JOB_SUBMITTED.
+	// submitJob(id, price, k, quorum, timeWindow, image), escrowing the price;
+	// matching starts on JOB_SUBMITTED.
 	//
 	// The image is one of:
 	//   image             any reference ("python:3.12"); the server pins it by digest

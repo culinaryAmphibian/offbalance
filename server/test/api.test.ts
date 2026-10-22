@@ -195,8 +195,8 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 		});
 
 		test("payout frees the providers and the waiting job gets matched", async () => {
-			await event("PAID", { jobId: BigInt(jobId), provider: wallets.p1.address });
-			await event("SLASHED", { jobId: BigInt(jobId), provider: wallets.p2.address });
+			await event("PAID", { jobId: BigInt(jobId), provider: wallets.p1.address, amount: 2_000_000_000_000_000_000n });
+			await event("SLASHED", { jobId: BigInt(jobId), provider: wallets.p2.address, amount: 100_000_000_000_000n });
 			await event("DELIVERED", { jobId: BigInt(jobId) });
 
 			const waiting = await call("GET", `/jobs/${waitingJobId}`, { as: "buyer" });

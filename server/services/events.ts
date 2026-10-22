@@ -1,4 +1,6 @@
 // Keeps the database in step with contract events.
+import { Types } from "mongoose";
+import { formatEther } from "viem";
 import { AccountModel, ChainEventModel, HardwareModel, JobModel, TERMINAL_STATUSES } from "../models/index.ts";
 import { STATUS_FOR_EVENT } from "../models/JobStatus.ts";
 import type { ChainEvent } from "./chain.ts";
@@ -9,6 +11,8 @@ async function accountForAddress(address: unknown) {
 	return hw?.userRef ?? (await AccountModel.findOne({ walletIds: String(address).toLowerCase() }))?._id ?? null;
 }
 
+const IGNORED_EVENTS = new Set(["COMMITTED", "REVEALED", "CONSENSUS_REACHED"]);
+
 export async function handleChainEvent(event: ChainEvent, matcher: Matcher): Promise<void> {
 	if (event.id && await ChainEventModel.exists({ _id: event.id })) return;
 	await applyChainEvent(event, matcher);
@@ -16,8 +20,8 @@ export async function handleChainEvent(event: ChainEvent, matcher: Matcher): Pro
 }
 
 async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher): Promise<void> {
-	// This diagnostic event carries only a provider address, not a job ID.
-	if (name === "COMMIT_SUBMITTED_BY") return;
+	// Per-provider protocol steps; nothing in the database tracks them.
+	if (IGNORED_EVENTS.has(name)) return;
 	const jobId = Number(args.jobId);
 	if (!Number.isSafeInteger(jobId) || jobId < 0) throw new TypeError("Invalid event jobId.");
 	const effectId = id ?? `${jobId}:${name}:${String(args.provider ?? "").toLowerCase()}`;
@@ -36,7 +40,7 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 			await matcher.ping();
 			return;
 
-		// normally the server's own assignment; also covers assignments fired from the event mock
+		// the server's own assignment, read back from the chain
 		case "PROVIDER_SELECTED": {
 			const account = await accountForAddress(args.provider);
 			if (!account) {
@@ -48,13 +52,14 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 			return;
 		}
 
-		// the contract doesn't carry amounts yet, so settle at the job's running price
+		// the contract reports the provider's payout in wei; older events without it settle at the running price
 		case "PAID": {
 			const account = await accountForAddress(args.provider);
 			if (account) {
+				const earned = typeof args.amount === "bigint" ? Types.Decimal128.fromString(formatEther(args.amount)) : job.runningPrice;
 				await AccountModel.updateOne(
 					{ _id: account, processedChainEvents: { $ne: `${effectId}:provider` } },
-					{ $inc: { reputation: 1, totalEarned: job.runningPrice }, $addToSet: { processedChainEvents: `${effectId}:provider` } },
+					{ $inc: { reputation: 1, totalEarned: earned }, $addToSet: { processedChainEvents: `${effectId}:provider` } },
 				);
 			}
 			await AccountModel.updateOne({ _id: job.owner, processedChainEvents: { $ne: `${effectId}:buyer` } }, { $inc: { totalSpent: job.runningPrice }, $addToSet: { processedChainEvents: `${effectId}:buyer` } });

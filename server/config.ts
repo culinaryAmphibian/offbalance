@@ -11,8 +11,6 @@ export const config = {
 	serverPrivateKey: process.env.SERVER_PRIVATE_KEY as `0x${string}` | undefined,
 	deploymentFile: process.env.DEPLOYMENT_FILE ??
 		path.join(import.meta.dirname, "..", "blockchain", "deployments", "localhost.json"),
-	// "real" (OffBalance) or "mock" (OffBalanceEventMock, driven by client/dev/event_controller.py)
-	contract: process.env.CONTRACT === "mock" ? "mock" : "real",
 	// CHAIN=off runs without a node: jobs count as submitted as soon as they're
 	// created, and matching only updates the database
 	chainEnabled: process.env.CHAIN !== "off",

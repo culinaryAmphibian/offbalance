@@ -5,6 +5,7 @@ import {
 	createPublicClient,
 	createWalletClient,
 	http,
+	nonceManager,
 	type Abi,
 	type Address,
 	type PublicClient,
@@ -16,16 +17,14 @@ import { BlockchainMonitor, type MonitorEvent } from "../blockchain-manager/inde
 import { MongoCheckpointStore, checkpointNamespace } from "../adapters/checkpoints.ts";
 
 type ContractDeployment = { address: Address; abi: Abi; chainId: number };
-type Deployment = ContractDeployment & { eventMock: { address: Address; abi: Abi } };
 
 // Writes read this again, but refuse deployment changes until the server reconnects.
 export function readDeployment(): ContractDeployment {
-	const d = JSON.parse(readFileSync(config.deploymentFile, "utf8")) as Deployment;
-	const contract = config.contract === "mock" ? d.eventMock : d;
-	if (!Number.isSafeInteger(d.chainId) || d.chainId < 1 || !contract || !Array.isArray(contract.abi)) {
+	const d = JSON.parse(readFileSync(config.deploymentFile, "utf8")) as ContractDeployment;
+	if (!Number.isSafeInteger(d.chainId) || d.chainId < 1 || !d.address || !Array.isArray(d.abi)) {
 		throw new TypeError("Deployment must supply a positive chain ID, contract address, and ABI.");
 	}
-	return { address: getAddress(contract.address) as Address, abi: contract.abi, chainId: d.chainId };
+	return { address: getAddress(d.address) as Address, abi: d.abi, chainId: d.chainId };
 }
 
 export function errorMessage(error: unknown): string {
@@ -34,6 +33,9 @@ export function errorMessage(error: unknown): string {
 	}
 	return error instanceof Error ? error.message : String(error);
 }
+
+// Chain-time deadlines (unix seconds) from OffBalance.getDeadlines; 0 until that phase starts.
+export type Deadlines = { commitDeadline: bigint; revealDeadline: bigint; deliveryDeadline: bigint };
 
 export type ChainEvent = { id?: string; name: string; args: Record<string, unknown>; blockNumber: bigint };
 
@@ -92,14 +94,15 @@ export class Chain {
 			const code = await publicClient.getCode({ address: deployment.address });
 			if (!code || code === "0x") throw new Error(`no contract at ${deployment.address}`);
 			const walletClient = config.serverPrivateKey ? createWalletClient({
-				account: privateKeyToAccount(config.serverPrivateKey), transport: http(config.rpcUrl),
+				// the orchestrator, matcher and receipt checks send concurrently from this one key
+				account: privateKeyToAccount(config.serverPrivateKey, { nonceManager }), transport: http(config.rpcUrl),
 			}) : null;
-			if (!walletClient && config.contract === "real") {
+			if (!walletClient) {
 				console.warn("SERVER_PRIVATE_KEY not set: chain events are enabled; server transactions will fail.");
 			}
 			provider = new JsonRpcProvider(config.rpcUrl, deployment.chainId, { staticNetwork: true });
 			const chain = new Chain(publicClient, walletClient, provider, deployment);
-			console.log(`Chain: ${config.contract} contract ${deployment.address} via ${config.rpcUrl}`);
+			console.log(`Chain: OffBalance ${deployment.address} via ${config.rpcUrl}`);
 			return chain;
 		} catch (error) {
 			provider?.destroy();
@@ -109,11 +112,10 @@ export class Chain {
 	}
 
 	get canWrite(): boolean {
-		return !this.stopped && this.walletClient !== null && config.contract === "real";
+		return !this.stopped && this.walletClient !== null;
 	}
 
 	private async write(functionName: string, args: unknown[]): Promise<void> {
-		if (config.contract === "mock") return;
 		if (this.stopped) throw new Error("Chain connection has stopped.");
 		const wallet = this.walletClient;
 		if (!wallet?.account) throw new Error("SERVER_PRIVATE_KEY is required for server contract transactions.");
@@ -121,6 +123,8 @@ export class Chain {
 		if (chainId !== this.deployment.chainId || address.toLowerCase() !== this.deployment.address.toLowerCase()) {
 			throw new Error("Contract deployment changed; restart the chain connection before submitting transactions.");
 		}
+		// Simulate first so a failing require() surfaces with its reason before any gas is spent.
+		await this.publicClient.simulateContract({ address, abi, functionName, args, account: wallet.account });
 		const hash = await wallet.writeContract({ address, abi, functionName, args, account: wallet.account, chain: null });
 		const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 		if (receipt.status !== "success") throw new Error(`${functionName} reverted (tx ${hash})`);
@@ -132,6 +136,31 @@ export class Chain {
 
 	verifyReceipt(jobId: number, provider: string): Promise<void> {
 		return this.write("verifyReceipt", [BigInt(jobId), provider]);
+	}
+
+	// Deadline-gated phase transitions. They're public on-chain; the server is just the default caller.
+	startRevealPhase(jobId: number): Promise<void> {
+		return this.write("startRevealPhase", [BigInt(jobId)]);
+	}
+
+	endRevealPhase(jobId: number): Promise<void> {
+		return this.write("endRevealPhase", [BigInt(jobId)]);
+	}
+
+	endDeliveryPhase(jobId: number): Promise<void> {
+		return this.write("endDeliveryPhase", [BigInt(jobId)]);
+	}
+
+	async getDeadlines(jobId: number): Promise<Deadlines> {
+		const [, commitDeadline, revealDeadline, deliveryDeadline] = await this.publicClient.readContract({
+			address: this.deployment.address, abi: this.deployment.abi, functionName: "getDeadlines", args: [BigInt(jobId)],
+		}) as readonly [number, bigint, bigint, bigint];
+		return { commitDeadline, revealDeadline, deliveryDeadline };
+	}
+
+	// The latest block's timestamp: the clock the contract checks deadlines against.
+	async chainTime(): Promise<bigint> {
+		return (await this.publicClient.getBlock()).timestamp;
 	}
 
 	async listen(handle: (event: ChainEvent) => Promise<void>): Promise<void> {

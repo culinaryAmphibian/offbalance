@@ -1,10 +1,9 @@
 # main orchestrator that creates all of the managers
 #
-#   python3 main.py                        # prompts for API key + session key
+#   python3 main.py                        # prompts for API key, session key + key seed
 #   python3 main.py --dev --provider 2     # keys from dev.env, against server/dev-server.ts
 #
-# the contract address always comes from the server; the dev server picks
-# OffBalance vs OffBalanceEventMock with CONTRACT=real|mock
+# the contract address always comes from the server
 from blockchain.BlockchainManager import BlockchainManager
 from benchmark.BenchmarkManager import BenchmarkManager
 from server.ServerManager import ServerManager
@@ -53,6 +52,23 @@ def load_dev_signer(provider: int) -> LocalAccount:
         raise ValueError(f"{key_name} is not in {DEV_ENV_FILE}")
     return Account.from_key(dev_env[key_name])
 
+def parse_key_seed(seed_hex: str) -> bytes:
+    seed = bytes.fromhex(seed_hex.removeprefix('0x'))
+    if len(seed) < 32:
+        raise ValueError("key seed must be at least 32 bytes of hex")
+    return seed
+
+def load_dev_key_seed(provider: int) -> bytes:
+    key_name = f'PROVIDER_{provider}_KEY_SEED'
+    dev_env = load_dev_env()
+    if key_name not in dev_env:
+        raise ValueError(f"{key_name} is not in {DEV_ENV_FILE}")
+    return parse_key_seed(dev_env[key_name])
+
+# seed for the per-job commitment keys. keep it stable: a restart mid-job needs it to reveal
+def ask_for_key_seed() -> bytes:
+    return parse_key_seed(os.environ.get('OFFBALANCE_KEY_SEED') or getpass("Please provide your commitment key seed (hex): "))
+
 def ask_for_session_key() -> LocalAccount:
     session_key = os.environ.get('PROVIDER_PRIVATE_KEY') or getpass("Please provide your authenticated session key: ")
     return Account.from_key(session_key)
@@ -86,15 +102,11 @@ def main():
     addr_str = ask_for_contract_addr(s_mgr)
     # get the signer account
     signer = load_dev_signer(args.provider) if args.dev else ask_for_session_key()
+    key_seed = load_dev_key_seed(args.provider) if args.dev else ask_for_key_seed()
 
     contract_addr = Web3.to_checksum_address(addr_str)
 
-    # the server may hand out the event mock, which has its own ABI
-    deployment = json.loads(DEPLOYMENT_FILE.read_text())
-    if contract_addr == Web3.to_checksum_address(deployment['eventMock']['address']):
-        contract_abi = deployment['eventMock']['abi']
-    else:
-        contract_abi = deployment['abi']
+    contract_abi = json.loads(DEPLOYMENT_FILE.read_text())['abi']
 
     # make sure it's valid
     if not w3.eth.get_code(contract_addr):
@@ -105,7 +117,7 @@ def main():
     contract = ProviderContractWrapper(raw_contract, )
 
     # finally ready for blockchain manager
-    bc_mgr = BlockchainManager(w3, contract, signer)
+    bc_mgr = BlockchainManager(w3, contract, signer, key_seed)
     print(f"Provider {signer.address} listening to {contract_addr}")
 
     run_mgr = RunManager()

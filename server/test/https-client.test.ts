@@ -61,8 +61,7 @@ describe('real HTTPS server and provider client', { skip: !mongodbUri && 'set MO
     uri.pathname = `/offbalance-https-${process.pid}-${Date.now()}`;
     const deployment = path.join(directory, 'deployment.json');
     writeFileSync(deployment, JSON.stringify({ chainId: 31337,
-      address: '0x5FbDB2315678afecb367f032d93F642f64180aa3', abi: [],
-      eventMock: { address: '0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512', abi: [] } }));
+      address: '0x5FbDB2315678afecb367f032d93F642f64180aa3', abi: [] }));
     const port = await new Promise<number>((resolve, reject) => {
       const socket = createServer();
       socket.once('error', reject);

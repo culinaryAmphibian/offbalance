@@ -6,12 +6,15 @@ import { Builder } from './services/builder.ts';
 import { Chain } from './services/chain.ts';
 import { handleChainEvent } from './services/events.ts';
 import { Matcher } from './services/matcher.ts';
+import { Orchestrator } from './services/orchestrator.ts';
 import { createHttpsServer, httpsOptions } from './https.ts';
 
 const tlsOptions = await httpsOptions();
 await connectDB(config.mongodbUri);
 const chain = await Chain.connect();
 const matcher = new Matcher(chain);
+// the server calls the contract's deadline-gated phase transitions
+const orchestrator = chain?.canWrite ? new Orchestrator(chain) : null;
 const builder = new Builder();
 let server: Server | undefined;
 let stopping = false;
@@ -24,7 +27,7 @@ async function shutdown(): Promise<void> {
     server!.closeIdleConnections();
   });
   // Stop incoming provider requests and event callbacks before closing MongoDB.
-  await Promise.all([closed, chain?.stop()]);
+  await Promise.all([closed, chain?.stop(), orchestrator?.stop()]);
   await matcher.idle().catch(error => console.error('Pending matching failed:', error));
   await disconnectDB();
 }
@@ -36,9 +39,12 @@ try {
     server!.once('listening', resolve);
     server!.once('error', reject);
   });
-  console.log(`Server on https://localhost:${config.port} (${chain ? `chain: ${config.contract}` : 'database-only'})`);
+  console.log(`Server on https://localhost:${config.port} (${chain ? 'chain' : 'database-only'})`);
   console.log(builder.enabled ? `Builds: pushing to ${builder.repository}` : 'Builds: off (set REGISTRY_NAMESPACE to enable)');
-  await chain?.listen(event => handleChainEvent(event, matcher));
+  await chain?.listen(async event => {
+    await handleChainEvent(event, matcher);
+    orchestrator?.onEvent(event);
+  });
   await matcher.ping();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => { void shutdown().catch(error => { console.error(error); process.exitCode = 1; }); });

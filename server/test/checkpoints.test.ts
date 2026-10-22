@@ -82,9 +82,9 @@ test("Mongo checkpoint persistence isolates chain/contract namespaces, resumes, 
 
 test("chain event adapter preserves ABI names, bigint arguments, and deduplication IDs", async () => {
 	const { chainEvent } = await import("../services/chain.ts");
-	const abi = new Interface(["event PAID(uint256 indexed jobId, address provider)"]);
+	const abi = new Interface(["event PAID(uint256 indexed jobId, address indexed provider, uint256 amount)"]);
 	const provider = "0x1111111111111111111111111111111111111111";
-	const encoded = abi.encodeEventLog("PAID", [42n, provider]);
+	const encoded = abi.encodeEventLog("PAID", [42n, provider, 5n]);
 	const decoded = abi.parseLog(encoded)!;
 	const event = chainEvent({
 		id: "stable-event-id", chainId: "31337", address: provider,
@@ -93,6 +93,6 @@ test("chain event adapter preserves ABI names, bigint arguments, and deduplicati
 		signature: decoded.signature, args: decoded.args,
 	}, abi);
 	assert.deepEqual(event, {
-		id: "stable-event-id", name: "PAID", args: { jobId: 42n, provider }, blockNumber: 7n,
+		id: "stable-event-id", name: "PAID", args: { jobId: 42n, provider, amount: 5n }, blockNumber: 7n,
 	});
 });

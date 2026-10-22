@@ -119,16 +119,16 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 			assert.equal((await JobModel.findById(f.job._id).orFail()).status, JobStatus.AWAITING_DELIVERY);
 		});
 
-		await t.test("provider-only commitment logs allow later job events and checkpointed monitor restart", async () => {
+		await t.test("ignored commitment logs allow later job events and checkpointed monitor restart", async () => {
 			const f = await fixture();
-			const abi = ["event COMMIT_SUBMITTED_BY(address provider)",
-				"event REVEAL_PHASE_START(uint256 jobId)", "event CONSENSUS_VERIFICATION_START(uint256 jobId)"];
+			const abi = ["event COMMITTED(uint256 indexed jobId, address indexed provider)",
+				"event REVEAL_PHASE_START(uint256 indexed jobId)", "event CONSENSUS_VERIFICATION_START(uint256 indexed jobId)"];
 			const iface = new Interface(abi);
 			const address = "0x1111111111111111111111111111111111111111";
-			const logs = ["COMMIT_SUBMITTED_BY", "REVEAL_PHASE_START", "CONSENSUS_VERIFICATION_START"].map((name, index) => ({
+			const logs = ["COMMITTED", "REVEAL_PHASE_START", "CONSENSUS_VERIFICATION_START"].map((name, index) => ({
 				address, blockNumber: index === 2 ? 3 : 1, blockHash: hash(index === 2 ? 4 : 2),
 				transactionHash: hash(200 + index), transactionIndex: index, index: 0,
-				...iface.encodeEventLog(name, [index === 0 ? f.provider.walletIds[0] : f.job.onChainJobId]),
+				...iface.encodeEventLog(name, index === 0 ? [f.job.onChainJobId, f.provider.walletIds[0]] : [f.job.onChainJobId]),
 			}));
 			const namespace = `commit-log-test:${f.job.onChainJobId}`;
 			let head = 2;
@@ -163,20 +163,20 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 				assert.equal((await JobModel.findById(f.job._id).orFail()).status, JobStatus.CONSENSUS_VERIFICATION);
 				assert.deepEqual(await new MongoCheckpointStore(namespace).load(), { blockNumber: 3, blockHash: hash(4) });
 				assert.deepEqual(ranges, [0, 3]);
-				assert.deepEqual(seen, ["COMMIT_SUBMITTED_BY", "REVEAL_PHASE_START", "CONSENSUS_VERIFICATION_START"]);
+				assert.deepEqual(seen, ["COMMITTED", "REVEAL_PHASE_START", "CONSENSUS_VERIFICATION_START"]);
 			} finally { await restarted.stop(); }
 		});
 
 		await t.test("monitor decoding, event effects, and persisted checkpoint replay end to end", async () => {
 			const f = await fixture();
-			const abi = ["event PAID(uint256 indexed jobId, address provider)",
-				"event SLASHED(uint256 indexed jobId, address provider)", "event DELIVERED(uint256 indexed jobId)"];
+			const abi = ["event PAID(uint256 indexed jobId, address indexed provider, uint256 amount)",
+				"event SLASHED(uint256 indexed jobId, address indexed provider, uint256 amount)", "event DELIVERED(uint256 indexed jobId)"];
 			const iface = new Interface(abi);
 			const address = "0x1111111111111111111111111111111111111111";
 			const logs = ["PAID", "SLASHED", "DELIVERED"].map((name, index) => ({
 				address, blockNumber: 1, blockHash: hash(2), transactionHash: hash(100 + index),
 				transactionIndex: index, index: 0,
-				...iface.encodeEventLog(name, name === "DELIVERED" ? [f.job.onChainJobId] : [f.job.onChainJobId, f.provider.walletIds[0]]),
+				...iface.encodeEventLog(name, name === "DELIVERED" ? [f.job.onChainJobId] : [f.job.onChainJobId, f.provider.walletIds[0], 2_500_000_000_000_000_000n]),
 			}));
 			const store = new MongoCheckpointStore(`monitor-test:${f.job.onChainJobId}`);
 			const save = store.save.bind(store);
@@ -197,7 +197,8 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 			assert.equal((await monitor.pollOnce()).processed, 3);
 			assert.deepEqual(seen.slice(0, 3), seen.slice(3));
 			assert.deepEqual(await store.load(), { blockNumber: 2, blockHash: hash(3) });
-			assert.equal((await account(f.provider._id)).earned, "2.75");
+			// the provider is credited the contract's wei payout, the buyer the running price
+			assert.equal((await account(f.provider._id)).earned, "2.5");
 			assert.equal((await account(f.provider._id)).reputation, 0);
 			assert.equal((await account(f.owner._id)).spent, "2.75");
 			assert.deepEqual((await account(f.owner._id)).completed, [String(f.job._id)]);
