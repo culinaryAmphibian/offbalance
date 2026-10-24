@@ -53,9 +53,46 @@ stops or loses connectivity, availability expires automatically.
 Test availability and execution handling without a running Docker daemon or blockchain node:
 
 ```bash
-python3 -m pip install requests docker
-python3 -m unittest discover -s test -v
+source .venv/bin/activate
+python -m pip install requests docker pytest
+python -m pytest              # or: python -m unittest discover -s test -v
 ```
+
+Run pytest as `python -m pytest` from the venv. A bare `pytest` may resolve to the
+system install (`/usr/bin/pytest`), which can't import `docker` and fails while
+collecting `test_execution.py`.
+
+## Adding providers alongside `startup.py`
+
+`startup.py --shell` starts one client as provider 1. To add more, start each
+extra client yourself, with a different `--provider` number:
+
+```bash
+OFFBALANCE_SERVER_URL=https://localhost:5000 \
+REQUESTS_CA_BUNDLE=/path/to/offbalance/server/.local/tls/cert.pem \
+/path/to/offbalance/client/.venv/bin/python \
+  /path/to/offbalance/client/main.py --dev --provider 2
+```
+
+This works from any directory. Things that break it:
+
+- **Missing environment variables.** `startup.py` passes `OFFBALANCE_SERVER_URL` and
+  `REQUESTS_CA_BUNDLE` only to the client it launches. Without them, `main.py`
+  falls back to `http://localhost:5000`, which the HTTPS server rejects. The
+  certificate is self-signed, so `REQUESTS_CA_BUNDLE` must point at it. Give it
+  as an absolute path, or as a path relative to the directory you run from.
+- **No `--provider`.** `--dev` alone means provider 1, the same wallet and API
+  key (`dev`) as the launcher's client. Use `--provider 2`, `3` or `4`, which the
+  seed set up with API keys `dev2`–`dev4`.
+- **System Python.** A plain `python3` doesn't have `web3` or `docker`. Use
+  `client/.venv/bin/python`.
+
+`main.py` finds `dev.env` and `blockchain/deployments/localhost.json` relative
+to its own location, so the directory you run it from doesn't matter otherwise.
+
+Every client on a machine writes job output to the same folder,
+`~/.offbalance/jobs/<jobId>/output`. If two local providers are assigned the
+same job, they overwrite each other's output.
 
 ## Docker output and failures
 

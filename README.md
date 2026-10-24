@@ -17,7 +17,7 @@
 - Python 3.12 with a venv in `client/.venv`:
   ```bash
   cd client && python3 -m venv .venv && source .venv/bin/activate
-  pip install web3 requests docker
+  pip install web3 requests docker pytest
   ```
 - Docker Engine, which the client uses to run jobs. The `docker` pip package is only a client; it needs the daemon running.
   ```bash
