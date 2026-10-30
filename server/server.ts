@@ -7,6 +7,8 @@ import { Chain } from './services/chain.ts';
 import { handleChainEvent } from './services/events.ts';
 import { Matcher } from './services/matcher.ts';
 import { Orchestrator } from './services/orchestrator.ts';
+import { unfinishedPhaseJobIds } from './services/phase-recovery.ts';
+import { bindDatabaseDeployment } from './services/deployment-binding.ts';
 import { createHttpsServer, httpsOptions } from './https.ts';
 
 const tlsOptions = await httpsOptions();
@@ -33,7 +35,10 @@ async function shutdown(): Promise<void> {
 }
 
 try {
+  if (chain) await bindDatabaseDeployment(chain.deploymentIdentity);
   await builder.failInterrupted();
+  await chain?.recoverTransactions();
+  await matcher.recoverAssignments();
   server = createHttpsServer(createApp({ chain, matcher, builder }), tlsOptions).listen(config.port);
   await new Promise<void>((resolve, reject) => {
     server!.once('listening', resolve);
@@ -44,6 +49,11 @@ try {
   await chain?.listen(async event => {
     await handleChainEvent(event, matcher);
     orchestrator?.onEvent(event);
+  });
+  await orchestrator?.start(async () => {
+    await chain?.recoverTransactions();
+    await matcher.recoverAssignments();
+    return unfinishedPhaseJobIds();
   });
   await matcher.ping();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

@@ -90,7 +90,7 @@ def main():
     args = parse_args()
     be_mgr = BenchmarkManager()
 
-    w3 = Web3(Web3.HTTPProvider(RPC_URL))
+    w3 = Web3(Web3.HTTPProvider(RPC_URL, request_kwargs={'timeout': 5}))
     if not w3.is_connected():
         raise ConnectionError(f"Hardhat node is not reachable at {RPC_URL}")
 
@@ -121,6 +121,8 @@ def main():
     print(f"Provider {signer.address} listening to {contract_addr}")
 
     run_mgr = RunManager()
+    run_mgr.jobs_dir = bc_mgr.state.directory / 'jobs'
+    run_mgr.state = bc_mgr.state
 
     print("Client started...")
     mediator = ProviderClient(be_mgr, bc_mgr, s_mgr, run_mgr)
@@ -128,6 +130,7 @@ def main():
         mediator.run()
     finally:
         s_mgr.close()
+        bc_mgr.close()
 
 if __name__ == "__main__":
     main()

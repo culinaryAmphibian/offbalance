@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { MongoRepository } from '../adapters/repository.ts';
 import { AccountModel, HardwareModel, JobModel, JobStatus } from '../models/index.ts';
 import { Matcher } from '../services/matcher.ts';
+import { TransactionPendingError, TransactionRevertedError } from '../services/transactions.ts';
 
 const uri = process.env.MONGODB_URI;
 const image = `example/compute@sha256:${'a'.repeat(64)}`;
@@ -240,4 +241,49 @@ describe('MongoDB scheduler integration', { skip: !uri }, () => {
     }
     assert.equal(matcher.manager.queue.peek(), null);
   });
+  test('uncertain assignment retains durable and cached reservations across restart', async () => {
+    const buyer = await account(1);
+    const machine = await provider(2, 0.1);
+    const pending = await job(buyer._id, 1);
+    let mined = false;
+    let sends = 0;
+    const chain = {
+      async assignProviders(_id: number, _wallets: string[]) { sends++; throw new TransactionPendingError('receipt timeout'); },
+      async getAssignedProviders(_id: number) { return mined ? [machine.wallet] : []; },
+    };
+    const original = new Matcher(chain, { now: () => epoch });
+    await original.heartbeat(machine.wallet);
+    const retained = await JobModel.findById(pending._id).orFail();
+    assert.deepEqual(retained.providers.map(String), [String(machine.owner._id)]);
+    assert.deepEqual(retained.assignmentWallets, [machine.wallet]);
+    assert.equal(original.manager.pool.get(machine.wallet)?.busyJobId, '1');
+    assert.equal(retained.assignmentState, 'pending');
+    const replacement = new Matcher(chain, { now: () => epoch });
+    await replacement.recoverAssignments();
+    assert.equal((await JobModel.findById(pending._id))?.assignmentState, 'pending');
+    mined = true;
+    await replacement.recoverAssignments();
+    assert.equal((await JobModel.findById(pending._id))?.assignmentState, 'confirmed');
+    assert.equal(sends, 2, 'mined assignment is reconciled without another assignment broadcast');
+    await replacement.heartbeat(machine.wallet);
+    assert.equal(replacement.manager.pool.get(machine.wallet)?.busyJobId, '1');
+  });
+
+  test('assignment recovery releases a definitive reverted claim but retains claims when RPC state is unknown', async () => {
+    const buyer = await account(1);
+    const machine = await provider(2, 0.1);
+    const pending = await job(buyer._id, 1, { providers: [machine.owner._id], assignmentWallets: [machine.wallet], assignmentState: 'pending' });
+    let unreadable = true;
+    const matcher = new Matcher({
+      async getAssignedProviders() { if (unreadable) throw new Error('RPC unavailable'); return []; },
+      async assignProviders() { throw new TransactionRevertedError('mined revert'); },
+    });
+    await matcher.recoverAssignments();
+    assert.equal((await JobModel.findById(pending._id))?.providers.length, 1);
+    unreadable = false;
+    await matcher.recoverAssignments();
+    assert.deepEqual((await JobModel.findById(pending._id))?.providers, []);
+    assert.deepEqual((await AccountModel.findById(machine.owner._id))?.takenJobs, []);
+  });
+
 });

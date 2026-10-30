@@ -272,7 +272,7 @@ When the client starts calling a new route or reading a new field, add it here f
 - `BlockchainManager.event_types` doesn't subscribe to `JOB_SUBMITTED`, `CONSENSUS_VERIFICATION_START`, `PAID`, `SLASHED` or `NO_QUORUM`. Those events are silently ignored until they're added there and to `event_class_factory`.
 - On startup, the client's first poll includes the current block, so it can replay that block's events.
 - `COMMIT_PHASE_START`'s `deadline` is the job's `executionTime` (a duration), not the absolute `commitDeadline` timestamp.
-- The server's phase timers live in memory: after a restart, jobs already in progress aren't driven until someone calls the transition (anyone can, e.g. with the contract controller).
+- Server restarts reconstruct phase timers from unfinished MongoDB jobs and current contract deadlines. Keep MongoDB and the provider's private recovery journal intact; see the server/client READMEs for recovery and operator-intervention cases.
 - Every provider stakes the same `STAKE`; `stakeFor` is where reputation will scale it.
 - The server's buyer `totalSpent` is booked at the job's `runningPrice`, not from the contract's amounts.
 - The server's job statuses (`PENDING`, `COMMIT_PHASE`, …) differ from the contract's `Status` enum. The event → status mapping is in `server/models/JobStatus.ts`.
@@ -281,4 +281,4 @@ When the client starts calling a new route or reading a new field, add it here f
 
 ## TODO
 
-1. Persist phase deadlines so the orchestrator resumes in-progress jobs after a server restart. `startup.py` starts the local chain, HTTPS server, frontend and client; MongoDB must already be running.
+1. Complete verified provider output delivery and reconcile pricing/escrow/accounting ([issue #16](https://github.com/culinaryAmphibian/offbalance/issues/16)). `startup.py` starts the local chain, HTTPS server, frontend and client; MongoDB must already be running.

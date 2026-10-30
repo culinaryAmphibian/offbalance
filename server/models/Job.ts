@@ -36,6 +36,10 @@ const jobSchema = new Schema(
 		submittedAt: { type: Date, default: null }, // JOB_SUBMITTED seen on-chain; only then is it matched
 		providers: { type: [{ type: Schema.Types.ObjectId, ref: "Account" }], default: [] },
 
+		// Persist the exact wallet roster with the claim before any transaction is signed.
+		assignmentWallets: { type: [String], default: [] },
+		assignmentState: { type: String, enum: ['pending', 'confirmed'], default: 'pending' },
+
 		dockerImageDigest: {
 			type: String,
 			required: true,
@@ -76,7 +80,7 @@ const jobSchema = new Schema(
 		requirements: { type: jobRequirementsSchema, default: () => ({}) },
 		results: { type: [providerResultSchema], default: [] },
 	},
-	{ timestamps: { createdAt: true, updatedAt: false } },
+	{ timestamps: { createdAt: true, updatedAt: false }, writeConcern: { w: 'majority', j: true } },
 );
 
 jobSchema.index({ owner: 1, requestKey: 1 }, { unique: true, partialFilterExpression: { requestKey: { $type: "string" } } });

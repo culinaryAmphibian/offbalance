@@ -58,7 +58,7 @@ async function startNode(): Promise<ChildProcess> {
 	return node;
 }
 
-test("the server alone drives jobs from commit to payout and to no-quorum", { skip: !uri, timeout: 240_000 }, async () => {
+test("the server restores unfinished jobs after restart and drives payout and no-quorum", { skip: !uri, timeout: 240_000 }, async () => {
 	execFileSync("npx", ["hardhat", "compile", "--quiet"], { cwd: BLOCKCHAIN, stdio: "ignore" });
 	const artifact = JSON.parse(readFileSync(path.join(BLOCKCHAIN, "artifacts/contracts/OffBalance.sol/OffBalance.json"), "utf8"));
 	const abi = artifact.abi as Abi;
@@ -92,20 +92,35 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 		const { handleChainEvent } = await import("../services/events.ts");
 		const { Matcher } = await import("../services/matcher.ts");
 		const { Orchestrator } = await import("../services/orchestrator.ts");
+		const { unfinishedPhaseJobIds } = await import("../services/phase-recovery.ts");
+		const { bindDatabaseDeployment } = await import("../services/deployment-binding.ts");
 
 		await mongoose.connect(uri!, { dbName: `offbalance_e2e_test_${randomUUID().replaceAll("-", "")}` });
 		await mongoose.syncIndexes();
 
-		// the same wiring as server.ts
-		const chain = await Chain.connect();
-		assert.ok(chain?.canWrite, "server chain connection");
 		const matcher = new Matcher(null);
-		const orchestrator = new Orchestrator(chain, { log: { log() {}, warn: console.warn, error: console.error } });
-		await chain.listen(async event => {
-			await handleChainEvent(event, matcher);
-			orchestrator.onEvent(event);
-		});
-		stopServer = async () => { await orchestrator.stop(); await chain.stop(); };
+		let chain: InstanceType<typeof Chain>;
+		let orchestrator: InstanceType<typeof Orchestrator>;
+		// Recreate the coordinator using the same durable MongoDB, signer journal and
+		// event checkpoint. Historical phase events will not be emitted a second time.
+		async function bootServer() {
+			const connected = await Chain.connect();
+			assert.ok(connected?.canWrite, "server chain connection");
+			chain = connected;
+			await bindDatabaseDeployment(chain.deploymentIdentity);
+			await chain.recoverTransactions();
+			orchestrator = new Orchestrator(chain, { log: { log() {}, warn: console.warn, error: console.error } });
+			await chain.listen(async event => {
+				await handleChainEvent(event, matcher);
+				orchestrator.onEvent(event);
+			});
+			await orchestrator.start(unfinishedPhaseJobIds);
+			stopServer = async () => { await orchestrator.stop(); await chain.stop(); };
+		}
+		await bootServer();
+		let committedJobs = 0;
+		let restarted!: () => void;
+		const restartComplete = new Promise<void>(resolve => { restarted = resolve; });
 
 		const owner = await AccountModel.create({ walletIds: [buyer.account!.address.toLowerCase()] });
 		for (const p of [p1, p2, p3]) await AccountModel.create({ walletIds: [p.toLowerCase()] });
@@ -124,6 +139,7 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 			await JobModel.create({
 				onChainJobId: jobId, owner: owner._id, dockerImageDigest: `example/job@sha256:${"a".repeat(64)}`,
 				maxPrice: "1", runningPrice: "1", minNodesToRunOn: 3, minNodesToAgree: 2, timeWindow: EXECUTION_TIME,
+				assignmentWallets: [p1, p2, p3],
 			});
 			await send(buyer, "submitJob", [BigInt(jobId), price, 3n, 2n, BigInt(EXECUTION_TIME), "example/job"], price);
 			await chain!.assignProviders(jobId, [p1, p2, p3]);
@@ -131,6 +147,14 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 			for (const [i, provider] of providers.entries()) {
 				await send(provider, "submitCommitment", [BigInt(jobId), commitment(outputs[i], salts[i])], stake);
 			}
+			if (++committedJobs === 2) {
+				await until("persisted submissions before restart", async () =>
+					await JobModel.countDocuments({ submittedAt: { $ne: null } }) === 2);
+				await stopServer();
+				await bootServer();
+				restarted();
+			}
+			await restartComplete;
 			await until(`job ${jobId} reveal phase`, async () => await status(jobId) === REVEAL);
 			for (const [i, provider] of providers.entries()) {
 				await send(provider, "submitReveal", [BigInt(jobId), outputs[i], salts[i]]);

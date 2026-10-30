@@ -16,6 +16,8 @@ export const config = {
 	chainEnabled: process.env.CHAIN !== "off",
 	chainPollMs: Number(process.env.CHAIN_POLL_MS ?? 1000),
 	chainConfirmations: process.env.CHAIN_CONFIRMATIONS === undefined ? undefined : Number(process.env.CHAIN_CONFIRMATIONS),
+	chainBlockTimeS: process.env.CHAIN_BLOCK_TIME_S === undefined ? undefined : Number(process.env.CHAIN_BLOCK_TIME_S),
+	chainTransactionBudgetS: process.env.CHAIN_TRANSACTION_BUDGET_S === undefined ? undefined : Number(process.env.CHAIN_TRANSACTION_BUDGET_S),
 	chainStartBlock: Number(process.env.CHAIN_START_BLOCK ?? 0),
 
 	// Where buyers' Dockerfiles are pushed after the server builds them. Any OCI

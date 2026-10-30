@@ -24,6 +24,7 @@ class AvailabilityTests(unittest.TestCase):
         self.benchmark = Mock()
         self.blockchain = Mock()
         self.blockchain.pollEvents.return_value = []
+        self.blockchain.recovery_actions.return_value = []
         self.server = Mock()
         self.client = ProviderClient(self.benchmark, self.blockchain, self.server, Mock())
         self.stop = threading.Event()

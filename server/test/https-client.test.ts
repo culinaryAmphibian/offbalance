@@ -177,6 +177,7 @@ finally:
 
     const result = await run(process.env.TEST_PYTHON ?? 'python3', ['-c', `
 import os, sys, threading, time
+from types import SimpleNamespace
 from unittest.mock import patch
 sys.path.insert(0, os.environ['CLIENT_DIRECTORY'])
 from benchmark.Scores import Scores
@@ -192,6 +193,12 @@ class Benchmark:
         return scores
 
 class Blockchain:
+    def acknowledgeEvents(self):
+        pass
+
+    def recovery_actions(self):
+        return []
+
     def pollEvents(self):
         # run() must send its initial heartbeat before processing chain events.
         state = server.request('GET', '/provider/hardware').json()
@@ -217,7 +224,7 @@ try:
     assert state['lastSeen'] is None, state
     # Shorten only the interval; the worker and all HTTPS requests remain real.
     with patch('ProviderClient.HEARTBEAT_INTERVAL_SECONDS', 0.1):
-        ProviderClient(Benchmark(), Blockchain(), server, None).run(stop_event=stop)
+        ProviderClient(Benchmark(), Blockchain(), server, SimpleNamespace()).run(stop_event=stop)
     assert stop.is_set(), 'the real provider event loop must have run'
     print('PYTHON_PROVIDER_AVAILABILITY_OK')
 finally:

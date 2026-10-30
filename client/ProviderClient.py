@@ -7,6 +7,10 @@ import requests
 import sys
 import threading
 
+from blockchain.Contract import TransactionRetry, TransactionReverted
+from blockchain.State import ExecutionPaused
+from web3.exceptions import Web3RPCError
+
 if TYPE_CHECKING:
     from benchmark.BenchmarkManager import BenchmarkManager
     from blockchain.BlockchainManager import BlockchainManager
@@ -23,10 +27,15 @@ class ProviderClient():
         self.runner = runner
         self._job_lock = threading.Lock()
         self._running_jobs = set()
+        self._executing = False
+        self._workers = set()
+        self._stop_event = None
 
     # mediator methods here...
     def run(self, stop_event: threading.Event | None = None) -> None:
         stop_event = stop_event or threading.Event()
+        self._stop_event = stop_event
+        self.runner.stop_event = stop_event
         scores = self.benchmark.do_benchmark()
         # failures terminate with error
         self.server.post_benchmark(scores)
@@ -48,15 +57,25 @@ class ProviderClient():
         worker.start()
         try:
             while not stop_event.is_set():
-                events = self.blockchain.pollEvents()
-                for event in events:
-                    if stop_event.is_set():
-                        break
-                    self._handle_event(event)
+                try:
+                    events = self.blockchain.pollEvents()
+                    for event in events:
+                        if stop_event.is_set():
+                            break
+                        self._handle_event(event)
+                    else:
+                        # Handlers persisted their work before this checkpoint advances.
+                        self.blockchain.acknowledgeEvents()
+                    self._resume_jobs()
+                except (requests.RequestException, TransactionRetry, TransactionReverted, Web3RPCError) as error:
+                    print(f'Provider recovery will retry: {error}', file=sys.stderr)
                 stop_event.wait(1)
         finally:
             stop_event.set()
             worker.join()  # finish any bounded HTTP request before closing sessions
+            # Finish container/transaction work before releasing the state lock.
+            for job_worker in list(self._workers):
+                job_worker.join()
         if heartbeat_errors:
             raise heartbeat_errors[0]
 
@@ -84,7 +103,7 @@ class ProviderClient():
 
         elif isinstance(event, RevealPhaseStartEvent):
             print("Handling reveal phase start")
-            self.blockchain.reveal(event.jobId)
+            # recovery_actions checks the current phase and durable opening before sending.
 
         elif isinstance(event, DeliveryPhaseStartEvent):
             print("Handling delivery phase start")
@@ -104,21 +123,54 @@ class ProviderClient():
         # here, will need to mux the events and orchestrate client workflow
     
     def handleAssignment(self, jobId):
-        print(f"Handling assignment for: {jobId}")
         try:
-            manifest = self.server.getDockerManifest(jobId)
-            self.runner.prepareJob(manifest, jobId)
+            manifest = self.server.getDockerManifest(jobId) if self.blockchain.needs_manifest(jobId) else None
+            self.blockchain.remember_assignment(jobId, manifest)
         except Exception as error:
             self._report_error(jobId, f'Job preparation failed: {error}')
+            raise  # Do not acknowledge a selection whose work was not persisted.
 
     def handleCommitPhaseStart(self, jobId, deadline):
-        with self._job_lock:
-            # Commit-phase events are broadcast to every provider, including
-            # machines that were not selected for this job.
-            if self.runner.currentJobId != jobId or jobId in self._running_jobs:
+        self.blockchain.request_execution(jobId)
+
+    def _resume_jobs(self):
+        if self._stop_event is not None and self._stop_event.is_set():
+            return
+        for job_id, action, remaining in self.blockchain.recovery_actions():
+            with self._job_lock:
+                if job_id in self._running_jobs or (action == 'execute' and self._executing):
+                    continue
+                self._running_jobs.add(job_id)
+                if action == 'execute':
+                    self._executing = True
+                worker = threading.Thread(target=self._recover_job, args=(job_id, action, remaining), daemon=True)
+                self._workers.add(worker)
+                worker.start()
+
+    def _recover_job(self, job_id, action, remaining):
+        try:
+            if self._stop_event is not None and self._stop_event.is_set():
                 return
-            self._running_jobs.add(jobId)
-        threading.Thread(target=self._runAndCommit, args=(jobId, deadline), daemon=True).start()
+            if action == 'execute':
+                self.runner.prepareJob(self.blockchain.state.job(job_id)['manifest'], job_id)
+                self._runAndCommit(job_id, remaining)
+            elif action == 'commit':
+                result = bytes.fromhex(self.blockchain.state.job(job_id)['result'])
+                self.blockchain.commit(job_id, result)
+            elif action == 'reveal':
+                self.blockchain.reveal(job_id)
+            elif action == 'cleanup':
+                self.runner.cleanupJob(job_id)
+        except ExecutionPaused as error:
+            print(f'Job {job_id}: {error}', file=sys.stderr)
+        except Exception as error:
+            self._report_error(job_id, f'Recovery {action} failed: {error}')
+        finally:
+            with self._job_lock:
+                self._running_jobs.discard(job_id)
+                if action == 'execute':
+                    self._executing = False
+                self._workers.discard(threading.current_thread())
 
     def _report_error(self, jobId, message):
         print(f'Job {jobId}: {message}', file=sys.stderr)
@@ -132,10 +184,16 @@ class ProviderClient():
             result = self.runner.startJob(jobId, deadline)
             if result.status == 'ok' and result.output_dir:
                 print(f"Result was obtained: {result.output_dir}")
-                self.blockchain.commit(jobId, self.runner.hash_dir(result.output_dir))
+                result_hash = self.runner.hash_dir(result.output_dir, self._stop_event)
+                if self._stop_event is not None and self._stop_event.is_set():
+                    raise ExecutionPaused('Provider stopping; completed output retained for commitment.')
+                self.blockchain.commit(jobId, result_hash)
             else:
                 details = getattr(result, 'message', None) or 'No output was produced.'
+                self.blockchain.state.save_job(jobId, execution_failed=True)
                 self._report_error(jobId, f'Execution {result.status} (exit code {result.exitCode}): {details}')
+        except ExecutionPaused as error:
+            print(f'Job {jobId}: {error}', file=sys.stderr)
         except Exception as error:
             self._report_error(jobId, f'Execution or commitment failed: {error}')
         finally:

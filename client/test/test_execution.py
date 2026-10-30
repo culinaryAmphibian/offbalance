@@ -110,12 +110,16 @@ class ExecutionReportingTests(unittest.TestCase):
         self.blockchain.commit.assert_called_once_with(7, b'winning-hash')
         self.server.report_error.assert_not_called()
 
-    def test_unassigned_and_duplicate_events_do_not_start_workers(self):
+    def test_commit_events_request_durable_work_instead_of_starting_untracked_threads(self):
         with patch('ProviderClient.threading.Thread') as worker:
-            self.client.handleCommitPhaseStart(8, 60)
+            self.client.handleCommitPhaseStart(7, 60)
+            self.blockchain.request_execution.assert_called_once_with(7)
             worker.assert_not_called()
-            self.client.handleCommitPhaseStart(7, 60)
-            self.client.handleCommitPhaseStart(7, 60)
+
+    def test_duplicate_recovery_actions_start_one_worker(self):
+        self.blockchain.recovery_actions.return_value = [(7, 'execute', 60), (7, 'execute', 59)]
+        with patch('ProviderClient.threading.Thread') as worker:
+            self.client._resume_jobs()
             self.assertEqual(worker.call_count, 1)
             worker.return_value.start.assert_called_once()
 

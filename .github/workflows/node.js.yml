@@ -42,7 +42,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install requests docker
+      - run: python -m pip install requests docker web3 pycryptodome
       - name: Check provider availability and execution
         run: python -m unittest discover -s ../client/test -v
       - run: npm ci
@@ -73,3 +73,34 @@ jobs:
           npm run test:browser
       - name: Check browser against HTTPS server and MongoDB
         run: npm run test:integration
+
+  recovery:
+    # Run recovery checks independently of the existing contract toolchain job.
+    runs-on: ubuntu-22.04
+    services:
+      mongo:
+        image: mongo:8.0
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand({ping:1}).ok'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MONGODB_URI: mongodb://127.0.0.1:27017
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install requests docker web3 pycryptodome
+      - run: npm ci --prefix server
+      - name: Check server recovery with MongoDB
+        run: npm --prefix server run test:recovery
+      - name: Check provider restart and transaction recovery
+        run: python -m unittest discover -s client/test -v
