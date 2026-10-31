@@ -2,8 +2,8 @@
 
 The API defaults to private local files under `server/.local/results`. No R2
 request is made unless `RESULT_STORAGE=r2` and `R2_ENABLED=true` are configured.
-The HTTPS server binds to `127.0.0.1` by default. This branch has not been
-published or deployed.
+The HTTPS server binds to `127.0.0.1` by default. Publishing this source does not
+deploy the server or provide access to its private environment files.
 
 ## Run locally
 
@@ -94,8 +94,9 @@ hash to equal `keccak256(directoryDigest)`. Only verified bytes are stored.
 Metadata-only `hash`/`location` submissions are rejected.
 
 An identical retry reuses its stored object and retries an unconfirmed receipt.
-HTTP `202` means bytes were stored but the chain receipt is pending; the provider
-continues retrying while eligible. Local mode never fabricates a verified chain
+HTTP `202` means bytes were stored but the chain receipt is pending; an identical
+upload can retry that receipt. The provider sends results on the delivery-phase
+event using output retained in memory for its current run. Local mode never fabricates a verified chain
 receipt. The buyer downloads a retained verified archive from authenticated
 `GET /jobs/:jobId/result`; other accounts receive `403`. Storage keys stay on the
 server. Legacy metadata-only records are not downloadable artifacts.
