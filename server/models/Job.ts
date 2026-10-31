@@ -24,6 +24,20 @@ const providerResultSchema = new Schema(
 	{ _id: false },
 );
 
+const pricingSchema = new Schema({
+  version: Number, policy: String, maxHourlyRate: String, maxHourlyRateWei: String,
+  perProviderMaxCharge: String, perProviderMaxChargeWei: String, totalEscrow: String, totalEscrowWei: String,
+  window: Number, k: Number,
+}, { _id: false });
+const assignedRateSchema = new Schema({
+  provider: { type: Schema.Types.ObjectId, ref: 'Account', required: true }, wallet: String,
+  hourlyRate: String, hourlyRateWei: String, charge: String, chargeWei: String,
+}, { _id: false });
+const settlementSchema = new Schema({
+  version: Number, status: String, escrowWei: String, workChargedWei: String, buyerRefundWei: String,
+  slashedStakeWei: String,
+}, { _id: false });
+
 const jobSchema = new Schema(
 	{
 		// the id used everywhere else: contract calls, events, the client's /jobManifest/:jobId
@@ -48,8 +62,19 @@ const jobSchema = new Schema(
 		cpuLimit: { type: Number, default: 1, min: 0 }, // cores
 		memLimitMb: { type: Number, default: 512, min: 1 },
 
-		maxPrice: money({ required: true }), // highest per-hour rate the buyer pays each provider
-		runningPrice: money({ default: 0 }), // clearing rate: the priciest assigned provider's rate
+		buyerWallet: { type: String, lowercase: true, match: /^0x[0-9a-f]{40}$/, immutable: true },
+    pricing: { type: pricingSchema, default: null, immutable: true },
+    submissionValidationError: { type: String, default: null },
+    assignedRates: { type: [assignedRateSchema], default: [] },
+    quotedTotal: money({ default: 0 }),
+    settlement: { type: settlementSchema, default: null },
+    stakeReturned: money({ default: 0 }),
+    slashRewards: money({ default: 0 }),
+    workPaid: money({ default: 0 }),
+    slashed: money({ default: 0 }),
+    processedChainEvents: { type: [String], default: [] },
+    maxPrice: money({ required: true }), // highest per-hour rate the buyer pays each provider
+		runningPrice: money({ default: 0 }), // legacy display only: highest assigned hourly rate, never a settlement amount
 		minNodesToRunOn: { type: Number, required: true, min: 1, validate: Number.isSafeInteger }, // k
 		minNodesToAgree: {
 			type: Number,

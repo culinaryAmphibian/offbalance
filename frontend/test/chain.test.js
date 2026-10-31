@@ -2,16 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decodeFunctionData, parseEther } from 'viem';
 import { submitStoredJob } from '../src/chain.js';
+import { quotePricing } from '../src/pricing.js';
 
 const wallet = '0x1111111111111111111111111111111111111111';
 const contract = '0x2222222222222222222222222222222222222222';
 const hash = `0x${'ab'.repeat(32)}`;
 const config = () => ({ executionMode: 'chain', chain: { chainId: 31337, address: contract } });
 const image = 'repo@sha256:' + 'c'.repeat(64);
-const job = () => ({ id: '42', maxPrice: '0.000000000000000123', k: 3, quorum: 2, window: 3600, dockerImage: image, canSubmit: true, submitWallet: wallet, status: 'PENDING', submittedAt: null });
-// The production Solidity signature: five uint256 arguments and the image, payable with the escrowed price.
+const job = (changes = {}) => { const saved = { id: '42', maxPrice: '0.000000000000000123', k: 3, quorum: 2, window: 3600, dockerImage: image, canSubmit: true, submitWallet: wallet, buyerWallet: wallet, status: 'PENDING', submittedAt: null, ...changes }; return { ...saved, pricing: quotePricing(saved) }; };
+// The cap is a contract argument; the payment is the full booked-window escrow.
 const abi = [{ type: 'function', name: 'submitJob', stateMutability: 'payable', inputs: [
-  { name: 'jobId', type: 'uint256' }, { name: 'price', type: 'uint256' },
+  { name: 'jobId', type: 'uint256' }, { name: 'maxHourlyRate', type: 'uint256' },
   { name: 'k', type: 'uint256' }, { name: 'quorum', type: 'uint256' }, { name: 'executionTime', type: 'uint256' },
   { name: 'dockerImage', type: 'string' },
 ], outputs: [] }];
@@ -34,14 +35,14 @@ function mockWallet({ accounts = [wallet], chains = ['0x7a69'], transactionHash 
 
 const sent = provider => provider.calls.filter(call => call.method === 'eth_sendTransaction');
 
-test('stored job submission encodes the real contract call and escrows the exact wei price', async () => {
+test('stored job submission encodes the real contract call and escrows the full provider count at the quoted hourly cap', async () => {
   const provider = mockWallet();
   assert.deepEqual(await submitStoredJob(job(), config(), provider), { hash });
   assert.equal(sent(provider).length, 1);
   const [transaction] = sent(provider)[0].params;
   assert.equal(transaction.from, wallet);
   assert.equal(transaction.to, contract);
-  assert.equal(BigInt(transaction.value), parseEther(job().maxPrice));
+  assert.equal(BigInt(transaction.value), 3n * parseEther(job().maxPrice));
   const decoded = decodeFunctionData({ abi, data: transaction.data });
   assert.equal(decoded.functionName, 'submitJob');
   assert.deepEqual(decoded.args, [42n, parseEther(job().maxPrice), 3n, 2n, 3600n, image]);
@@ -151,4 +152,41 @@ test('a job without a Docker image rejects before requesting wallet access', asy
     await assert.rejects(submitStoredJob({ ...job(), dockerImage }, config(), provider), /no Docker image/);
     assert.equal(provider.calls.length, 0);
   }
+});
+
+
+test('non-hour windows ceil each provider charge before multiplying by provider count', async () => {
+  const saved = job({ maxPrice: '0.000000000000000001', window: 1, k: 4 });
+  const provider = mockWallet();
+  await submitStoredJob(saved, config(), provider);
+  const [transaction] = sent(provider)[0].params;
+  assert.equal(BigInt(transaction.value), 4n);
+  assert.deepEqual(decodeFunctionData({ abi, data: transaction.data }).args, [42n, 1n, 4n, 2n, 1n, image]);
+});
+
+test('missing, incompatible and tampered saved quotes fail before any wallet request', async () => {
+  const valid = job();
+  const changes = [
+    { pricing: undefined }, { pricing: null }, { pricingMigrationRequired: true }, { buyerWallet: undefined },
+    { buyerWallet: '0x3333333333333333333333333333333333333333' },
+    ...['version', 'policy', 'window', 'k', 'maxHourlyRate', 'maxHourlyRateWei', 'perProviderMaxCharge', 'perProviderMaxChargeWei', 'totalEscrow', 'totalEscrowWei'].map(field => ({ pricing: { ...valid.pricing, [field]: field === 'version' ? 2 : field === 'policy' ? 'elapsed-runtime' : 'invalid' } })),
+    { maxPrice: '0.1' }, { window: 60 }, { k: 4 },
+    { pricing: { ...valid.pricing, totalEscrowWei: '123', totalEscrow: valid.maxPrice } },
+  ];
+  for (const change of changes) {
+    const provider = mockWallet();
+    await assert.rejects(submitStoredJob({ ...valid, ...change }, config(), provider), /pricing quote.*Refresh/);
+    assert.equal(provider.calls.length, 0, JSON.stringify(change));
+  }
+});
+
+test('wallet rejection leaves the same saved quote available for retry', async () => {
+  const saved = job({ window: 600 });
+  const first = mockWallet();
+  const original = first.request;
+  first.request = request => request.method === 'eth_sendTransaction' ? Promise.reject({ code: 4001, message: 'Declined; try again.' }) : original(request);
+  await assert.rejects(submitStoredJob(saved, config(), first), { code: 4001, message: 'Declined; try again.' });
+  const retry = mockWallet();
+  await submitStoredJob(saved, config(), retry);
+  assert.equal(BigInt(sent(retry)[0].params[0].value), BigInt(saved.pricing.totalEscrowWei));
 });

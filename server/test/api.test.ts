@@ -11,6 +11,8 @@ import type { Server } from "node:http";
 import path from "node:path";
 import mongoose from "mongoose";
 import { privateKeyToAccount } from "viem/accounts";
+import { parseEther, formatEther } from "viem";
+import { createPricingQuote } from "../pricing.ts";
 import { createApp } from "../app.ts";
 import { connectDB, disconnectDB } from "../db.ts";
 import { handleChainEvent } from "../services/events.ts";
@@ -129,13 +131,13 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 					body: new URLSearchParams({ cpu: String(cpu), mem: "50" }),
 				});
 				assert.equal(res.status, 201);
-				assert.equal((await call("POST", "/provider/price", { as: who, body: { price } })).status, 200);
+				assert.equal((await call("POST", "/provider/price", { as: who, body: { price: String(price) } })).status, 200);
 				assert.equal((await call("POST", "/provider/heartbeat", { as: who })).status, 200);
 			}
 			const { body } = await call("GET", "/provider/hardware", { as: "p1" });
 			assert.equal(body.hardware.address, wallets.p1.address.toLowerCase());
 			assert.equal(body.hardware.gpuScore, null);
-			assert.equal(body.suggestedPrice, 5.5); // no machine within 25% of p1's cpu, so the median of the others (2, 9)
+			assert.equal(body.suggestedPrice, "5.5"); // median of the other exact rates (2, 9)
 		});
 
 		test("rejects invalid jobs", async () => {
@@ -195,26 +197,33 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 		});
 
 		test("payout frees the providers and the waiting job gets matched", async () => {
-			await event("PAID", { jobId: BigInt(jobId), provider: wallets.p1.address, amount: 2_000_000_000_000_000_000n });
-			await event("SLASHED", { jobId: BigInt(jobId), provider: wallets.p2.address, amount: 100_000_000_000_000n });
+			const work = 16_666_666_666_666_667n; // ceil(1 ETH/hour * 60 seconds / 3600)
+			const stake = 100_000_000_000_000n;
+			const escrow = BigInt(createPricingQuote(job()).totalEscrowWei);
+			await event("PAID", { jobId: BigInt(jobId), provider: wallets.p1.address, amount: work });
+			await event("STAKE_RETURNED", { jobId: BigInt(jobId), provider: wallets.p1.address, amount: stake });
+			await event("SLASHED", { jobId: BigInt(jobId), provider: wallets.p2.address, amount: stake });
+			await event("SLASH_REWARD", { jobId: BigInt(jobId), provider: wallets.p1.address, amount: stake });
+			await event("JOB_SETTLED", { jobId: BigInt(jobId), buyer: wallets.buyer.address, escrow,
+				workPaid: work, refund: escrow - work, slashedStake: stake });
 			await event("DELIVERED", { jobId: BigInt(jobId) });
 
 			const waiting = await call("GET", `/jobs/${waitingJobId}`, { as: "buyer" });
 			assert.deepEqual(waiting.body.job.providers, [accountIds.p1]);
 
 			const p1 = await call("GET", "/account/me/dashboard", { as: "p1" });
-			assert.equal(p1.body.provider.totalEarned, "2");
+			assert.equal(p1.body.provider.totalEarned, formatEther(work + stake));
 			assert.equal(p1.body.account.reputation, 1);
 			assert.equal(p1.body.provider.completedJobs, 1);
 			assert.equal(p1.body.provider.activeJobs, 1);
-			assert.equal(p1.body.provider.hardware.price, 1);
+			assert.equal(p1.body.provider.hardware.price, "1");
 
 			const buyer = await call("GET", `/account/${accountIds.buyer}/dashboard`, { as: "buyer" });
-			assert.equal(buyer.body.buyer.totalSpent, "2");
+			assert.equal(parseEther(buyer.body.buyer.totalSpent), work);
 			assert.equal(buyer.body.buyer.completedJobs, 1);
 			assert.equal(buyer.body.buyer.jobs.length, 2);
 			assert.equal(buyer.body.marketplace.providers, 3);
-			assert.equal(buyer.body.marketplace.medianPrice, 2);
+			assert.equal(buyer.body.marketplace.medianPrice, "2");
 
 			assert.equal((await call("GET", `/account/${accountIds.p1}/dashboard`, { as: "buyer" })).status, 403);
 		});

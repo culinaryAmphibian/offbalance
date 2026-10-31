@@ -33,12 +33,15 @@ contract OffBalance {
         bytes32 commitmentHash; // keccak256(abi.encode(keccak256(output), salt))
         bool delivered;         // server verified the delivery receipt
         uint256 stake;
+        uint256 hourlyRate;
+        uint256 bookedCharge;
     }
 
     struct Job {
         address payable creator;
         JobID_t id;
-        uint256 price;
+        uint256 maxHourlyRate; // wei per hour, per provider
+        uint256 escrow; // full booked execution window at the cap for all k providers
         uint256 k;      // number of providers that run the job
         uint256 quorum; // number of matching answers needed for consensus
         uint256 executionTime;
@@ -69,7 +72,13 @@ contract OffBalance {
     event DELIVERY_PHASE_START(JobID_t indexed jobId);
     event DELIVERED(JobID_t indexed jobId);
     event PAID(JobID_t indexed jobId, address indexed provider, uint256 amount);
+    event STAKE_RETURNED(JobID_t indexed jobId, address indexed provider, uint256 amount);
+    event SLASH_REWARD(JobID_t indexed jobId, address indexed provider, uint256 amount);
     event SLASHED(JobID_t indexed jobId, address indexed provider, uint256 amount);
+    event JOB_SETTLED(
+        JobID_t indexed jobId, address indexed buyer, uint256 escrow,
+        uint256 workPaid, uint256 refund, uint256 slashedStake
+    );
     event CANCELED(JobID_t indexed jobId);
     event NO_QUORUM(JobID_t indexed jobId);
     event COMMITTED(JobID_t indexed jobId, address indexed provider);
@@ -101,10 +110,28 @@ contract OffBalance {
         return STAKE;
     }
 
-    // Buyer escrows the full job price. The job id is reserved by the server's records beforehand.
+    // Exact ceil(hourlyRate * executionTime / 3600), including products wider than uint256.
+    // Decomposing both factors prevents intermediate overflow when the final quote fits.
+    function quoteProvider(uint256 hourlyRate, uint256 executionTime) public pure returns (uint256) {
+        require(hourlyRate > 0, "Hourly rate must be positive");
+        require(executionTime > 0, "Execution time must be positive");
+        uint256 remainder = hourlyRate % 3600;
+        uint256 fractional = remainder * (executionTime % 3600);
+        return (hourlyRate / 3600) * executionTime
+            + remainder * (executionTime / 3600)
+            + fractional / 3600 + (fractional % 3600 == 0 ? 0 : 1);
+    }
+
+    function quoteEscrow(uint256 maxHourlyRate, uint256 executionTime, uint256 k) public pure returns (uint256) {
+        require(k > 0, "Provider count must be positive");
+        return quoteProvider(maxHourlyRate, executionTime) * k;
+    }
+
+    // Buyer books the entire execution window; faster completion never changes the charge.
+    // The job id is reserved by the server's records beforehand.
     function submitJob(
         JobID_t jobId,
-        uint256 price,
+        uint256 maxHourlyRate,
         uint256 k,
         uint256 quorum,
         uint256 executionTime,
@@ -112,14 +139,14 @@ contract OffBalance {
     ) external payable {
         Job storage job = jobs[jobId];
         require(job.creator == address(0), "Job id already used");
-        require(price > 0, "Price must be positive");
-        require(msg.value == price, "Send exact job price");
         require(quorum > 0 && quorum <= k, "Invalid consensus threshold");
-        require(executionTime > 0, "Execution time must be positive");
+        uint256 escrow = quoteEscrow(maxHourlyRate, executionTime, k);
+        require(msg.value == escrow, "Send exact job escrow");
 
         job.id = jobId;
         job.creator = payable(msg.sender);
-        job.price = price;
+        job.maxHourlyRate = maxHourlyRate;
+        job.escrow = escrow;
         job.k = k;
         job.quorum = quorum;
         job.executionTime = executionTime;
@@ -135,8 +162,9 @@ contract OffBalance {
         require(msg.sender == job.creator, "Only buyer");
         require(job.status == Status.JOB_SUBMITTED, "Job no longer pending");
         job.status = Status.CANCELED;
-        credits[job.creator] += job.price;
+        credits[job.creator] += job.escrow;
         emit CANCELED(jobId);
+        emit JOB_SETTLED(jobId, job.creator, job.escrow, 0, job.escrow, 0);
     }
 
     // Provider commits to keccak256(abi.encode(keccak256(output), salt)) and stakes ETH.
@@ -179,15 +207,22 @@ contract OffBalance {
     }
 
     // Trusted matcher assigns all k providers and starts the commit window.
-    function assignProviders(JobID_t jobId, address[] calldata providerAddresses) external onlyServer {
+    function assignProviders(
+        JobID_t jobId, address[] calldata providerAddresses, uint256[] calldata hourlyRates
+    ) external onlyServer {
         Job storage job = jobs[jobId];
         require(job.status == Status.JOB_SUBMITTED, "Job not awaiting assignment");
         require(providerAddresses.length == job.k, "Must assign exactly k providers");
+        require(hourlyRates.length == providerAddresses.length, "Provider rates length mismatch");
 
         for (uint256 i = 0; i < providerAddresses.length; ++i) {
             address addr = providerAddresses[i];
             require(addr != address(0), "Zero provider address");
             require(!job.isAssigned[addr], "Duplicate provider");
+            require(hourlyRates[i] > 0 && hourlyRates[i] <= job.maxHourlyRate, "Provider rate outside cap");
+            Commitment_t storage pricing = providers[addr].answers[jobId];
+            pricing.hourlyRate = hourlyRates[i];
+            pricing.bookedCharge = quoteProvider(hourlyRates[i], job.executionTime);
             job.isAssigned[addr] = true;
             job.assignedProviders.push(addr);
             providers[addr].addr = addr;
@@ -221,8 +256,7 @@ contract OffBalance {
         emit REVEAL_PHASE_START(jobId);
     }
 
-    // Without a quorum the job is treated as non-deterministic: the buyer gets no refund and
-    // the providers who revealed are paid.
+    // Without a quorum, refund all buyer escrow and return providers' own stakes.
     function calculateConsensus(JobID_t jobId) private {
         Job storage job = jobs[jobId];
         require(job.status == Status.REVEAL, "Not in reveal phase");
@@ -291,49 +325,63 @@ contract OffBalance {
         emit DELIVERED(jobId);
     }
 
-    // Pays out a finished job. With consensus, winners are the providers that agreed AND delivered;
-    // without it (afterConsensus = false), every provider that revealed is paid. Everyone else
-    // forfeits their stake, and the price plus the forfeited stakes are split among the winners.
-    // If there are no winners the buyer is refunded the price and forfeited stakes stay in the contract.
+    // Work charges, returned deposits and slashing rewards remain distinct.
     function _settle(JobID_t jobId, Job storage job, bool afterConsensus) private {
-        uint256 n = job.assignedProviders.length;
-        uint256 pot = job.price;
-        uint256 winners = 0;
-        for (uint256 i; i < n; ++i) {
-            address addr = job.assignedProviders[i];
-            Commitment_t storage c = providers[addr].answers[jobId];
-            if (_isWinner(job, c, addr, afterConsensus)) {
-                ++winners;
-            } else if (c.stake > 0) {
-                uint256 slashed = c.stake;
+        if (!afterConsensus) {
+            for (uint256 i; i < job.assignedProviders.length; ++i) {
+                address addr = job.assignedProviders[i];
+                Commitment_t storage c = providers[addr].answers[jobId];
+                uint256 stake = c.stake;
+                if (stake == 0) continue;
                 c.stake = 0;
-                pot += slashed;
-                emit SLASHED(jobId, addr, slashed);
+                credits[addr] += stake;
+                emit STAKE_RETURNED(jobId, addr, stake);
             }
-        }
-
-        if (winners == 0) {
-            credits[job.creator] += job.price;
+            credits[job.creator] += job.escrow;
+            emit JOB_SETTLED(jobId, job.creator, job.escrow, 0, job.escrow, 0);
             return;
         }
-
-        uint256 share = pot / winners;
-        uint256 remainder = pot - share * winners; // rounding dust goes to the first winner
-        for (uint256 i; i < n; ++i) {
+        uint256 workPaid;
+        uint256 slashedStake;
+        uint256 winners;
+        for (uint256 i; i < job.assignedProviders.length; ++i) {
             address addr = job.assignedProviders[i];
             Commitment_t storage c = providers[addr].answers[jobId];
-            if (!_isWinner(job, c, addr, afterConsensus)) continue;
-            uint256 amount = share + remainder;
-            remainder = 0;
-            credits[addr] += amount + c.stake;
-            c.stake = 0;
-            emit PAID(jobId, addr, amount);
+            if (_isWinner(c)) {
+                workPaid += c.bookedCharge;
+                ++winners;
+            } else if (c.stake > 0) {
+                uint256 stake = c.stake;
+                slashedStake += stake;
+                c.stake = 0;
+                emit SLASHED(jobId, addr, stake);
+            }
         }
+        // Preserve the existing no-winner policy: slashed stakes stay in the contract.
+        if (winners > 0) {
+            uint256 bonus = slashedStake / winners;
+            uint256 remainder = slashedStake % winners;
+            for (uint256 i; i < job.assignedProviders.length; ++i) {
+                address addr = job.assignedProviders[i];
+                Commitment_t storage c = providers[addr].answers[jobId];
+                if (!_isWinner(c)) continue;
+                uint256 reward = bonus + remainder;
+                remainder = 0;
+                credits[addr] += c.bookedCharge + c.stake + reward;
+                emit PAID(jobId, addr, c.bookedCharge);
+                emit STAKE_RETURNED(jobId, addr, c.stake);
+                if (reward > 0) emit SLASH_REWARD(jobId, addr, reward);
+                c.stake = 0;
+            }
+        }
+        uint256 refund = job.escrow - workPaid;
+        credits[job.creator] += refund;
+        emit JOB_SETTLED(jobId, job.creator, job.escrow, workPaid, refund, slashedStake);
     }
 
-    function _isWinner(Job storage job, Commitment_t storage c, address addr, bool afterConsensus)
+    function _isWinner(Commitment_t storage c)
         private view returns (bool) {
-        return afterConsensus ? (c.agreed && c.delivered) : job.answers[addr].submitted;
+        return c.agreed && c.delivered;
     }
 
     // Pull-payment withdrawal avoids sending ETH during settlement loops.
@@ -343,6 +391,15 @@ contract OffBalance {
         credits[msg.sender] = 0;
         (bool ok, ) = payable(msg.sender).call{value: amount}("");
         require(ok, "Transfer failed");
+    }
+
+    function getJobTerms(JobID_t jobId) external view returns (
+        address creator, uint256 maxHourlyRate, uint256 k, uint256 quorum,
+        uint256 executionTime, string memory dockerImage, uint256 escrow
+    ) {
+        Job storage job = jobs[jobId];
+        require(job.creator != address(0), "Unknown job");
+        return (job.creator, job.maxHourlyRate, job.k, job.quorum, job.executionTime, job.dockerImage, job.escrow);
     }
 
     function getJobStatus(JobID_t jobId) external view returns (Status) {

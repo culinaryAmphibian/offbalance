@@ -1,6 +1,8 @@
 // /provider: tutorial, the provider's machine and pricing, and result delivery.
 import { Router } from "express";
 import { decimalString } from "../models/decimal.ts";
+import { formatEthAmount, parseEthAmount } from '../matching/MatchingEngine.ts';
+import { Types } from 'mongoose';
 import { hourlyPrice } from "../adapters/repository.ts";
 import { requireAuth } from "../middleware/auth.ts";
 import { HardwareModel, JobModel, JobStatus, TutorialModel } from "../models/index.ts";
@@ -9,20 +11,14 @@ import { providerControlRoutes } from "../services/providers.ts";
 import { loadJob, type Deps } from "./deps.ts";
 import { serializeHardware, serializeResults } from "./serialize.ts";
 
-function median(xs: number[]): number | null {
-	if (!xs.length) return null;
-	const s = [...xs].sort((a, b) => a - b);
-	const mid = Math.floor(s.length / 2);
-	return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-}
-
-// market price suggestion: the median rate of machines with a similar CPU score,
-// or of every priced machine if none are similar
-async function suggestedPrice(cpuScore: number, exclude: unknown): Promise<number | null> {
-	const priced = { price: { $ne: null }, _id: { $ne: exclude } };
-	const similar = await HardwareModel.find({ ...priced, cpuScore: { $gte: cpuScore * 0.75, $lte: cpuScore * 1.25 } }, "price");
-	const pool = similar.length ? similar : await HardwareModel.find(priced, "price");
-	return median(pool.map((h) => h.price!));
+async function suggestedPrice(cpuScore: number, exclude: unknown): Promise<string | null> {
+  const priced = { price: { $ne: null }, _id: { $ne: exclude } };
+  const similar = await HardwareModel.find({ ...priced, cpuScore: { $gte: cpuScore * 0.75, $lte: cpuScore * 1.25 } }, 'price');
+  const pool = similar.length ? similar : await HardwareModel.find(priced, 'price');
+  const rates = pool.flatMap(h => { try { return [parseEthAmount(hourlyPrice(h.price!))]; } catch { return []; } }).sort((a,b) => a < b ? -1 : a > b ? 1 : 0);
+  if (!rates.length) return null;
+  const mid = Math.floor(rates.length / 2);
+  return formatEthAmount(rates.length % 2 ? rates[mid] : (rates[mid-1] + rates[mid]) / 2n);
 }
 
 export function providerRoutes({ chain, matcher }: Deps): Router {
@@ -50,22 +46,17 @@ export function providerRoutes({ chain, matcher }: Deps): Router {
 
 	// per-hour rate; machines aren't matched until they have one
 	router.post("/provider/price", requireAuth, async (req, res) => {
-		const price = Number(req.body?.price);
-		let validPrice = typeof req.body?.price === "string" || typeof req.body?.price === "number";
-		let priceError = "price must be non-negative finite ETH with at most 18 decimal places";
-		try {
-			if (hourlyPrice(price) !== decimalString(req.body.price)) {
-				validPrice = false;
-				priceError = "This price exceeds the stored rate precision. Use fewer significant digits.";
-			}
-		} catch { validPrice = false; }
-		if (!validPrice) {
-			res.status(400).json({ error: priceError });
-			return;
-		}
+    let price: string;
+    try {
+      if (typeof req.body?.price !== 'string' && !Number.isSafeInteger(req.body?.price)) throw new TypeError('Send fractional prices as exact ETH decimal strings.');
+      price = decimalString(req.body.price);
+      if (parseEthAmount(price) === 0n) throw new TypeError('Hourly price must be positive.');
+      if (parseEthAmount(price) > (1n << 256n) - 1n) throw new TypeError('Rate exceeds uint256.');
+    } catch (error) { res.status(400).json({ error: String(error) }); return; }
+
 		const hw = await HardwareModel.findOneAndUpdate(
 			{ userRef: res.locals.account._id },
-			{ price },
+			{ price: Types.Decimal128.fromString(price) },
 			{ returnDocument: "after", runValidators: true },
 		);
 		if (!hw) {

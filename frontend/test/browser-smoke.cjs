@@ -38,6 +38,8 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       await page.getByRole('button',{name:'Save job',exact:true}).click();
       await page.getByText('Agreement cannot exceed the provider count.',{exact:true}).waitFor();
       await page.getByLabel('Required matching results',{exact:true}).fill('2');
+      await page.getByLabel('Pricing summary',{exact:true}).filter({hasText:'Maximum charge per provider: 0.000833333333333334 ETH · Total escrow: 0.002500000000000002 ETH'}).waitFor();
+      await page.getByText(/With consensus.*full booked window.*Without quorum.*full escrow is refunded/).waitFor();
       await page.getByText('Minimum hardware scores',{exact:true}).click();
       await page.getByLabel('CPU score',{exact:true}).fill('100');
       await page.screenshot({path:`${root}/submit-desktop.png`,fullPage:true});
@@ -98,6 +100,7 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       await currencyPage.getByLabel('Hourly cap currency',{exact:true}).selectOption('USD');
       await currencyPage.getByLabel('Hourly cap per provider (USD)',{exact:true}).fill('25');
       await currencyPage.getByText(/≈ 0\.01 ETH/).waitFor();
+      await currencyPage.getByLabel('Pricing summary',{exact:true}).filter({hasText:'Total escrow: 0.03 ETH'}).waitFor();
       assert.ok(!(await currencyPage.locator('#budget-conversion').innerText()).includes('$$'));
       // Move wall time without firing the expiry timer: submit must recheck the clock.
       await currencyPage.clock.setFixedTime(new Date(await currencyPage.evaluate(()=>Date.now())+60001));

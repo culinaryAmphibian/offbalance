@@ -191,6 +191,8 @@ async function stop(child) {
       assert.equal(job.maxPrice.toString(), '0.005');
       assert.equal(job.minNodesToRunOn, 3);
       assert.equal(job.minNodesToAgree, 2);
+      assert.equal(job.pricing.totalEscrowWei, '2500000000000002');
+      await page.getByText('0.002500000000000002 ETH', { exact: true }).waitFor();
       assert.equal(job.owner.toString(), buyer.accountId || buyer.account.id);
       await page.reload();
       buyer = await signIn();
@@ -219,7 +221,7 @@ async function stop(child) {
       await page.getByRole('button', { name: 'Save price', exact: true }).click();
       await page.getByText('Hourly price saved.', { exact: true }).waitFor();
       const machine = await database.collection('hardwares').findOne({ address: accounts[1].address.toLowerCase() });
-      assert.equal(machine.price, 0.002);
+      assert.equal(machine.price.toString(), '0.002');
       await page.getByRole('link', { name: '← Overview', exact: true }).click();
       await page.getByRole('button', { name: 'Provider', exact: true }).click();
       await page.getByRole('link', { name: 'Provider setup', exact: true }).click();

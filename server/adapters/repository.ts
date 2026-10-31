@@ -1,7 +1,8 @@
 import { isValidObjectId } from 'mongoose';
 import { decimalString } from '../models/decimal.ts';
 import { AccountModel, HardwareModel, JobModel, JobStatus, TERMINAL_STATUSES, type Hardware, type Job } from '../models/index.ts';
-import { formatEthAmount, parseEthAmount } from '../matching/MatchingEngine.ts';
+import { validatePricingQuote } from '../pricing.ts';
+import { parseEthAmount } from '../matching/MatchingEngine.ts';
 import type { MatchRepository, ProviderRecord, SchedulingJob } from '../matching/types.ts';
 import type { Assignment, AssignmentRepository, JobId } from '../agent-manager/types.ts';
 
@@ -12,25 +13,18 @@ export function numericJobId(id: JobId): number | null {
   return Number.isSafeInteger(number) ? number : null;
 }
 
-// Hardware.price is a Number in the database branch; expand scientific notation
-// before passing its decimal value to the manager's integer-wei arithmetic.
-export function hourlyPrice(price: number): string {
-  if (!Number.isFinite(price) || price < 0) throw new TypeError('Invalid hourly price.');
-  const decimal = decimalString(price);
-  if (price > 0 && parseEthAmount(decimal) === 0n) throw new TypeError('Hourly price is below one wei.');
-  return decimal;
+/** Decimal128 and legacy numeric data share the stored decimal value; no float arithmetic. */
+export function hourlyPrice(price: Parameters<typeof decimalString>[0]): string {
+  return decimalString(price);
 }
 
 export function schedulingJob(job: Job): SchedulingJob {
-  const rate = parseEthAmount(decimalString(job.maxPrice ?? '0'));
-  // DB API: each provider's hourly ceiling. Manager: total execution budget.
-  // Round each provider's maximum cost up exactly as quoteProviders does.
-  const budget = ((rate * BigInt(job.timeWindow) + 3599n) / 3600n) * BigInt(job.minNodesToRunOn);
+  const pricing = validatePricingQuote(job);
   return {
-    id: String(job.onChainJobId), owner: String(job.owner), k: job.minNodesToRunOn,
-    quorum: job.minNodesToAgree, window: job.timeWindow, maxPrice: formatEthAmount(budget),
+    id: String(job.onChainJobId), owner: String(job.owner), k: pricing.k,
+    quorum: job.minNodesToAgree, window: pricing.window, maxPrice: pricing.totalEscrow,
     createdAt: job.createdAt.toISOString(), requirements: { minCpuScore: job.requirements?.minCpuScore ?? 0, minGpuScore: job.requirements?.minGpuScore ?? 0, minMemoryScore: job.requirements?.minMemoryScore ?? 0 },
-    hourlyCeiling: decimalString(job.maxPrice ?? '0'),
+    hourlyCeiling: pricing.maxHourlyRate,
   };
 }
 
@@ -48,8 +42,13 @@ export class MongoRepository implements MatchRepository, AssignmentRepository {
     const number = numericJobId(id);
     if (number === null) return null;
     const job = await JobModel.findOne({ onChainJobId: number, status: JobStatus.PENDING,
-      submittedAt: { $ne: null }, providers: { $size: 0 } });
-    return job ? schedulingJob(job) : null;
+      submittedAt: { $ne: null }, submissionValidationError: null, providers: { $size: 0 } });
+    if (!job) return null;
+    try { return schedulingJob(job); }
+    catch (error) {
+      await JobModel.updateOne({ _id: job._id }, { $set: { submissionValidationError: String(error) } });
+      return null;
+    }
   }
 
   async listProviders(job: SchedulingJob): Promise<ProviderRecord[]> {
@@ -60,7 +59,7 @@ export class MongoRepository implements MatchRepository, AssignmentRepository {
     const ceiling = parseEthAmount(String(job.hourlyCeiling));
     return hardware.flatMap(hw => {
       if (!wallets.get(String(hw.userRef))?.has(hw.address)) return [];
-      try { return parseEthAmount(hourlyPrice(hw.price!)) <= ceiling ? [providerRecord(hw, null)] : []; }
+      try { const rate = parseEthAmount(hourlyPrice(hw.price!)); return rate > 0n && rate <= ceiling ? [providerRecord(hw, null)] : []; }
       catch { console.warn(`Ignoring unsupported hourly price for hardware ${hw._id}`); return []; }
     });
   }

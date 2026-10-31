@@ -1,5 +1,7 @@
 // /account/:id: dashboard data and account management. `:id` may be "me".
 import { Router, type NextFunction, type Request, type Response } from "express";
+import { decimalString } from '../models/decimal.ts';
+import { formatEthAmount, parseEthAmount } from '../matching/MatchingEngine.ts';
 import { requireAuth, verifyWalletSignature } from "../middleware/auth.ts";
 import {
 	AccountModel, AuthTokenModel, HardwareModel, JobModel, JobStatus, TERMINAL_STATUSES,
@@ -26,7 +28,7 @@ async function marketplaceStats() {
 	]);
 	const mid = Math.floor(prices.length / 2);
 	const medianPrice = !prices.length ? null
-		: prices.length % 2 ? prices[mid].price : (prices[mid - 1].price! + prices[mid].price!) / 2;
+		: prices.length % 2 ? decimalString(prices[mid].price!) : formatEthAmount((parseEthAmount(decimalString(prices[mid - 1].price!)) + parseEthAmount(decimalString(prices[mid].price!))) / 2n);
 	return { providers, pricedProviders, openJobs, medianPrice };
 }
 
