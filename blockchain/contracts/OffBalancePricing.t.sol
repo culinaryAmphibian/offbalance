@@ -94,12 +94,39 @@ contract OffBalancePricingTest is Test {
         assertEq(_amount(logs, "SLASHED(uint256,address,uint256)", address(0x202)), STAKE);
     }
 
-    function test_NoQuorumPaysRevealersOwnRatesWithoutDelivery() public {
+    function test_NoQuorumRefundsBuyerAndReturnsStakesEvenWithoutReveal() public {
         vm.recordLogs();
         _run(false, 3, 0); // third provider committed but never revealed
-        _totals(vm.getRecordedLogs(), 11, 40, STAKE);
-        _credits(40, STAKE + 2 + STAKE / 2, STAKE + 9 + STAKE / 2, 0, 0);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        _totals(logs, 0, 51, 0);
+        _credits(51, STAKE, STAKE, STAKE, 0);
         assertEq(uint256(market.getJobStatus(JOB)), uint256(OffBalance.Status.NO_QUORUM));
+        for (uint256 i; i < logs.length; ++i) {
+            bytes32 signature = logs[i].topics[0];
+            assertTrue(signature != keccak256("PAID(uint256,address,uint256)"));
+            assertTrue(signature != keccak256("SLASHED(uint256,address,uint256)"));
+            assertTrue(signature != keccak256("SLASH_REWARD(uint256,address,uint256)"));
+        }
+        for (uint256 i; i < 3; ++i) {
+            address provider = address(uint160(i + 0x200));
+            assertEq(_amount(logs, "STAKE_RETURNED(uint256,address,uint256)", provider), STAKE);
+            (,,,,, uint256 stake) = market.getProviderCommitment(JOB, provider);
+            assertEq(stake, 0);
+            vm.prank(provider);
+            market.withdraw();
+        }
+        vm.prank(BUYER);
+        market.withdraw();
+        assertEq(address(market).balance, 0);
+        vm.expectRevert("Not in reveal phase");
+        market.endRevealPhase(JOB);
+    }
+
+    function test_NoQuorumWithNoRevealsReturnsAllFundsToOriginalOwners() public {
+        vm.recordLogs();
+        _run(false, 0, 0);
+        _totals(vm.getRecordedLogs(), 0, 51, 0);
+        _credits(51, STAKE, STAKE, STAKE, 0);
     }
 
     function test_NoWinnersRefundFullEscrowAndRetainSlashedStakes() public {

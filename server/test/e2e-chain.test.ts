@@ -4,7 +4,7 @@
 //
 // Two jobs run side by side through the real (demo-sized) windows, so this takes about a minute:
 //   job A: p1 and p2 agree, p3 disagrees, p1 and p2 deliver -> PAID, p3 slashed
-//   job B: all three disagree                                -> NO_QUORUM, every revealer paid
+//   job B: all three disagree                                -> NO_QUORUM, escrow and stakes refunded
 //
 // Needs MONGODB_URI and the blockchain/ project installed; skipped without MONGODB_URI.
 import test from "node:test";
@@ -181,12 +181,12 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 
 		// Actual work uses individual booked rates; unused escrow returns to the buyer.
 		// Slashing rewards and returned stakes are separate from work charges.
-		const workA = charges[0] + charges[1], workB = charges.reduce((sum, amount) => sum + amount, 0n);
+		const workA = charges[0] + charges[1];
 		const escrow = [priceA, priceB].reduce((sum, cap) => sum + bookedChargeWei(cap, EXECUTION_TIME) * 3n, 0n);
 		const credits = await Promise.all([buyer.account!.address, p1, p2, p3].map(a => read<bigint>("credits", [a])));
-		assert.deepEqual(credits, [escrow - workA - workB,
-			2n * charges[0] + stake / 2n + stake % 2n + 2n * stake,
-			2n * charges[1] + stake / 2n + 2n * stake, charges[2] + stake]);
+		assert.deepEqual(credits, [escrow - workA,
+			charges[0] + stake / 2n + stake % 2n + 2n * stake,
+			charges[1] + stake / 2n + 2n * stake, stake]);
 
 		// the database followed the chain
 		await until("database statuses", async () => {
@@ -194,10 +194,14 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 			return a.status === JobStatus.PAYOUT && b.status === JobStatus.NO_QUORUM;
 		}, 10_000);
 		await until("authoritative account spending", async () =>
-			parseEther(String((await AccountModel.findById(owner._id))!.totalSpent)) === workA + workB, 10_000);
+			parseEther(String((await AccountModel.findById(owner._id))!.totalSpent)) === workA, 10_000);
 		const providerAccounts = await Promise.all([p1, p2, p3].map(wallet => AccountModel.findOne({ walletIds: wallet.toLowerCase() }).orFail()));
 		assert.deepEqual(providerAccounts.map(account => parseEther(String(account.totalEarned))),
-			[2n * charges[0] + stake / 2n + stake % 2n, 2n * charges[1] + stake / 2n, charges[2]]);
+			[charges[0] + stake / 2n + stake % 2n, charges[1] + stake / 2n, 0n]);
+		const noQuorum = (await JobModel.findOne({ onChainJobId: 102 }).orFail()).settlement!;
+		assert.equal(noQuorum.workChargedWei, "0");
+		assert.equal(noQuorum.buyerRefundWei, noQuorum.escrowWei);
+		assert.equal(noQuorum.slashedStakeWei, "0");
 	} finally {
 		await stopServer().catch(() => {});
 		if (mongoose.connection.readyState === 1) {

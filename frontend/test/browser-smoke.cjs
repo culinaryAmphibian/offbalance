@@ -39,7 +39,7 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       await page.getByText('Agreement cannot exceed the provider count.',{exact:true}).waitFor();
       await page.getByLabel('Required matching results',{exact:true}).fill('2');
       await page.getByLabel('Pricing summary',{exact:true}).filter({hasText:'Maximum charge per provider: 0.000833333333333334 ETH · Total escrow: 0.002500000000000002 ETH'}).waitFor();
-      await page.getByText(/The full booked window is charged.*without quorum.*without delivery/).waitFor();
+      await page.getByText(/With consensus.*full booked window.*Without quorum.*full escrow is refunded/).waitFor();
       await page.getByText('Minimum hardware scores',{exact:true}).click();
       await page.getByLabel('CPU score',{exact:true}).fill('100');
       await page.screenshot({path:`${root}/submit-desktop.png`,fullPage:true});

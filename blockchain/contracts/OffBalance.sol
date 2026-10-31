@@ -256,8 +256,7 @@ contract OffBalance {
         emit REVEAL_PHASE_START(jobId);
     }
 
-    // Without a quorum, every revealer earns its booked charge without delivery.
-    // Unused work escrow is refunded; forfeited stakes are shared among the revealers.
+    // Without a quorum, refund all buyer escrow and return providers' own stakes.
     function calculateConsensus(JobID_t jobId) private {
         Job storage job = jobs[jobId];
         require(job.status == Status.REVEAL, "Not in reveal phase");
@@ -328,13 +327,27 @@ contract OffBalance {
 
     // Work charges, returned deposits and slashing rewards remain distinct.
     function _settle(JobID_t jobId, Job storage job, bool afterConsensus) private {
+        if (!afterConsensus) {
+            for (uint256 i; i < job.assignedProviders.length; ++i) {
+                address addr = job.assignedProviders[i];
+                Commitment_t storage c = providers[addr].answers[jobId];
+                uint256 stake = c.stake;
+                if (stake == 0) continue;
+                c.stake = 0;
+                credits[addr] += stake;
+                emit STAKE_RETURNED(jobId, addr, stake);
+            }
+            credits[job.creator] += job.escrow;
+            emit JOB_SETTLED(jobId, job.creator, job.escrow, 0, job.escrow, 0);
+            return;
+        }
         uint256 workPaid;
         uint256 slashedStake;
         uint256 winners;
         for (uint256 i; i < job.assignedProviders.length; ++i) {
             address addr = job.assignedProviders[i];
             Commitment_t storage c = providers[addr].answers[jobId];
-            if (_isWinner(job, c, addr, afterConsensus)) {
+            if (_isWinner(c)) {
                 workPaid += c.bookedCharge;
                 ++winners;
             } else if (c.stake > 0) {
@@ -351,7 +364,7 @@ contract OffBalance {
             for (uint256 i; i < job.assignedProviders.length; ++i) {
                 address addr = job.assignedProviders[i];
                 Commitment_t storage c = providers[addr].answers[jobId];
-                if (!_isWinner(job, c, addr, afterConsensus)) continue;
+                if (!_isWinner(c)) continue;
                 uint256 reward = bonus + remainder;
                 remainder = 0;
                 credits[addr] += c.bookedCharge + c.stake + reward;
@@ -366,9 +379,9 @@ contract OffBalance {
         emit JOB_SETTLED(jobId, job.creator, job.escrow, workPaid, refund, slashedStake);
     }
 
-    function _isWinner(Job storage job, Commitment_t storage c, address addr, bool afterConsensus)
+    function _isWinner(Commitment_t storage c)
         private view returns (bool) {
-        return afterConsensus ? (c.agreed && c.delivered) : job.answers[addr].submitted;
+        return c.agreed && c.delivered;
     }
 
     // Pull-payment withdrawal avoids sending ETH during settlement loops.

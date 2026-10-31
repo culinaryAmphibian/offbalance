@@ -51,6 +51,6 @@ test('settlement remains absent until authoritative totals arrive, with refunds 
   for (const patch of [{ status: 'pending' }, { workChargedWei: '100' }, { buyerRefundWei: '-1' }, { escrow: '1' }]) assert.throws(() => settlementAmounts({ ...settlement, ...patch }));
 });
 
-test('the preconfirmation terms disclose full-window charging, refunds and no-quorum payments', () => {
-  for (const phrase of ['full booked window', 'execution ends early', 'own quoted rate', 'refunded', 'without quorum', 'without delivery', 'Slashed-stake rewards', 'returned stakes']) assert.ok(PRICING_TERMS.includes(phrase), phrase);
+test('the preconfirmation terms disclose booked charges and a full no-quorum escrow refund', () => {
+  for (const phrase of ['full booked window', 'execution ends early', 'own quoted rate', 'refunded', 'Without quorum', 'no work is paid', 'full escrow is refunded', 'providers recover their own stakes', 'Slashed-stake rewards', 'returned stakes']) assert.ok(PRICING_TERMS.includes(phrase), phrase);
 });

@@ -1,6 +1,6 @@
 // Contract pricing uses wei throughout; the booked window is charged in full.
 export const PRICING_POLICY = 'booked-window-v1';
-export const PRICING_TERMS = 'The full booked window is charged, even if execution ends early, at each provider’s own quoted rate. Unused cap and unpaid allocations are refunded as withdrawal credits. With consensus, payment requires verified delivery; without quorum, revealers receive their booked charge without delivery. Slashed-stake rewards and returned stakes are separate from work charges. Gas is extra.';
+export const PRICING_TERMS = 'With consensus, payment requires verified delivery. Providers earn their own quoted rate for the full booked window, even if execution ends early. Unused cap and unpaid allocations are refunded as withdrawal credits. Without quorum, no work is paid, the buyer’s full escrow is refunded, and providers recover their own stakes. Slashed-stake rewards and returned stakes are separate from work charges. Gas is extra.';
 const WEI = 10n ** 18n;
 const MAX_UINT256 = (1n << 256n) - 1n;
 const quoteError = () => new Error('This saved job has a missing or inconsistent pricing quote. Refresh the job; if the problem remains, save a new job. No wallet request was made.');
