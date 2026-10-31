@@ -1,13 +1,14 @@
 // /jobs: buyers submit and follow jobs; providers see the jobs they're on.
 import { Router } from "express";
 import { createHash } from "node:crypto";
+import { StorageError, MAX_RESULT_BYTES } from "../storage/results.ts";
 import { config } from "../config.ts";
 import { isValidObjectId } from "mongoose";
 import { requireAuth } from "../middleware/auth.ts";
 import { AccountModel, BuildModel, BuildStatus, JobModel, JobStatus, nextSeq } from "../models/index.ts";
 import { registry } from "../services/registry.ts";
 import { loadJob, type Deps } from "./deps.ts";
-import { serializeJob, serializeResults } from "./serialize.ts";
+import { serializeJob } from "./serialize.ts";
 
 const SETTABLE = [
 	"name", "dockerImageDigest", "command", "env", "inputUrl", "cpuLimit", "memLimitMb",
@@ -20,7 +21,7 @@ function canonical(value: unknown): unknown {
 	return value;
 }
 
-export function jobRoutes({ chain, matcher }: Deps): Router {
+export function jobRoutes({ chain, matcher, results }: Deps): Router {
 	const router = Router();
 	const browserJob = (job: Parameters<typeof serializeJob>[0], me: unknown, wallet: string) => ({
 		...serializeJob(job), executionMode: chain ? "chain" : "local",
@@ -142,7 +143,50 @@ export function jobRoutes({ chain, matcher }: Deps): Router {
 			res.status(403).json({ error: "not your job" });
 			return;
 		}
-		res.json({ status: job.status, results: serializeResults(job) });
+		const result = job.results.find(r => r.contentVerified && r.retainedUntil && r.retainedUntil.getTime() > Date.now());
+		if (!result) {
+			res.status(404).json({ error: "no retained verified result is available" });
+			return;
+		}
+		if (!results) {
+			res.status(503).json({ error: "result storage is disabled" });
+			return;
+		}
+		try {
+			const stored = await results.get(result.location);
+			if (stored.size !== result.size) {
+				stored.body.destroy();
+				res.status(502).json({ error: "stored result size does not match the verified artifact" });
+				return;
+			}
+			// Results are capped at 25 MiB. Check the full archive before returning
+			// any bytes so a corrupted object cannot masquerade as verified output.
+			const chunks: Buffer[] = [];
+			let size = 0;
+			for await (const chunk of stored.body) {
+				size += chunk.length;
+				if (size > MAX_RESULT_BYTES || size > stored.size) {
+					stored.body.destroy();
+					throw new StorageError('Invalid stored result size', 502);
+				}
+				chunks.push(Buffer.from(chunk));
+			}
+			const bytes = Buffer.concat(chunks);
+			if (size !== stored.size || createHash('sha256').update(bytes).digest('hex') !== result.archiveHash) {
+				res.status(502).json({ error: 'stored result failed its integrity check' });
+				return;
+			}
+			res.setHeader('Content-Type', 'application/x-tar');
+			res.setHeader('Content-Length', stored.size);
+			res.setHeader('Content-Disposition', `attachment; filename="offbalance-${job.onChainJobId}.tar"`);
+			res.setHeader('Cache-Control', 'private, no-store');
+			res.setHeader('X-Content-Type-Options', 'nosniff');
+			res.setHeader('X-Result-Hash', result.hash);
+			res.end(bytes);
+		} catch (error) {
+			if (res.headersSent) { res.destroy(); return; }
+			res.status(error instanceof StorageError && error.status === 404 ? 404 : 503).json({ error: "result storage is unavailable" });
+		}
 	});
 
 	return router;

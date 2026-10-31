@@ -83,19 +83,20 @@ async function stop(child) {
     const webUrl = `http://127.0.0.1:${webPort}`;
     const environment = { ...process.env, MONGODB_URI: uri.toString(), CHAIN: 'off', PORT: String(serverPort),
       TLS_KEY_FILE: tls.key, TLS_CERT_FILE: tls.cert, REGISTRY_NAMESPACE: '', CORS_ORIGINS: webUrl,
-      API_PROXY_TARGET: serverUrl, API_CA_FILE: tls.ca, VITE_API_MODE: 'api', VITE_API_BASE_URL: '/api' };
+      API_PROXY_TARGET: serverUrl, API_CA_FILE: tls.ca, VITE_API_MODE: 'api', VITE_API_BASE_URL: '/api',
+      RESULT_STORAGE: 'local', RESULT_LOCAL_DIR: path.join(scratch, 'results') };
     delete environment.NODE_TEST_CONTEXT;
     delete environment.NODE_TLS_REJECT_UNAUTHORIZED;
-    const request = (pathname, { token, method = 'GET', body } = {}) => new Promise((resolve, reject) => {
+    const request = (pathname, { token, method = 'GET', body, raw, headers = {} } = {}) => new Promise((resolve, reject) => {
       const req = https.request(`${serverUrl}${pathname}`, { ca, rejectUnauthorized: true, method,
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}) } }, response => {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers } }, response => {
         let text = '';
         response.on('data', data => { text += data; });
         response.on('end', () => resolve({ status: response.statusCode, body: text ? JSON.parse(text) : null }));
       });
       req.on('error', reject);
       req.setTimeout(2000, () => req.destroy(new Error('HTTPS timeout')));
-      req.end(body ? JSON.stringify(body) : undefined);
+      req.end(raw ?? (body ? JSON.stringify(body) : undefined));
     });
     const server = start('production HTTPS server', ['server.ts'], path.join(root, 'server'), environment);
     await ready(server, async () => (await request('/provider/tutorial')).status === 200);
@@ -228,32 +229,49 @@ async function stop(child) {
       await page.waitForFunction(() => document.querySelector('#provider-price')?.value === '0.002');
       await shot('real-provider-pricing');
     });
-    await check('actual provider delivery receipts reach the buyer as metadata with no invented download or payment', async () => {
-      // External execution/chain fixture: this test does not claim Docker execution or settlement.
+    await check('verified provider archives download privately to the buyer without inventing chain receipts or payment', async () => {
+      // Execution/chain phase is fixture data; bytes pass through the real upload and download routes.
       const providerAccount = await database.collection('accounts').findOne({ walletIds: accounts[1].address.toLowerCase() });
       await database.collection('jobs').updateOne({ _id: job._id }, { $set: { status: 'AWAITING_DELIVERY', providers: [providerAccount._id] } });
-      const receipt = await request(`/provider/results/${job.onChainJobId}`, { token: provider.token, method: 'POST',
-        body: { hash: `0x${'b'.repeat(64)}`, location: 'https://example.com/offbalance-result.txt' } });
-      assert.equal(receipt.status, 201);
+      const content = Buffer.from('provider result for the buyer\n');
+      const filename = Buffer.from('result.txt');
+      const length = Buffer.alloc(8);
+      length.writeBigUInt64BE(BigInt(filename.length));
+      const hash = createHash('sha256').update('F').update(length).update(filename).update(createHash('sha256').update(content).digest()).digest('hex');
+      const pack = serverRequire('tar-stream').pack();
+      const chunks = [];
+      const packed = new Promise((resolve, reject) => {
+        pack.on('data', chunk => chunks.push(chunk));
+        pack.on('end', () => resolve(Buffer.concat(chunks)));
+        pack.on('error', reject);
+      });
+      pack.entry({ name: 'result.txt', size: content.length, mtime: new Date(0) }, content);
+      pack.finalize();
+      const archive = await packed;
+      const receipt = await request(`/provider/results/${job.onChainJobId}`, { token: provider.token, method: 'POST', raw: archive,
+        headers: { 'Content-Type': 'application/x-tar', 'Content-Length': archive.length, 'X-Result-Hash': hash } });
+      assert.equal(receipt.status, 201, JSON.stringify(receipt.body));
+      assert.equal(receipt.body.results[0].contentVerified, true);
       assert.equal(receipt.body.results[0].receiptVerified, false);
       await page.getByRole('link', { name: '← Overview', exact: true }).click();
       await page.evaluate(() => window.switchWallet(0));
       buyer = await signIn();
       await page.getByRole('link', { name, exact: true }).click();
-      // Result locations are metadata; the UI must not download the JSON envelope as a file.
-      await page.getByRole('button', { name: 'Load delivery records', exact: true }).click();
-      await page.getByText(`0x${'b'.repeat(64)}`, { exact: true }).waitFor();
-      const output = page.getByRole('link', { name: 'Open provider output (unverified receipt)', exact: true });
-      assert.equal(await output.getAttribute('href'), 'https://example.com/offbalance-result.txt');
-      await page.getByText('Not verified', { exact: true }).waitFor();
-      assert.equal(await page.getByRole('button', { name: 'Download result', exact: true }).count(), 0);
+      await page.locator('.result-hash').filter({ hasText: hash }).waitFor();
+      await page.getByText('Hash verified', { exact: true }).waitFor();
+      await page.getByText('Disabled in local mode', { exact: true }).waitFor();
+      const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Download result', exact: true }).click()]);
+      assert.equal(download.suggestedFilename(), `offbalance-${job.onChainJobId}.tar`);
+      assert.deepEqual(await fs.readFile(await download.path()), archive);
+      assert.equal(await page.getByRole('link', { name: /Open provider output/ }).count(), 0);
       const persisted = await database.collection('jobs').findOne({ _id: job._id });
       assert.equal(persisted.results.length, 1);
-      assert.equal(persisted.results[0].location, 'https://example.com/offbalance-result.txt');
-      await shot('real-delivery-metadata');
+      assert.equal(persisted.results[0].contentVerified, true);
+      assert.equal(persisted.results[0].receiptVerified, false);
+      await shot('real-result-download');
       await page.setViewportSize({ width: 375, height: 900 });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
-      await shot('real-delivery-mobile');
+      await shot('real-result-mobile');
     });
     await check('a token revoked in MongoDB receives a real 401 and clears the browser session', async () => {
       await database.collection('authtokens').deleteOne({ tokenHash: createHash('sha256').update(buyer.token).digest('hex') });

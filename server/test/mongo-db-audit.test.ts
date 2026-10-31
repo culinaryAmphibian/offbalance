@@ -7,6 +7,11 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { Server } from "node:http";
+import { Readable } from "node:stream";
+import { pack } from "tar-stream";
+import { keccak256 } from "viem";
+import { inspectArchive } from "../storage/archive.ts";
+import type { ResultStore } from "../storage/results.ts";
 import mongoose from "mongoose";
 import { createApp } from "../app.ts";
 import {
@@ -29,20 +34,37 @@ const jobFields = (overrides: Record<string, unknown> = {}) => ({
 
 // Starts the real app with a fake chain; returns an authenticated fetch helper.
 async function startApp(chain: unknown, matcher = new Matcher(null)) {
-	const server: Server = createApp({ chain: chain as never, matcher, builder: new Builder() }, { log: false })
+	const objects = new Map<string, Buffer>();
+	const results: ResultStore = {
+		async put(key, bytes) { objects.set(key, Buffer.from(bytes)); },
+		async get(key) { const bytes = objects.get(key)!; return { body: Readable.from([bytes]), size: bytes.length }; },
+		async delete(key) { objects.delete(key); },
+	};
+	const server: Server = createApp({ chain: chain as never, matcher, builder: new Builder(), results }, { log: false })
 		.listen(0, "127.0.0.1");
 	await new Promise<void>((resolve) => server.once("listening", resolve));
 	const { port } = server.address() as { port: number };
 	const call = async (method: string, url: string, token: string, body?: unknown) => {
+		const tar = Buffer.isBuffer(body);
 		const res = await fetch(`http://127.0.0.1:${port}${url}`, {
-			method,
-			headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
-			body: body ? JSON.stringify(body) : undefined,
+			method, signal: AbortSignal.timeout(5000),
+			headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": tar ? "application/x-tar" : "application/json" } : {}),
+				...(tar ? { "X-Result-Hash": (await inspectArchive(body)).hash } : {}) },
+			body: tar ? body : body ? JSON.stringify(body) : undefined,
 		});
 		const text = await res.text();
 		return { status: res.status, body: text ? JSON.parse(text) : null };
 	};
-	return { call, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+	return { call, objects, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+}
+
+async function resultArchive(content = "consensus output\n") {
+	const tar = pack();
+	tar.entry({ name: "result.txt" }, content);
+	tar.finalize();
+	const chunks: Buffer[] = [];
+	for await (const chunk of tar) chunks.push(Buffer.from(chunk as Uint8Array));
+	return Buffer.concat(chunks);
 }
 
 async function provider(c: string) {
@@ -139,16 +161,16 @@ describe("database audit", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, (
 				owner: owner._id, onChainJobId: 7, submittedAt: new Date(),
 				providers: [p1._id, p2._id], status: JobStatus.AWAITING_DELIVERY,
 			}));
-			return { p1, p2 };
+			return { p1, p2, archive: await resultArchive() };
 		}
 
 		test("concurrent first deliveries from two providers are both recorded", async () => {
-			await deliveryFixture();
+			const { archive } = await deliveryFixture();
 			const app = await startApp(null);
 			try {
 				const [a, b] = await Promise.all([
-					app.call("POST", "/provider/results/7", "tok-3", { hash: "h3", location: "s3://3" }),
-					app.call("POST", "/provider/results/7", "tok-4", { hash: "h4", location: "s3://4" }),
+					app.call("POST", "/provider/results/7", "tok-3", archive),
+					app.call("POST", "/provider/results/7", "tok-4", archive),
 				]);
 				assert.deepEqual([a.status, b.status], [201, 201], JSON.stringify([a.body, b.body]));
 				assert.equal((await JobModel.findOne({ onChainJobId: 7 }))!.results.length, 2);
@@ -156,52 +178,68 @@ describe("database audit", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, (
 		});
 
 		test("a delivery verified on-chain stays verified when another provider delivers meanwhile", async () => {
-			const { p1 } = await deliveryFixture();
+			const { p1, archive } = await deliveryFixture();
+			const outputHash = keccak256(`0x${(await inspectArchive(archive)).hash}`);
 			let releaseFirst!: () => void;
 			const firstPending = new Promise<void>((resolve) => { releaseFirst = resolve; });
 			let calls = 0;
 			const chain = {
 				canWrite: true,
+				getProviderDeliveryState: async () => ({ outputHash, revealed: true, agreed: true, delivered: false }),
 				// provider 3's receipt is slow on-chain; provider 4's is instant
 				verifyReceipt: async () => { if (calls++ === 0) await firstPending; },
 			};
 			const app = await startApp(chain);
+			const first = app.call("POST", "/provider/results/7", "tok-3", archive);
 			try {
-				const first = app.call("POST", "/provider/results/7", "tok-3", { hash: "h3", location: "s3://3" });
-				while (calls === 0) await new Promise((r) => setTimeout(r, 5));
-				const second = await app.call("POST", "/provider/results/7", "tok-4", { hash: "h4", location: "s3://4" });
+				const deadline = Date.now() + 3000;
+				while (calls === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+				assert.ok(calls > 0, "first delivery did not reach receipt verification within 3 seconds");
+				const second = await app.call("POST", "/provider/results/7", "tok-4", archive);
 				assert.equal(second.status, 201);
 				releaseFirst();
 				assert.equal((await first).status, 201);
 				const job = (await JobModel.findOne({ onChainJobId: 7 }))!;
 				const r1 = job.results.find((r) => r.provider.equals(p1._id));
 				assert.equal(r1?.receiptVerified, true, "verifyReceipt succeeded but the database says unverified");
-			} finally { await app.close(); }
+				assert.equal(job.results.length, 2);
+				assert.ok(job.results.every(result => result.contentVerified && result.receiptVerified));
+			} finally {
+				releaseFirst();
+				await first.catch(() => null);
+				await app.close();
+			}
 		});
 
-		test("redelivery replaces an unverified result; verified results and finished jobs refuse it", async () => {
-			const { p1 } = await deliveryFixture();
+		test("actual bytes replace legacy unverified metadata; verified output is immutable and finished jobs refuse new delivery", async () => {
+			const { p1, archive } = await deliveryFixture();
+			await JobModel.collection.updateOne({ onChainJobId: 7 }, { $push: { results: {
+				provider: p1._id, hash: "old", location: "s3://old", deliveryTime: new Date(), receiptVerified: false,
+			} } });
 			const app = await startApp(null);
 			try {
-				assert.equal((await app.call("POST", "/provider/results/7", "tok-3", { hash: "old", location: "s3://old" })).status, 201);
-				const again = await app.call("POST", "/provider/results/7", "tok-3", { hash: "new", location: "s3://new" });
-				assert.equal(again.status, 201);
-				assert.equal(again.body.results[0].hash, "new");
+				const delivered = await app.call("POST", "/provider/results/7", "tok-3", archive);
+				assert.equal(delivered.status, 201);
+				assert.equal(delivered.body.results[0].hash, (await inspectArchive(archive)).hash);
+				assert.equal(delivered.body.results[0].contentVerified, true);
+				const retry = await app.call("POST", "/provider/results/7", "tok-3", archive);
+				assert.equal(retry.status, 200);
+				assert.equal(app.objects.size, 1);
 				const job = (await JobModel.findOne({ onChainJobId: 7 }))!;
 				assert.equal(job.results.length, 1);
 
 				await JobModel.updateOne({ _id: job._id, "results.provider": p1._id }, { $set: { "results.$.receiptVerified": true } });
-				const verified = await app.call("POST", "/provider/results/7", "tok-3", { hash: "x", location: "s3://x" });
-				assert.equal(verified.status, 409);
-				assert.match(verified.body.error, /already verified/);
+				const changed = await app.call("POST", "/provider/results/7", "tok-3", await resultArchive("different output"));
+				assert.equal(changed.status, 409);
+				assert.match(changed.body.error, /different result is already stored/);
 
 				await JobModel.updateOne({ _id: job._id }, { $set: { status: JobStatus.PAYOUT } });
-				assert.equal((await app.call("POST", "/provider/results/7", "tok-4", { hash: "h", location: "l" })).status, 409);
+				assert.equal((await app.call("POST", "/provider/results/7", "tok-4", archive)).status, 409);
 			} finally { await app.close(); }
 		});
 
 		test("a delivery doesn't move a job back out of PAYOUT", async () => {
-			await deliveryFixture();
+			const { archive } = await deliveryFixture();
 			const matcher = new Matcher(null);
 			// DELIVERED lands between the route loading the job and saving it
 			const findOne = JobModel.findOne;
@@ -217,7 +255,8 @@ describe("database audit", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, (
 			};
 			const app = await startApp(null, matcher);
 			try {
-				await app.call("POST", "/provider/results/7", "tok-3", { hash: "h3", location: "s3://3" });
+				assert.equal((await app.call("POST", "/provider/results/7", "tok-3", archive)).status, 409);
+				assert.equal(app.objects.size, 0, "racing delivery left an unreferenced object");
 			} finally {
 				(JobModel as any).findOne = findOne;
 				await app.close();

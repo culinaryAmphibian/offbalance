@@ -8,6 +8,7 @@ type WithId<T> = T & { _id: Types.ObjectId };
 const dec = (v: Types.Decimal128 | null | undefined) => (v == null ? null : decimalString(v));
 
 export function serializeJob(job: WithId<Job>) {
+	const result = job.results.find(r => r.contentVerified && r.retainedUntil && r.retainedUntil.getTime() > Date.now());
 	return {
 		id: job.onChainJobId,
 		name: job.name,
@@ -28,6 +29,9 @@ export function serializeJob(job: WithId<Job>) {
 		timeWindow: job.timeWindow,
 		requirements: job.requirements,
 		createdAt: job.createdAt,
+		result: result ? { available: true, filename: result.filename, hash: result.hash,
+			size: result.size, deliveryTime: result.deliveryTime, retainedUntil: result.retainedUntil,
+			receiptVerified: result.receiptVerified } : { available: false },
 	};
 }
 
@@ -35,7 +39,11 @@ export function serializeResults(job: WithId<Job>) {
 	return job.results.map((r) => ({
 		provider: String(r.provider),
 		hash: r.hash,
-		location: r.location,
+		contentVerified: r.contentVerified,
+		archiveHash: r.archiveHash,
+		size: r.size,
+		filename: r.filename,
+		retainedUntil: r.retainedUntil,
 		deliveryTime: r.deliveryTime,
 		receiptVerified: r.receiptVerified,
 	}));

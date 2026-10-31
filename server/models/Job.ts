@@ -20,6 +20,11 @@ const providerResultSchema = new Schema(
 		deliveryTime: { type: Date, required: true },
 		location: { type: String, required: true }, // where the output lives in object storage
 		receiptVerified: { type: Boolean, default: false }, // verifyReceipt() went through on-chain
+		contentVerified: { type: Boolean, default: false },
+		archiveHash: { type: String },
+		size: { type: Number, min: 0 },
+		filename: { type: String },
+		retainedUntil: { type: Date },
 	},
 	{ _id: false },
 );

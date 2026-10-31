@@ -49,13 +49,13 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       await page.getByRole('link',{name:'← Overview',exact:true}).click();
       await page.getByRole('link',{name:'Browser workload',exact:true}).waitFor();
     });
-    await check('provider delivery metadata and browser history', async () => {
+    await check('demo result download and browser history', async () => {
       await page.getByRole('link',{name:'Matrix computation',exact:true}).click();
-      await page.getByRole('button',{name:'Load delivery records',exact:true}).click();
-      await page.getByRole('link',{name:'Open provider output',exact:true}).waitFor();
       await page.getByText('Verified on chain',{exact:true}).waitFor();
-      assert.equal(await page.getByRole('link',{name:'Open provider output',exact:true}).getAttribute('href'),'https://example.com/offbalance-demo-output');
-      assert.equal(await page.getByRole('button',{name:'Download result',exact:true}).count(),0);
+      const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button',{name:'Download result',exact:true}).click()]);
+      assert.equal(download.suggestedFilename(), 'offbalance-demo-result.txt');
+      assert.equal(await fs.readFile(await download.path(), 'utf8'), 'OffBalance demo result\n');
+      assert.equal(await page.getByRole('link',{name:/Open provider output/}).count(),0);
       await page.screenshot({path:`${root}/details-desktop.png`,fullPage:true});
       await page.goBack();
       await page.getByRole('heading',{name:'Overview',exact:true}).waitFor();

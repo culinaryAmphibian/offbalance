@@ -10,6 +10,7 @@ import { providerRoutes } from "./routes/provider.ts";
 import { config } from "./config.ts";
 import { readDeployment } from "./services/chain.ts";
 import { RegistryError } from "./services/registry.ts";
+import { StorageError } from "./storage/results.ts";
 
 const CORS_ORIGINS = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173,https://localhost:5173,https://127.0.0.1:5173").split(",");
 
@@ -36,7 +37,7 @@ export function createApp(deps: Deps, { log = true } = {}) {
 
 	if (log) {
 		app.use((req: Request, _res: Response, next: NextFunction) => {
-			console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
+			console.log(`${new Date().toISOString()} ${req.method} ${req.path}`);
 			next();
 		});
 	}
@@ -58,7 +59,9 @@ export function createApp(deps: Deps, { log = true } = {}) {
 	});
 
 	app.use((err: Error & { code?: number }, _req: Request, res: Response, _next: NextFunction) => {
-		if (err instanceof RegistryError) {
+		if (err instanceof StorageError) {
+			res.status(err.status).json({ error: err.message });
+		} else if (err instanceof RegistryError) {
 			res.status(err.status === 401 ? 502 : err.status).json({ error: err.message });
 		} else if (err instanceof mongoose.Error.ValidationError || err instanceof mongoose.Error.CastError) {
 			res.status(400).json({ error: err.message });
