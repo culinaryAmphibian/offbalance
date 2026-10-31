@@ -1,6 +1,7 @@
 // /jobs: buyers submit and follow jobs; providers see the jobs they're on.
 import { Router } from "express";
 import { createHash } from "node:crypto";
+import { createPricingQuote } from '../pricing.ts';
 import { config } from "../config.ts";
 import { isValidObjectId } from "mongoose";
 import { requireAuth } from "../middleware/auth.ts";
@@ -25,8 +26,8 @@ export function jobRoutes({ chain, matcher }: Deps): Router {
 	const browserJob = (job: Parameters<typeof serializeJob>[0], me: unknown, wallet: string) => ({
 		...serializeJob(job), executionMode: chain ? "chain" : "local",
 		canViewResults: String(job.owner) === String(me),
-		...(String(job.owner) === String(me) ? { submitWallet: wallet } : {}),
-		canSubmit: String(job.owner) === String(me) && Boolean(chain) && !job.submittedAt && job.status === JobStatus.PENDING,
+		...(String(job.owner) === String(me) ? { submitWallet: job.buyerWallet ?? null } : {}),
+		canSubmit: String(job.owner) === String(me) && Boolean(chain) && !job.submissionValidationError && Boolean(serializeJob(job).pricing) && Boolean(job.buyerWallet) && !job.submittedAt && job.status === JobStatus.PENDING,
 	});
 	router.use("/jobs", requireAuth);
 
@@ -80,8 +81,10 @@ export function jobRoutes({ chain, matcher }: Deps): Router {
 			fields.dockerImageDigest = build.image;
 		}
 
-		const job = new JobModel({ ...fields, owner: res.locals.account._id, onChainJobId: 0, ...(requestKey ? { requestKey, requestHash } : {}) });
+		const job = new JobModel({ ...fields, buyerWallet: res.locals.wallet, owner: res.locals.account._id, onChainJobId: 0, ...(requestKey ? { requestKey, requestHash } : {}) });
 		await job.validate(); // before using up an id
+    try { job.pricing = createPricingQuote(job); }
+    catch (error) { res.status(400).json({ error: String(error) }); return; }
 		job.onChainJobId = await nextSeq("jobId");
 		if (!chain) job.submittedAt = new Date(); // no chain to wait for
 		try { await job.save(); }

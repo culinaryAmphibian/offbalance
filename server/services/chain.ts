@@ -36,6 +36,10 @@ export function errorMessage(error: unknown): string {
 
 // Chain-time deadlines (unix seconds) from OffBalance.getDeadlines; 0 until that phase starts.
 export type Deadlines = { commitDeadline: bigint; revealDeadline: bigint; deliveryDeadline: bigint };
+export type JobTerms = {
+	creator: string; maxHourlyRate: bigint; k: bigint; quorum: bigint;
+	executionTime: bigint; dockerImage: string; escrow: bigint;
+};
 
 export type ChainEvent = { id?: string; name: string; args: Record<string, unknown>; blockNumber: bigint };
 
@@ -130,8 +134,15 @@ export class Chain {
 		if (receipt.status !== "success") throw new Error(`${functionName} reverted (tx ${hash})`);
 	}
 
-	assignProviders(jobId: number, providers: string[]): Promise<void> {
-		return this.write("assignProviders", [BigInt(jobId), providers]);
+	assignProviders(jobId: number, providers: string[], hourlyRates: bigint[]): Promise<void> {
+		return this.write("assignProviders", [BigInt(jobId), providers, hourlyRates]);
+	}
+
+	async getJobTerms(jobId: number): Promise<JobTerms> {
+		const [creator, maxHourlyRate, k, quorum, executionTime, dockerImage, escrow] = await this.publicClient.readContract({
+			address: this.deployment.address, abi: this.deployment.abi, functionName: "getJobTerms", args: [BigInt(jobId)],
+		}) as readonly [string, bigint, bigint, bigint, bigint, string, bigint];
+		return { creator, maxHourlyRate, k, quorum, executionTime, dockerImage, escrow };
 	}
 
 	verifyReceipt(jobId: number, provider: string): Promise<void> {

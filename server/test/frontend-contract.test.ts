@@ -100,22 +100,25 @@ describe("frontend/server database contracts", { skip: !uri && "set MONGODB_URI 
 		assert.equal((await call("GET", "/provider/hardware")).status, 401);
 	});
 
-	test("provider pricing rejects lossy decimal conversion without changing the saved rate", async () => {
+	test("provider pricing preserves exact decimals and rejects excess precision without changing the saved rate", async () => {
 		const scored = await call("POST", "/scores", { as: "buyer", body: { cpu: 100, mem: 200 } });
 		assert.equal(scored.status, 201, JSON.stringify(scored.body));
 		const initial = await call("POST", "/provider/price", { as: "buyer", body: { price: "0.1" } });
 		assert.equal(initial.status, 200, JSON.stringify(initial.body));
-		assert.equal(initial.body.hardware.price, 0.1);
-		const rounded = await call("POST", "/provider/price", { as: "buyer", body: { price: "0.123456789012345678" } });
+		assert.equal(initial.body.hardware.price, "0.1");
+		const exact = await call("POST", "/provider/price", { as: "buyer", body: { price: "0.123456789012345678" } });
+		assert.equal(exact.status, 200, JSON.stringify(exact.body));
+		assert.equal(exact.body.hardware.price, "0.123456789012345678");
+		const rounded = await call("POST", "/provider/price", { as: "buyer", body: { price: "0.1234567890123456789" } });
 		assert.equal(rounded.status, 400, JSON.stringify(rounded.body));
-		assert.match(rounded.body.error, /precision|exact|represent/i);
+		assert.match(rounded.body.error, /precision|exact|represent|decimal/i);
 		const unchanged = await call("GET", "/provider/hardware", { as: "buyer" });
-		assert.equal(unchanged.body.hardware.price, 0.1);
+		assert.equal(unchanged.body.hardware.price, "0.123456789012345678");
 		assert.equal(unchanged.body.online, false, "benchmark and price updates do not establish liveness");
 		for (const price of ["0.000000000000000001", "1e-18"]) {
 			const precise = await call("POST", "/provider/price", { as: "buyer", body: { price } });
 			assert.equal(precise.status, 200, JSON.stringify(precise.body));
-			assert.equal(precise.body.hardware.price, 1e-18);
+			assert.equal(precise.body.hardware.price, "0.000000000000000001");
 		}
 	});
 

@@ -203,10 +203,10 @@ describe('MongoDB scheduler integration', { skip: !uri }, () => {
     const buyer = await account(1);
     const first = await provider(2, 0.1);
     const second = await provider(3, 0.2);
-    const pending = await job(buyer._id, 1, { maxPrice: '0.2', minNodesToRunOn: 2 });
+    const pending = await job(buyer._id, 1, { buyerWallet: wallet(1), maxPrice: '0.2', minNodesToRunOn: 2 });
     let fail = true;
     const calls: { id: number; wallets: string[] }[] = [];
-    const matcher = new Matcher({ async assignProviders(id, wallets) {
+    const matcher = new Matcher({ async getJobTerms() { return { creator: wallet(1), maxHourlyRate: 200000000000000000n, k: 2n, quorum: 1n, executionTime: 3600n, dockerImage: image, escrow: 400000000000000000n }; }, async assignProviders(id, wallets) {
       calls.push({ id, wallets });
       const persisted = await JobModel.findById(pending._id);
       assert.equal(persisted?.providers.length, 2, 'assignment must exist before chain broadcast');

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { jobPayload, validateJob } from '../jobs';
 import { convertBudget } from '../budget';
+import { quotePricing, PRICING_TERMS } from '../pricing';
 import { fetchEthUsdQuote, QUOTE_MAX_AGE_MS } from '../rates';
 
 const initial = { name: '', dockerImage: '', maxPrice: '', budgetCurrency: 'ETH', k: '3', quorum: '2', window: '60', minCpuScore: '0', minGpuScore: '0', minMemoryScore: '0' };
@@ -23,7 +24,12 @@ export default function JobForm({ api, onCreated }) {
   const quoteLocked = usd && Boolean(retry);
   const quoteFresh = quote && Date.now() >= quote.fetchedAt && Date.now() - quote.fetchedAt < QUOTE_MAX_AGE_MS;
   let converted = null;
+  let pricing = null;
   if (usd && quote) { try { converted = convertBudget(values.maxPrice, 'USD', quote.usdPerEth); } catch {} }
+
+  try {
+    pricing = quotePricing({ maxPrice: convertBudget(values.maxPrice, values.budgetCurrency, quote?.usdPerEth), window: Number(values.window) * 60, k: Number(values.k) });
+  } catch {}
 
   useEffect(() => {
     if (!usd) return;
@@ -126,8 +132,11 @@ export default function JobForm({ api, onCreated }) {
           </div>
           <p className="muted">Leave at zero for no minimum.</p>
         </details>
+        {pricing && <p className="notice" aria-label="Pricing summary">Hourly cap per provider: {pricing.maxHourlyRate} ETH / hour · Booked window: {pricing.window} seconds · Providers: {pricing.k} · Maximum charge per provider: {pricing.perProviderMaxCharge} ETH · Total escrow: {pricing.totalEscrow} ETH</p>}
+        <p className="muted">{PRICING_TERMS}</p>
+        {!pricing && <p className="muted">Enter a valid hourly cap, booked window and provider count to see the maximum charge and total escrow.</p>}
         <div className="form-actions"><button className="button primary" type="submit">{pending ? 'Saving…' : 'Save job'}</button><a className="text-link" href="#/">Cancel</a></div>
-        <p className="muted form-note">The cap limits each provider’s hourly rate{usd ? ', converted to ETH at the quoted rate' : ''}. Total cost also depends on provider count and runtime. Saving does not transfer funds.</p>
+        <p className="muted form-note">The cap limits each provider’s hourly rate{usd ? ', converted to ETH at the quoted rate' : ''}. The booked window and provider count set the escrow shown above. Saving does not transfer funds.</p>
       </fieldset>
     </form>
   </>;

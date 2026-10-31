@@ -39,7 +39,7 @@ test('demo job retries are idempotent and do not alter another adapter', async (
   const first = createDemoApi();
   const second = createDemoApi();
   const originalCount = (await second.listJobs('buyer')).jobs.length;
-  const input = { name: 'Isolated workload', image: 'example/workload:latest', minNodesToRunOn: 3, minNodesToAgree: 2, maxPrice: '0.01' };
+  const input = { name: 'Isolated workload', image: 'example/workload:latest', minNodesToRunOn: 3, minNodesToAgree: 2, timeWindow: 600, maxPrice: '0.01' };
   const created = await first.createJob(input, 'same-request');
   const retried = await first.createJob(input, 'same-request');
   assert.equal(retried.job.id, created.job.id);
@@ -53,6 +53,8 @@ test('demo job retries are idempotent and do not alter another adapter', async (
   assert.equal(retried.job.executionMode, 'demo');
   assert.equal(retried.job.status, 'PENDING');
   assert.equal(retried.job.providerCount, 0);
+  assert.equal(retried.job.pricing.totalEscrowWei, '5000000000000001');
+  assert.equal(retried.job.buyerWallet, created.job.buyerWallet);
   assert.equal(retried.job.result, undefined);
   assert.equal(retried.job.payment, undefined);
 });

@@ -1,12 +1,15 @@
 // Keeps the database in step with contract events.
 import { Types } from "mongoose";
 import { formatEther } from "viem";
-import { AccountModel, ChainEventModel, HardwareModel, JobModel, TERMINAL_STATUSES } from "../models/index.ts";
+import { AccountModel, ChainEventModel, HardwareModel, JobModel, TERMINAL_STATUSES, type Job } from "../models/index.ts";
+import { validatePricingQuote, uint256 } from '../pricing.ts';
 import { STATUS_FOR_EVENT } from "../models/JobStatus.ts";
 import type { ChainEvent } from "./chain.ts";
 import type { Matcher } from "./matcher.ts";
 
-async function accountForAddress(address: unknown) {
+async function accountForAddress(address: unknown, job: Job) {
+  const assigned = job.assignedRates.find(rate => rate.wallet?.toLowerCase() === String(address).toLowerCase());
+  if (assigned?.provider) return assigned.provider;
 	const hw = await HardwareModel.findOne({ address: String(address).toLowerCase() });
 	return hw?.userRef ?? (await AccountModel.findOne({ walletIds: String(address).toLowerCase() }))?._id ?? null;
 }
@@ -33,6 +36,7 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 
 	switch (name) {
 		case "JOB_SUBMITTED":
+      if (!await matcher.validateSubmission(jobId)) return;
 			if (!job.submittedAt) {
 				job.submittedAt = new Date();
 				await job.save();
@@ -42,7 +46,7 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 
 		// the server's own assignment, read back from the chain
 		case "PROVIDER_SELECTED": {
-			const account = await accountForAddress(args.provider);
+			const account = await accountForAddress(args.provider, job);
 			if (!account) {
 				console.warn(`PROVIDER_SELECTED: no account for ${args.provider}`);
 				return;
@@ -52,25 +56,44 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 			return;
 		}
 
-		// the contract reports the provider's payout in wei; older events without it settle at the running price
-		case "PAID": {
-			const account = await accountForAddress(args.provider);
-			if (account) {
-				const earned = typeof args.amount === "bigint" ? Types.Decimal128.fromString(formatEther(args.amount)) : job.runningPrice;
-				await AccountModel.updateOne(
-					{ _id: account, processedChainEvents: { $ne: `${effectId}:provider` } },
-					{ $inc: { reputation: 1, totalEarned: earned }, $addToSet: { processedChainEvents: `${effectId}:provider` } },
-				);
-			}
-			await AccountModel.updateOne({ _id: job.owner, processedChainEvents: { $ne: `${effectId}:buyer` } }, { $inc: { totalSpent: job.runningPrice }, $addToSet: { processedChainEvents: `${effectId}:buyer` } });
-			return;
-		}
-
-		case "SLASHED": {
-			const account = await accountForAddress(args.provider);
-			if (account) await AccountModel.updateOne({ _id: account, processedChainEvents: { $ne: effectId } }, { $inc: { reputation: -1 }, $addToSet: { processedChainEvents: effectId } });
-			return;
-		}
+    case 'PAID':
+    case 'STAKE_RETURNED':
+    case 'SLASH_REWARD':
+    case 'SLASHED': {
+      if (typeof args.amount !== 'bigint') throw new TypeError(`${name} requires an explicit wei amount.`);
+      const amount = Types.Decimal128.fromString(formatEther(uint256(args.amount)));
+      const account = await accountForAddress(args.provider, job);
+      if (account) {
+        const inc = name === 'PAID' ? { totalEarned: amount, reputation: 1 } : name === 'SLASH_REWARD' ? { totalEarned: amount } : name === 'SLASHED' ? { reputation: -1 } : {};
+        await AccountModel.updateOne({ _id: account, processedChainEvents: { $ne: effectId } },
+          { ...(Object.keys(inc).length ? { $inc: inc } : {}), $addToSet: { processedChainEvents: effectId } });
+      }
+      const field = name === 'PAID' ? 'workPaid' : name === 'STAKE_RETURNED' ? 'stakeReturned' : name === 'SLASH_REWARD' ? 'slashRewards' : 'slashed';
+      await JobModel.updateOne({ _id: job._id, processedChainEvents: { $ne: effectId } },
+        { $inc: { [field]: amount }, $addToSet: { processedChainEvents: effectId } });
+      return;
+    }
+    case 'JOB_SETTLED': {
+      const quote = validatePricingQuote(job);
+      for (const key of ['escrow', 'workPaid', 'refund', 'slashedStake']) {
+        if (typeof args[key] !== 'bigint') throw new TypeError(`JOB_SETTLED requires ${key} in wei.`);
+        uint256(args[key] as bigint);
+      }
+      const escrow = args.escrow as bigint, work = args.workPaid as bigint, refund = args.refund as bigint;
+      if (String(args.buyer).toLowerCase() !== job.buyerWallet?.toLowerCase() ||
+          escrow !== BigInt(quote.totalEscrowWei) || work + refund !== escrow) {
+        throw new TypeError('JOB_SETTLED does not match the pinned buyer/escrow.');
+      }
+      // Each account and job applies its own effect and dedupe key atomically. A partial
+      // failure can replay safely without charging work twice or fabricating stake earnings.
+      await AccountModel.updateOne({ _id: job.owner, processedChainEvents: { $ne: effectId } },
+        { $inc: { totalSpent: Types.Decimal128.fromString(formatEther(work)) }, $addToSet: { processedChainEvents: effectId } });
+      await JobModel.updateOne({ _id: job._id, processedChainEvents: { $ne: effectId } },
+        { $set: { settlement: { version: 1, status: 'settled', escrowWei: String(escrow), workChargedWei: String(work),
+          buyerRefundWei: String(refund), slashedStakeWei: String(args.slashedStake) } },
+          $addToSet: { processedChainEvents: effectId } });
+      return;
+    }
 	}
 
 	const status = STATUS_FOR_EVENT[name];

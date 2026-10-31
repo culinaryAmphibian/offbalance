@@ -48,6 +48,9 @@ jobs:
       - run: npm ci
       - run: npm ci --prefix ../server
       - run: npm ci --prefix ../blockchain
+      - name: Check pricing and escrow
+        working-directory: blockchain
+        run: npx hardhat test solidity contracts/OffBalancePricing.t.sol
       - name: Check contract
         working-directory: blockchain
         run: npx hardhat test

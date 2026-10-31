@@ -19,7 +19,7 @@ export function decimalString(value: string | number | Types.Decimal128): string
   return `${integer.replace(/^0+(?=\d)/, '')}${clean ? `.${clean}` : ''}`;
 }
 
-export function money(opts: { required?: boolean; default?: number } = {}) {
+export function money(opts: { required?: boolean; default?: number | null } = {}) {
   return {
     type: Schema.Types.Decimal128,
     ...opts,

@@ -1,4 +1,5 @@
 import { normalizeJob } from "./jobs.js";
+import { quotePricing } from "./pricing.js";
 
 const wallet = "0x71C0000000000000000000000000000000009A2F";
 const stamp = new Date().toISOString();
@@ -67,7 +68,7 @@ export function createDemoApi() {
 			payment: { status: "PAID", settledAt: stamp },
 			results: [{ provider: "demo-provider", hash: "demo-result-hash", location: "https://example.com/offbalance-demo-output", deliveryTime: stamp, receiptVerified: true }],
 		},
-	];
+	].map(job => ({ ...job, buyerWallet: wallet, pricing: quotePricing(job) }));
 	const submissions = new Map();
 	return {
 		setToken() {},
@@ -111,6 +112,8 @@ export function createDemoApi() {
 				status: "PENDING",
 				providerCount: 0,
 			});
+			job.buyerWallet = wallet;
+			job.pricing = quotePricing(job);
 			jobs = [job, ...jobs];
 			const response = { job };
 			submissions.set(key, response);

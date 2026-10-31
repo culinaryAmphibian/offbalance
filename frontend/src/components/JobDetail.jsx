@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { dateLabel, jobPhase, statusLabel, timeLabel, windowMinutes, resultUrl } from '../jobs';
 import { useResource } from '../useResource';
 import { submitStoredJob } from '../chain';
+import { validateSavedPricing, settlementAmounts, PRICING_TERMS } from '../pricing';
 
 export function Status({ value }) {
   return <span className={`status ${jobPhase(value)[0]}`}>{statusLabel(value)}</span>;
@@ -26,6 +27,11 @@ export default function JobDetail({ api, id, notice }) {
   const active = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; resultController.current?.abort(); chainController.current?.abort(); }; }, []);
   const job = data?.job;
+  let pricing = null, pricingError = '', settlement = null, settlementError = '';
+  if (job) {
+    try { pricing = validateSavedPricing(job); } catch (problem) { pricingError = problem.message; }
+    try { settlement = settlementAmounts(job.settlement); } catch (problem) { settlementError = problem.message; }
+  }
   const needsChain = job?.executionMode === 'chain' && !job.submittedAt && job.status === 'PENDING';
 
   async function loadResults() {
@@ -75,7 +81,10 @@ export default function JobDetail({ api, id, notice }) {
     {job?.executionMode === 'local' && <p className="notice">Database-backed coordinator mode. Blockchain submission, escrow, and settlement are disabled.</p>}
     {needsChain && <section className="panel" aria-label="Blockchain submission">
       <p>This job is saved in the database. It needs a blockchain submission before providers can be assigned.</p>
-      {job.canSubmit !== false && <button className="button primary" onClick={submitChain} disabled={chainPending || !!transaction}>{chainPending ? 'Check your wallet…' : transaction ? 'Transaction sent' : 'Submit to blockchain'}</button>}
+      {pricing && <p className="notice" aria-label="Funding summary">Hourly cap per provider: {pricing.maxHourlyRate} ETH / hour · Booked window: {pricing.window} seconds · Providers: {pricing.k} · Maximum charge per provider: {pricing.perProviderMaxCharge} ETH · Total escrow: {pricing.totalEscrow} ETH</p>}
+      <p className="muted">{PRICING_TERMS}</p>
+      {pricingError && <p className="notice error" role="alert">{pricingError}</p>}
+      {job.canSubmit !== false && <button className="button primary" onClick={submitChain} disabled={chainPending || !!transaction || !!pricingError}>{chainPending ? 'Check your wallet…' : transaction ? 'Transaction sent' : 'Submit to blockchain'}</button>}
       {transaction && <p className="notice" role="status">Transaction sent: <span className="mono">{transaction}</span>. Waiting for the coordinator to observe the submission. Keep this page open while it is pending.</p>}
       {chainError && <p className="notice error" role="alert">{chainError}</p>}
     </section>}
@@ -90,24 +99,29 @@ export default function JobDetail({ api, id, notice }) {
           <Item label="Job ID" mono>{job.id}</Item><Item label="Saved">{dateLabel(job.createdAt)}</Item>
           <Item label="Container image" mono>{job.dockerImage || '—'}</Item><Item label="Hourly cap per provider">{job.maxPrice ?? '—'} ETH / hour</Item>
           <Item label="Providers assigned">{job.providerCount ?? '—'} / {job.k ?? '—'}</Item><Item label="Matching results">{job.consensus?.agreeing ?? '—'} / {job.consensus?.required ?? job.quorum ?? '—'}</Item>
-          <Item label="Runtime">{job.runtimeSeconds == null ? '—' : `${job.runtimeSeconds} seconds`}</Item><Item label="Execution window">{job.window == null ? '—' : `${windowMinutes(job.window)} ${job.window === 60 ? 'minute' : 'minutes'}`}</Item>
+          <Item label="Runtime">{job.runtimeSeconds == null ? '—' : `${job.runtimeSeconds} seconds`}</Item><Item label="Booked execution window">{job.window == null ? '—' : `${windowMinutes(job.window)} ${job.window === 60 ? 'minute' : 'minutes'}`}</Item>
           <Item label="Minimum scores">CPU {job.requirements?.minCpuScore ?? '—'} · GPU {job.requirements?.minGpuScore ?? '—'} · Memory {job.requirements?.minMemoryScore ?? '—'}</Item>
-          <Item label="Amount spent">{job.spent == null ? '—' : `${job.spent} ETH`}</Item>
+          <Item label="Maximum charge per provider">{pricing ? `${pricing.perProviderMaxCharge} ETH` : 'Quote unavailable'}</Item>
+          <Item label="Total escrow">{pricing ? `${pricing.totalEscrow} ETH` : 'Quote unavailable'}</Item>
           {job.onChainJobId != null && <Item label="On-chain job ID" mono>{job.onChainJobId}</Item>}
         </dl>
         {job.error && <p className="notice error" role="alert">{job.error}</p>}
+        {job.submissionValidationError && <p className="notice error" role="alert">{job.submissionValidationError}</p>}
       </section>
       <section className="panel" aria-labelledby="result-heading">
         <div className="section-heading"><h2 id="result-heading">Result</h2></div>
         <dl className="detail-grid result-metadata">
           <Item label="Delivery">{job.delivery?.status ? statusLabel(job.delivery.status) : 'Not reported'}</Item>
           <Item label="Payment">{job.payment?.status ? statusLabel(job.payment.status) : 'Not reported'}</Item>
+          <Item label="Work charged">{settlement ? `${settlement.workCharged} ETH` : 'Not reported'}</Item>
+          <Item label="Buyer refund">{settlement ? `${settlement.buyerRefund} ETH` : 'Not reported'}</Item>
           {job.delivery?.receivedAt && <Item label="Output received">{timeLabel(job.delivery.receivedAt)}</Item>}
           {job.delivery?.verifiedAt && <Item label="Receipt verified">{timeLabel(job.delivery.verifiedAt)}</Item>}
           {job.payment?.settledAt && <Item label="Payment settled">{timeLabel(job.payment.settledAt)}</Item>}
           {job.result?.retainedUntil && <Item label="Available until">{timeLabel(job.result.retainedUntil)}</Item>}
         </dl>
         {job.delivery?.error && <p className="notice error" role="alert">{job.delivery.error}</p>}
+        {settlementError && <p className="notice error" role="alert">{settlementError}</p>}
         {job.payment?.error && <p className="notice error" role="alert">{job.payment.error}</p>}
         {(job.resultHash || job.consensusResultHash) && <p className="result-hash mono"><span className="muted">Reported result hash </span>{job.resultHash || job.consensusResultHash}</p>}
         {job.canViewResults !== false ? <>

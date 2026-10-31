@@ -16,7 +16,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import {
 	createPublicClient, createWalletClient, encodeAbiParameters, http, keccak256, nonceManager,
-	parseEther, toHex, type Abi, type Address, type Hex,
+	parseEther, formatEther, toHex, type Abi, type Address, type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
@@ -92,6 +92,9 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 		const { handleChainEvent } = await import("../services/events.ts");
 		const { Matcher } = await import("../services/matcher.ts");
 		const { Orchestrator } = await import("../services/orchestrator.ts");
+		const { createPricingQuote, bookedChargeWei } = await import("../pricing.ts");
+		const { schedulingJob } = await import("../adapters/repository.ts");
+		const { submitStoredJob } = await import("../../frontend/src/chain.js");
 
 		await mongoose.connect(uri!, { dbName: `offbalance_e2e_test_${randomUUID().replaceAll("-", "")}` });
 		await mongoose.syncIndexes();
@@ -99,7 +102,7 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 		// the same wiring as server.ts
 		const chain = await Chain.connect();
 		assert.ok(chain?.canWrite, "server chain connection");
-		const matcher = new Matcher(null);
+		const matcher = new Matcher(chain);
 		const orchestrator = new Orchestrator(chain, { log: { log() {}, warn: console.warn, error: console.error } });
 		await chain.listen(async event => {
 			await handleChainEvent(event, matcher);
@@ -120,13 +123,32 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 
 		// One job: the server records it, the buyer submits it, the server assigns providers, and
 		// providers commit, then reveal once the server opens the reveal phase.
-		async function runJob(jobId: number, price: bigint, outputs: Hex[], deliverers: Address[]) {
-			await JobModel.create({
-				onChainJobId: jobId, owner: owner._id, dockerImageDigest: `example/job@sha256:${"a".repeat(64)}`,
-				maxPrice: "1", runningPrice: "1", minNodesToRunOn: 3, minNodesToAgree: 2, timeWindow: EXECUTION_TIME,
+		const rates = ["0.002", "0.004", "0.006"].map(rate => parseEther(rate));
+		const charges = rates.map(rate => bookedChargeWei(rate, EXECUTION_TIME));
+		async function runJob(jobId: number, cap: bigint, outputs: Hex[], deliverers: Address[]) {
+			const image = `example/job@sha256:${"a".repeat(64)}`;
+			const pricing = createPricingQuote({ maxPrice: formatEther(cap), timeWindow: EXECUTION_TIME, minNodesToRunOn: 3 });
+			const saved = await JobModel.create({
+				onChainJobId: jobId, owner: owner._id, buyerWallet: buyer.account!.address, pricing, dockerImageDigest: image,
+				maxPrice: formatEther(cap), minNodesToRunOn: 3, minNodesToAgree: 2, timeWindow: EXECUTION_TIME,
 			});
-			await send(buyer, "submitJob", [BigInt(jobId), price, 3n, 2n, BigInt(EXECUTION_TIME), "example/job"], price);
-			await chain!.assignProviders(jobId, [p1, p2, p3]);
+			assert.equal(parseEther(schedulingJob(saved).maxPrice), BigInt(pricing.totalEscrowWei));
+			// Exercise the real browser encoder and signed wallet transaction against the saved quote.
+			const walletProvider = { request: async ({ method, params }: { method: string; params?: { value: Hex; data: Hex }[] }) => {
+				if (method === "eth_accounts") return [buyer.account!.address];
+				if (method === "eth_chainId") return "0x7a69";
+				assert.equal(method, "eth_sendTransaction");
+				assert.equal(BigInt(params![0].value), BigInt(pricing.totalEscrowWei));
+				return buyer.sendTransaction({ account: buyer.account!, chain: null, to: address,
+					value: BigInt(params![0].value), data: params![0].data });
+			} };
+			const { hash } = await submitStoredJob({ id: String(jobId), status: "PENDING", maxPrice: formatEther(cap),
+				window: EXECUTION_TIME, k: 3, quorum: 2, dockerImage: image, pricing,
+				buyerWallet: buyer.account!.address, submitWallet: buyer.account!.address },
+				{ executionMode: "chain", chain: { address, chainId: 31337 } }, walletProvider);
+			assert.equal((await rpc.waitForTransactionReceipt({ hash: hash as Hex })).status, "success");
+			await until(`job ${jobId} funding validation`, async () => Boolean((await JobModel.findById(saved._id))?.submittedAt));
+			await chain!.assignProviders(jobId, [p1, p2, p3], rates);
 			const salts = outputs.map((_, i) => toHex(jobId * 10 + i, { size: 32 }));
 			for (const [i, provider] of providers.entries()) {
 				await send(provider, "submitCommitment", [BigInt(jobId), commitment(outputs[i], salts[i])], stake);
@@ -146,8 +168,8 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 			return reached;
 		}
 
-		const priceA = parseEther("1");
-		const priceB = parseEther("0.3");
+		const priceA = parseEther("0.01");
+		const priceB = parseEther("0.008");
 		const same = keccak256(toHex("result"));
 		const [endA, endB] = await Promise.all([
 			runJob(101, priceA, [same, same, keccak256(toHex("other"))], [p1, p2]),
@@ -157,18 +179,25 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 		assert.equal(endB, NO_QUORUM);
 		assert.equal(await status(102), NO_QUORUM);
 
-		// job A: price + p3's slashed stake split between p1 and p2, who also get their stakes back
-		// job B: no quorum, every revealer is paid a third (p1 takes the rounding dust), buyer gets nothing
-		const winA = (priceA + stake) / 2n + stake;
-		const thirdB = priceB / 3n, dustB = priceB - thirdB * 3n;
+		// Actual work uses individual booked rates; unused escrow returns to the buyer.
+		// Slashing rewards and returned stakes are separate from work charges.
+		const workA = charges[0] + charges[1], workB = charges.reduce((sum, amount) => sum + amount, 0n);
+		const escrow = [priceA, priceB].reduce((sum, cap) => sum + bookedChargeWei(cap, EXECUTION_TIME) * 3n, 0n);
 		const credits = await Promise.all([buyer.account!.address, p1, p2, p3].map(a => read<bigint>("credits", [a])));
-		assert.deepEqual(credits, [0n, winA + thirdB + dustB + stake, winA + thirdB + stake, thirdB + stake]);
+		assert.deepEqual(credits, [escrow - workA - workB,
+			2n * charges[0] + stake / 2n + stake % 2n + 2n * stake,
+			2n * charges[1] + stake / 2n + 2n * stake, charges[2] + stake]);
 
 		// the database followed the chain
 		await until("database statuses", async () => {
 			const [a, b] = await Promise.all([101, 102].map(id => JobModel.findOne({ onChainJobId: id }).orFail()));
 			return a.status === JobStatus.PAYOUT && b.status === JobStatus.NO_QUORUM;
 		}, 10_000);
+		await until("authoritative account spending", async () =>
+			parseEther(String((await AccountModel.findById(owner._id))!.totalSpent)) === workA + workB, 10_000);
+		const providerAccounts = await Promise.all([p1, p2, p3].map(wallet => AccountModel.findOne({ walletIds: wallet.toLowerCase() }).orFail()));
+		assert.deepEqual(providerAccounts.map(account => parseEther(String(account.totalEarned))),
+			[2n * charges[0] + stake / 2n + stake % 2n, 2n * charges[1] + stake / 2n, charges[2]]);
 	} finally {
 		await stopServer().catch(() => {});
 		if (mongoose.connection.readyState === 1) {

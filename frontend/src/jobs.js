@@ -1,4 +1,5 @@
 import { convertBudget } from "./budget.js";
+import { quotePricing } from "./pricing.js";
 
 export const statusLabel = (status) =>
 	String(status || "UNKNOWN")
@@ -133,6 +134,11 @@ export function validateJob(values, usdPerEth = null) {
 		errors.window = "Enter an execution window of 1–10080 minutes.";
 	if (!errors.quorum && !errors.k && Number(values.quorum) > Number(values.k))
 		errors.quorum = "Agreement cannot exceed the provider count.";
+	if (!errors.maxPrice && !errors.window && !errors.k) {
+		try { quotePricing({ maxPrice: convertBudget(values.maxPrice, values.budgetCurrency ?? 'ETH', usdPerEth), window: Number(values.window) * 60, k: Number(values.k) }); }
+		catch (error) { errors.maxPrice = error.message; }
+	}
+
 	return errors;
 }
 
