@@ -24,6 +24,25 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       assert.equal(await page.getByRole('link',{name:'Submit job',exact:true}).count(),0);
       await page.getByRole('button',{name:'Buyer',exact:true}).click();
     });
+    await check('provider demo collection clears available funds and fits mobile layouts', async () => {
+      await page.getByRole('button',{name:'Provider',exact:true}).click();
+      const panel=page.getByRole('region',{name:'Available funds',exact:true});
+      await panel.locator('.funds-amount').filter({hasText:/^0\.003ETH$/}).waitFor();
+      for(const width of [320,375,1280]) {
+        await page.setViewportSize({width,height:960});
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
+        await page.screenshot({path:`${root}/provider-funds-${width}.png`,fullPage:true});
+      }
+      await panel.getByRole('button',{name:'Collect funds',exact:true}).click();
+      await panel.getByRole('status').filter({hasText:'Demo: 0.003 ETH collected.'}).waitFor();
+      assert.equal(await panel.getByRole('button',{name:'Collect funds',exact:true}).isDisabled(),true);
+      await panel.getByText('No funds available to collect.',{exact:true}).waitFor();
+      await page.getByRole('button',{name:'Buyer',exact:true}).click();
+      assert.equal(await page.getByRole('button',{name:'Collect funds',exact:true}).count(),0);
+      await page.getByRole('button',{name:'Provider',exact:true}).click();
+      await panel.getByText('No funds available to collect.',{exact:true}).waitFor();
+      await page.getByRole('button',{name:'Buyer',exact:true}).click();
+    });
     await check('validation, hardware disclosure and successful job creation', async () => {
       await page.getByRole('link',{name:'Submit job',exact:true}).click();
       await page.getByRole('button',{name:'Save job',exact:true}).click();
@@ -112,6 +131,7 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       await currencyPage.getByText('60 minutes',{exact:true}).waitFor();
       await currencyContext.close();
     });
+    await require('./provider-funds-browser.cjs')({ browser, check, errors });
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({checks:done.length,pageErrors:errors,screenshots:root},null,2));
   } finally { await browser.close(); }

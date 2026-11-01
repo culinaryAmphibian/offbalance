@@ -69,6 +69,9 @@ export function createDemoApi() {
 		},
 	];
 	const submissions = new Map();
+	let funds = { available: "0.003", currency: "ETH", collectionEnabled: true };
+	let lastCollection;
+	const collections = new Map();
 	return {
 		setToken() {},
 		getConfig: async () => ({ executionMode: "demo", chain: null }),
@@ -127,6 +130,17 @@ export function createDemoApi() {
 			return { status: job.status, results: structuredClone(job.results ?? []) };
 		},
 		getProvider: async () => ({ provider: structuredClone(provider) }),
+		getProviderFunds: async () => structuredClone({ funds, ...(lastCollection ? { collection: lastCollection } : {}) }),
+		collectProviderFunds: async (key) => {
+			if (!key) throw new Error("A collection request key is required.");
+			if (collections.has(key)) return structuredClone(collections.get(key));
+			if (funds.available === "0") throw new Error("No funds are available to collect.");
+			lastCollection = { status: "COLLECTED", amount: funds.available };
+			funds = { ...funds, available: "0" };
+			const response = { collection: lastCollection, funds: structuredClone(funds) };
+			collections.set(key, response);
+			return structuredClone(response);
+		},
 		getProviderTutorial: async () => ({
 			tutorial: {
 				title: "Client setup",

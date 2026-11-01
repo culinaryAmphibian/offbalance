@@ -74,6 +74,10 @@ export function createApi({
 			]);
 			return { provider: providerProfile(data, dashboard.account?.currentStake) };
 		},
+		getProviderFunds: (signal) => request("/provider/funds", { signal }),
+		collectProviderFunds: (key) => request("/provider/funds/collect", {
+			method: "POST", headers: { "Idempotency-Key": key },
+		}),
 		getProviderTutorial: async (signal) => {
 			const data = await request("/provider/tutorial", { signal });
 			return { tutorial: {

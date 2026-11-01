@@ -193,7 +193,7 @@ test('network and timeout failures have actionable errors', async () => {
 });
 
 test('caller cancellation is preserved across provider and job requests', async () => {
-  for (const invoke of [(api, signal) => api.getProvider(signal), (api, signal) => api.getProviderTutorial(signal), (api, signal) => api.getJob('1', signal)]) {
+  for (const invoke of [(api, signal) => api.getProvider(signal), (api, signal) => api.getProviderFunds(signal), (api, signal) => api.getProviderTutorial(signal), (api, signal) => api.getJob('1', signal)]) {
     const controller = new AbortController();
     const signal = controller.signal;
     const reason = new DOMException('left page', 'AbortError');
@@ -220,4 +220,41 @@ test('small provider rates remain editable decimal strings after Mongo numeric s
   const api = createApi({ fetcher: async () => json({ hardware: { price: 1e-18 } }) });
   const response = await api.saveProviderPricing({ pricePerHour: '0.000000000000000001' });
   assert.equal(response.provider.pricePerHour, '0.000000000000000001');
+});
+
+test('provider funds use authenticated routes and replay the caller collection key', async () => {
+  const calls = [];
+  const funds = { available: '0.000000000000000001', currency: 'ETH', collectionEnabled: true };
+  const response = { collection: { status: 'PENDING', amount: funds.available, transactionHash: '0xhash' }, funds: { ...funds, available: '0' } };
+  const api = createApi({ baseUrl: '/service/', fetcher: async (url, options) => {
+    calls.push({ url, options });
+    return json(url.endsWith('/collect') ? response : { funds });
+  } });
+  api.setToken('provider-token');
+  assert.deepEqual(await api.getProviderFunds(), { funds });
+  assert.deepEqual(await api.collectProviderFunds('same-collection-key'), response);
+  assert.deepEqual(await api.collectProviderFunds('same-collection-key'), response);
+  assert.deepEqual(calls.map(call => call.url), ['/service/provider/funds', '/service/provider/funds/collect', '/service/provider/funds/collect']);
+  for (const { options } of calls) assert.equal(options.headers.Authorization, 'Bearer provider-token');
+  for (const { options } of calls.slice(1)) {
+    assert.equal(options.method, 'POST');
+    assert.equal(options.headers['Idempotency-Key'], 'same-collection-key');
+    assert.equal(options.body, undefined);
+  }
+});
+
+test('collection failures preserve the server message and response status', async () => {
+  const api = createApi({ fetcher: async () => json({ message: 'Collection is not configured.' }, 503) });
+  await assert.rejects(api.collectProviderFunds('collection-key'), error => error instanceof ApiError && error.status === 503 && error.message === 'Collection is not configured.');
+});
+
+test('provider funds reads and collection expire an unauthorized session', async () => {
+  for (const invoke of [api => api.getProviderFunds(), api => api.collectProviderFunds('collection-key')]) {
+    const api = createApi({ fetcher: async () => json({ error: 'Sign in again.' }, 401) });
+    let expired = 0;
+    api.setToken('provider-token');
+    api.onUnauthorized = () => { expired += 1; };
+    await assert.rejects(invoke(api), error => error instanceof ApiError && error.status === 401 && error.message === 'Sign in again.');
+    assert.equal(expired, 1);
+  }
 });

@@ -90,6 +90,8 @@ input[aria-invalid=true]{border-color:#cf9999}
 .detail-grid dt{font-size:11px;color:#a3a3a3;margin-bottom:9px}
 .detail-grid dd{margin:0;font-size:13px;line-height:1.65;overflow-wrap:anywhere}
 .panel>.notice{margin:24px 0 0}
+.funds-actions{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:18px;flex-wrap:wrap}
+.funds-amount{font-size:30px;overflow-wrap:anywhere;min-width:0;max-width:100%;font-variant-numeric:tabular-nums}
 .result-hash{color:#a3a3a3;overflow-wrap:anywhere;margin-bottom:20px;line-height:1.6}
 .empty-state p+p{margin-top:8px}
 .refresh-note{font-size:11px}

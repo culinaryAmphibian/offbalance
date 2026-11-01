@@ -56,3 +56,26 @@ test('demo job retries are idempotent and do not alter another adapter', async (
   assert.equal(retried.job.result, undefined);
   assert.equal(retried.job.payment, undefined);
 });
+
+test('demo collection consumes available funds once and retries return the original result', async () => {
+  const api = createDemoApi();
+  const initialSummary = (await api.listJobs('provider')).summary;
+  assert.deepEqual(await api.getProviderFunds(), { funds: { available: '0.003', currency: 'ETH', collectionEnabled: true } });
+  await assert.rejects(api.collectProviderFunds(), /request key/);
+  const [first, retry] = await Promise.all([api.collectProviderFunds('collection-key'), api.collectProviderFunds('collection-key')]);
+  assert.deepEqual(first, { collection: { status: 'COLLECTED', amount: '0.003' }, funds: { available: '0', currency: 'ETH', collectionEnabled: true } });
+  assert.deepEqual(retry, first);
+  first.funds.available = '100';
+  first.collection.amount = '100';
+  assert.deepEqual(await api.collectProviderFunds('collection-key'), retry);
+  const balance = await api.getProviderFunds();
+  assert.equal(balance.funds.available, '0');
+  assert.deepEqual(balance.collection, retry.collection);
+  balance.funds.available = '100';
+  balance.collection.amount = '100';
+  assert.equal((await api.getProviderFunds()).funds.available, '0');
+  assert.deepEqual((await api.getProviderFunds()).collection, retry.collection);
+  await assert.rejects(api.collectProviderFunds('another-key'), /No funds/);
+  assert.deepEqual((await api.listJobs('provider')).summary, initialSummary);
+  assert.equal((await createDemoApi().getProviderFunds()).funds.available, '0.003');
+});

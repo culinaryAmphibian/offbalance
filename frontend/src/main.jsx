@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createApi } from "./api";
 import { createDemoApi } from "./demoApi";
@@ -8,6 +8,7 @@ import { useResource } from "./useResource";
 import JobForm from "./components/JobForm";
 import JobDetail, { ResourceError, Status } from "./components/JobDetail";
 import ProviderSetup from "./components/ProviderSetup";
+import ProviderFunds from "./components/ProviderFunds";
 import "./stylesheets/app.css";
 
 const demo = import.meta.env.VITE_API_MODE === "demo";
@@ -97,6 +98,7 @@ function Workspace({ clientKey }) {
 	const [hash, setHash] = useState(window.location.hash || "#/");
 	const [view, setView] = useState("buyer");
 	const [createdId, setCreatedId] = useState(null);
+	const collectionRequest = useRef(null);
 	useEffect(() => {
 		const changed = () => {
 			setHash(window.location.hash || "#/");
@@ -134,10 +136,10 @@ function Workspace({ clientKey }) {
 		);
 	}
 	if (!["#/", "#"].includes(hash)) return <NotFound />;
-	return <Overview key={view} view={view} setView={setView} />;
+	return <Overview key={view} view={view} setView={setView} collectionRequest={collectionRequest} />;
 }
 
-function Overview({ view, setView }) {
+function Overview({ view, setView, collectionRequest }) {
 	const load = useCallback((signal) => api.listJobs(view, signal), [view]);
 	const { data, error, loading, refresh } = useResource(load, 10000);
 	const isBuyer = view === "buyer";
@@ -184,6 +186,7 @@ function Overview({ view, setView }) {
 					</div>
 				))}
 			</section>
+			{!isBuyer && <ProviderFunds api={api} demo={demo} request={collectionRequest} />}
 			{error && <ResourceError message={error} retry={refresh} />}
 			<section className="jobs" aria-labelledby="jobs-heading">
 				<div className="section-heading">
