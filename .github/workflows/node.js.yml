@@ -50,7 +50,10 @@ jobs:
       - run: npm ci --prefix ../blockchain
       - name: Check contract
         working-directory: blockchain
-        run: npx hardhat test
+        run: |
+          npx hardhat build
+          npx tsc --noEmit
+          npx hardhat test
       - run: npm test
       - run: npm run build
       # includes test:e2e, which runs the server's orchestrator against a real Hardhat node
