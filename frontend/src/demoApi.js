@@ -91,6 +91,7 @@ export function createDemoApi() {
 							).length,
 							completedJobs: 1,
 							totalSpent: "0.004",
+							currentEscrowed: "0.048",
 						}
 					: {
 							activeJobs: 2,

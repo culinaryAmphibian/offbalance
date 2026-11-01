@@ -8,7 +8,7 @@ const json = (value, status = 200) => new Response(JSON.stringify(value), {
 });
 const dashboard = {
   account: { currentStake: '0.05' },
-  buyer: { activeJobs: 4, completedJobs: 2, totalSpent: '0.008', jobs: [{ id: 9 }] },
+  buyer: { activeJobs: 4, completedJobs: 2, totalSpent: '0.008', currentEscrowed: '0.000000000000000001', jobs: [{ id: 9 }] },
   provider: { activeJobs: 1, completedJobs: 5, totalEarned: '0.02', jobs: [], hardware: {} },
 };
 
@@ -73,7 +73,7 @@ test('job listings use role and full list, with authoritative dashboard totals',
   assert.equal(buyer.jobs.length, 25);
   assert.equal(buyer.jobs[24].id, '24');
   assert.equal(buyer.jobs[0].k, 3);
-  assert.deepEqual(buyer.summary, { activeJobs: 4, completedJobs: 2, totalSpent: '0.008' });
+  assert.deepEqual(buyer.summary, { activeJobs: 4, completedJobs: 2, totalSpent: '0.008', currentEscrowed: '0.000000000000000001' });
   const provider = await api.listJobs('provider');
   assert.deepEqual(provider.summary, { activeJobs: 1, completedJobs: 5, totalEarned: '0.02', currentStake: '0.05' });
   assert.deepEqual(urls, ['/api/jobs?role=buyer', '/api/account/me/dashboard', '/api/jobs?role=provider', '/api/account/me/dashboard']);

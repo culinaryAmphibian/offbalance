@@ -152,7 +152,10 @@ function Overview({ view, setView }) {
 			"ETH",
 		],
 	];
-	if (!isBuyer) stats.push(["Current stake", summary?.currentStake, "ETH"]);
+	const escrowed = summary?.currentEscrowed;
+	stats.push(isBuyer
+		? ["Currently escrowed", typeof escrowed === "string" && /^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/.test(escrowed) ? escrowed : undefined, "ETH"]
+		: ["Current stake", summary?.currentStake, "ETH"]);
 	return (
 		<>
 			<div className="page-heading">
@@ -172,7 +175,7 @@ function Overview({ view, setView }) {
 				</div>
 			</div>
 			<section
-				className={`stats${isBuyer ? "" : " stats-provider"}`}
+				className="stats"
 				aria-label={`${view} summary`}>
 				{stats.map(([label, value, unit]) => (
 					<div className="stat" key={label}>
