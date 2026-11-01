@@ -2,6 +2,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const root = process.env.BROWSER_ARTIFACTS || require('node:path').join(require('node:os').tmpdir(), 'offbalance-browser');
+const baseUrl = process.env.BROWSER_BASE_URL || 'http://127.0.0.1:5173';
 const done = [];
 const errors = [];
 async function check(name, fn) { await fn(); done.push(name); console.log('PASS', name); }
@@ -14,13 +15,21 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
     page.setDefaultTimeout(10000);
     page.on('pageerror', e => errors.push(e.message));
     await check('demo sign-in, buyer/provider navigation and overview', async () => {
-      await page.goto('http://127.0.0.1:5173');
+      await page.goto(baseUrl);
       await page.getByRole('button',{name:'Enter demo'}).click();
       await page.getByRole('heading',{name:'Overview',exact:true}).waitFor();
       await page.getByRole('link',{name:'Matrix computation'}).waitFor();
+      const escrow=page.locator('.stat').filter({has:page.getByRole('heading',{name:'Currently escrowed',exact:true})});
+      assert.equal(await escrow.locator('p').textContent(),'0.048ETH');
+      for(const width of [320,375,1280]) {
+        await page.setViewportSize({width,height:960});
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
+        await page.screenshot({path:`${root}/buyer-overview-${width}.png`,fullPage:true});
+      }
       await page.screenshot({path:`${root}/overview.png`,fullPage:true});
       await page.getByRole('button',{name:'Provider',exact:true}).click();
       await page.getByRole('heading',{name:'Assigned jobs'}).waitFor();
+      assert.equal(await page.getByRole('heading',{name:'Currently escrowed',exact:true}).count(),0);
       assert.equal(await page.getByRole('link',{name:'Submit job',exact:true}).count(),0);
       await page.getByRole('button',{name:'Buyer',exact:true}).click();
     });
@@ -90,7 +99,7 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       currencyPage.on('pageerror',error=>errors.push(error.message));
       await currencyPage.clock.install({time:new Date('2026-10-18T12:00:00Z')});
       await currencyPage.route('https://api.coinbase.com/v2/prices/ETH-USD/spot',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({data:{base:'ETH',currency:'USD',amount:'2500'}})}));
-      await currencyPage.goto('http://127.0.0.1:5173');
+      await currencyPage.goto(baseUrl);
       await currencyPage.getByRole('button',{name:'Enter demo',exact:true}).click();
       await currencyPage.getByRole('link',{name:'Submit job',exact:true}).click();
       await currencyPage.getByLabel('Job name',{exact:true}).fill('USD expiry fixture');

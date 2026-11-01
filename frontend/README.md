@@ -41,9 +41,11 @@ The example backend configuration uses database-only mode (`CHAIN=off`). Jobs pe
 
 Full commit/reveal/consensus/payment execution still depends on unfinished client and contract work. This integration does not simulate or claim successful settlement.
 
+The buyer dashboard shows **Currently escrowed** beside **Total spent**. Its optional source is `buyer.currentEscrowed` from `/account/me/dashboard`: a nonnegative ETH decimal string with up to 18 fractional digits. The backend must supply the signed-in buyer's confirmed funds still held for unsettled jobs across the entire account, including jobs outside the current list. Exclude unfunded requests, provider stakes, settled charges and refunds already released into a withdrawable balance; keep funds counted until settlement is confirmed. A confirmed zero is `"0"`; missing or invalid values display as a dash. The frontend never estimates escrow from budgets or job status. The current backend does not supply this aggregate, so API mode shows a dash until that integration is added.
+
 ## Demo and tests
 
-`npm run dev:demo` remains a visibly labeled in-memory demo. It needs no backend or wallet and never falls back silently from API mode. Reloading resets demo data.
+`npm run dev:demo` remains a visibly labeled in-memory demo. It needs no backend or wallet and never falls back silently from API mode. Reloading resets demo data. The sample escrow balance is 0.048 ETH for the two seeded active jobs; saving an unfunded demo request does not increase it.
 
 ```sh
 npm test

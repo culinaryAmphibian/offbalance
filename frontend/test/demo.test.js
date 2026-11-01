@@ -40,10 +40,13 @@ test('demo job retries are idempotent and do not alter another adapter', async (
   const second = createDemoApi();
   const originalCount = (await second.listJobs('buyer')).jobs.length;
   const input = { name: 'Isolated workload', image: 'example/workload:latest', minNodesToRunOn: 3, minNodesToAgree: 2, maxPrice: '0.01' };
+  const escrowed = (await first.listJobs('buyer')).summary.currentEscrowed;
+  assert.equal(escrowed, '0.048');
   const created = await first.createJob(input, 'same-request');
   const retried = await first.createJob(input, 'same-request');
   assert.equal(retried.job.id, created.job.id);
   assert.equal((await first.listJobs('buyer')).jobs.length, originalCount + 1);
+  assert.equal((await first.listJobs('buyer')).summary.currentEscrowed, escrowed);
   assert.equal((await second.listJobs('buyer')).jobs.length, originalCount);
   created.job.name = 'Mutated response';
   assert.equal((await first.getJob(retried.job.id)).job.name, input.name);
