@@ -10,6 +10,7 @@
 | `server/` | TypeScript HTTPS API with MongoDB persistence, plus `dev-server.ts`, a mock of the routes the client calls |
 | `frontend/` | React dashboard |
 | `dev.env` | Fixed local-dev addresses and private keys, shared by every part of the app |
+| `docker-compose.yml`, `deploy/` | Chain, server, frontend and MongoDB in containers, for a shared machine ([deploy/README.md](deploy/README.md)) |
 
 ## Prerequisites
 
@@ -59,6 +60,8 @@ cd client && python3 main.py --dev
 cd client && python3 dev/contract_controller.py
 offbalance> submitJob 1 100 3 2 60 img --value 100     # as buyer: escrows the price
 ```
+
+To run the chain, server and frontend on one machine for providers and users on other machines, use Docker Compose and Tailscale: see [deploy/README.md](deploy/README.md).
 
 `server/dev-server.ts` (`npm run dev:mock`) is still there for client development without MongoDB: it answers the three routes the client calls and hands out the deployed `OffBalance` address, but it doesn't match providers or drive phases.
 

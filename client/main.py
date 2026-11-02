@@ -76,15 +76,16 @@ def ask_for_session_key() -> LocalAccount:
 def ask_for_api_key() -> str:
     return os.environ.get('OFFBALANCE_API_KEY') or input("Please provide your API key for OffBalance: ")
 
-def ask_for_contract_addr(s_mgr: ServerManager) -> str:
+def fetch_contract(s_mgr: ServerManager) -> tuple[str, list, int | None]:
+    """(address, abi, chain id). The server sends all three, so a provider on another machine
+    needs no deployment file; the file is only read for OFFBALANCE_ADDRESS or an older server."""
     # override: skip the server and use this address
     if addr := os.environ.get('OFFBALANCE_ADDRESS'):
-        return addr
+        return addr, json.loads(DEPLOYMENT_FILE.read_text())['abi'], None
 
-    res = s_mgr.request('GET', '/contract_address')
-    data = res.json()
-    # server responds with the "address" field
-    return data['address']
+    data = s_mgr.request('GET', '/contract_address').json()
+    abi = data.get('abi') or json.loads(DEPLOYMENT_FILE.read_text())['abi']
+    return data['address'], abi, data.get('chainId')
 
 def main():
     args = parse_args()
@@ -98,15 +99,16 @@ def main():
     dev_api_key = 'dev' if args.provider == 1 else f'dev{args.provider}'
     api_key = os.environ.get('OFFBALANCE_API_KEY', dev_api_key) if args.dev else ask_for_api_key()
     s_mgr = ServerManager(BASE_URL, api_key)
-    # obtain contract addr from server via network call
-    addr_str = ask_for_contract_addr(s_mgr)
+    # obtain the contract from the server via network call
+    addr_str, contract_abi, chain_id = fetch_contract(s_mgr)
+    if chain_id is not None and w3.eth.chain_id != chain_id:
+        raise ValueError(f"{RPC_URL} is chain {w3.eth.chain_id}, but the server uses chain {chain_id}; "
+                         "point RPC_URL at the server's chain")
     # get the signer account
     signer = load_dev_signer(args.provider) if args.dev else ask_for_session_key()
     key_seed = load_dev_key_seed(args.provider) if args.dev else ask_for_key_seed()
 
     contract_addr = Web3.to_checksum_address(addr_str)
-
-    contract_abi = json.loads(DEPLOYMENT_FILE.read_text())['abi']
 
     # make sure it's valid
     if not w3.eth.get_code(contract_addr):

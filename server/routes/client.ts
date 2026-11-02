@@ -10,9 +10,11 @@ import type { Deps } from "./deps.ts";
 export function clientRoutes({ matcher }: Deps): Router {
 	const router = Router();
 
+	// the ABI and chain ID too, so a provider on another machine needs no local deployment file
 	router.get("/contract_address", requireAuth, (_req, res) => {
 		try {
-			res.json({ address: readDeployment().address });
+			const { address, chainId, abi } = readDeployment();
+			res.json({ address, chainId, abi });
 		} catch (e) {
 			res.status(503).json({
 				error: "can't read the deployment file; run `npm run dev` in blockchain/",

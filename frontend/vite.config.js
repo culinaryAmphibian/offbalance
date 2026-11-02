@@ -10,8 +10,10 @@ export default defineConfig(({ mode }) => {
   const certificate = environment.API_CA_FILE || fileURLToPath(new URL('../server/.local/tls/cert.pem', import.meta.url));
   if (!target.startsWith('https://')) throw new Error('API_PROXY_TARGET must use HTTPS.');
   const agent = new https.Agent(existsSync(certificate) ? { ca: readFileSync(certificate) } : {});
+  // host names Vite answers besides localhost, e.g. `.ts.net` behind `tailscale serve` (deploy/README.md)
+  const allowedHosts = environment.ALLOWED_HOSTS ? environment.ALLOWED_HOSTS.split(',').map(host => host.trim()) : undefined;
   return {
     plugins: [react()],
-    server: { proxy: { '/api': { target, agent, secure: true, rewrite: path => path.replace(/^\/api(?=\/|$)/, '') || '/' } } },
+    server: { allowedHosts, proxy: { '/api': { target, agent, secure: true, rewrite: path => path.replace(/^\/api(?=\/|$)/, '') || '/' } } },
   };
 });

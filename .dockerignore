@@ -1,0 +1,19 @@
+# Build context is the repo root (docker-compose.yml); send only sources.
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.env
+**/.env.*
+!frontend/.env.example
+!frontend/.env.demo
+**/.local
+**/coverage
+**/dist
+logs
+blockchain/artifacts
+blockchain/cache
+blockchain/deployments
+blockchain/types
+.git
+Diagrams

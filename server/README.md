@@ -31,7 +31,7 @@ To use the deployed contract, remove `CHAIN=off`, start/deploy the local chain u
 
 The existing Python HTTP endpoints remain available:
 
-- `GET /contract_address`
+- `GET /contract_address` (`{ address, chainId, abi }`, so a provider on another machine needs no deployment file)
 - `POST /scores` (form-encoded `cpu`, optional `gpu`, `mem`)
 - `GET /jobManifest/:jobId` (assigned providers only)
 
@@ -55,7 +55,7 @@ REQUESTS_CA_BUNDLE="$PWD/.local/tls/cert.pem" \
 python ../client/main.py --dev
 ```
 
-Keep certificate verification enabled. The local certificate must also be trusted by browser/Node clients: for Node commands use `NODE_EXTRA_CA_CERTS="$PWD/.local/tls/cert.pem"`. Publicly trusted production certificates ordinarily need no custom CA setting. Generate a replacement local certificate with `npm run cert:dev -- --force` after expiry. The provider client's blockchain connection is still required by its existing execution workflow.
+Keep certificate verification enabled. The local certificate must also be trusted by browser/Node clients: for Node commands use `NODE_EXTRA_CA_CERTS="$PWD/.local/tls/cert.pem"`. Publicly trusted production certificates ordinarily need no custom CA setting. `npm run cert:dev` replaces an expired certificate (`-- --force` replaces a valid one). `TLS_CERT_HOSTS` adds DNS names to it and `TLS_CERT_DAYS` sets its lifetime (default 30). The provider client's blockchain connection is still required by its existing execution workflow.
 
 `dev:mock` remains an independent HTTP development mock and accepts provider heartbeats after a benchmark upload. The root launcher starts the real HTTPS server with a fresh development database for each fresh local chain. `npm start` always starts the real HTTPS server.
 
