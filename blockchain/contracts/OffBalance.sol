@@ -59,7 +59,8 @@ contract OffBalance {
 
     event JOB_SUBMITTED(JobID_t indexed jobId);
     event PROVIDER_SELECTED(JobID_t indexed jobId, address indexed provider);
-    event COMMIT_PHASE_START(JobID_t indexed jobId);
+    // deadline is the job's execution time in seconds; providers use it as their run timeout
+    event COMMIT_PHASE_START(JobID_t indexed jobId, uint256 deadline);
     event REVEAL_PHASE_START(JobID_t indexed jobId);
     event CONSENSUS_VERIFICATION_START(JobID_t indexed jobId);
     event DELIVERY_PHASE_START(JobID_t indexed jobId);
@@ -197,7 +198,7 @@ contract OffBalance {
 
         job.status = Status.COMMIT;
         job.commitDeadline = block.timestamp + job.executionTime;
-        emit COMMIT_PHASE_START(jobId);
+        emit COMMIT_PHASE_START(jobId, job.executionTime);
     }
 
     // Called by the trusted server after it verifies an off-chain delivery receipt.
