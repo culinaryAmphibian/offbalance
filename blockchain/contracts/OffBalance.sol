@@ -36,7 +36,6 @@ contract OffBalance {
         address payable creator;
         JobID_t id;
         uint256 price;
-        uint256 stakeAmount;
         uint256 k;
         uint256 quorum;
         uint256 executionTime;
@@ -88,14 +87,21 @@ contract OffBalance {
         _; // what is this?
     }
 
+    // Stake every provider posts with its commitment; one value for all jobs.
+    uint256 public constant STAKE = 0.001 ether;
+
+    // TODO: make this an inverse function of the provider's reputation once reputation exists.
+    function stakeFor(address) public pure returns (uint256) {
+        return STAKE;
+    }
+
     constructor() {
         server = msg.sender;
     }
 
-    // Buyer escrows the full job price and specifies the stake required from each provider.
+    // Buyer escrows the full job price. The contract assigns the job id.
     function submitJob(
         uint256 price,
-        uint256 stakeAmount,
         uint256 k,
         uint256 quorum,
         uint256 executionTime,
@@ -103,7 +109,6 @@ contract OffBalance {
     ) external payable returns (bool) {
         require(price > 0, "Price must be positive");
         require(msg.value == price, "Send exact job price");
-        require(stakeAmount > 0, "Stake must be positive");
         require(k > 0 && quorum >= k, "Invalid consensus threshold");
         require(executionTime > 0, "Execution time must be positive");
 
@@ -112,7 +117,6 @@ contract OffBalance {
         job.id = jobId;
         job.creator = payable(msg.sender);
         job.price = price;
-        job.stakeAmount = stakeAmount;
         job.k = k;
         job.quorum = quorum;
         job.executionTime = executionTime;
@@ -142,7 +146,7 @@ contract OffBalance {
         require(block.timestamp <= job.commitDeadline, "Commit deadline passed");
         require(job.isAssigned[msg.sender], "Provider not assigned");
         require(commitmentHash != bytes32(0), "Empty commitment");
-        require(msg.value == job.stakeAmount, "Incorrect stake"); // will later be scaled by provider reputation
+        require(msg.value == stakeFor(msg.sender), "Incorrect stake");
 
         Commitment_t storage c = providers[msg.sender].answers[jobId];
         require(c.commitmentHash == bytes32(0), "Already committed"); // ? will this crash if not true?

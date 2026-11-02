@@ -83,14 +83,13 @@ async function status(jobId) {
 
 async function submitJob(opts = {}) {
   const price = opts.price ?? ETHER('1');
-  const stake = opts.stake ?? ETHER('0.1');
+  const stake = ETHER('0.001'); // OffBalance.STAKE, the same for every job
   const k = opts.k ?? 2;
   const quorum = opts.quorum ?? 3;
   const executionTime = opts.executionTime ?? 30;
 
   const tx = await contract.connect(opts.buyer ?? buyer).submitJob(
     price,
-    stake,
     k,
     quorum,
     executionTime,
@@ -250,14 +249,13 @@ test(
 );
 
 test(
-  'submitJob rejects zero price, wrong escrow, zero stake, invalid threshold, and zero duration',
+  'submitJob rejects zero price, wrong escrow, invalid threshold, and zero duration',
   async () => {
     const price = ETHER('1');
-    const stake = ETHER('0.1');
 
     await rejects(
       contract.connect(buyer).submitJob(
-        0, stake, 1, 1, 10, 'img',
+        0, 1, 1, 10, 'img',
         { value: 0 }
       ),
       'Price must be positive'
@@ -265,7 +263,7 @@ test(
 
     await rejects(
       contract.connect(buyer).submitJob(
-        price, stake, 1, 1, 10, 'img',
+        price, 1, 1, 10, 'img',
         { value: 1 }
       ),
       'Send exact job price'
@@ -273,15 +271,7 @@ test(
 
     await rejects(
       contract.connect(buyer).submitJob(
-        price, 0, 1, 1, 10, 'img',
-        { value: price }
-      ),
-      'Stake must be positive'
-    );
-
-    await rejects(
-      contract.connect(buyer).submitJob(
-        price, stake, 0, 1, 10, 'img',
+        price, 0, 1, 10, 'img',
         { value: price }
       ),
       'Invalid consensus threshold'
@@ -289,7 +279,7 @@ test(
 
     await rejects(
       contract.connect(buyer).submitJob(
-        price, stake, 2, 1, 10, 'img',
+        price, 2, 1, 10, 'img',
         { value: price }
       ),
       'Invalid consensus threshold'
@@ -297,7 +287,7 @@ test(
 
     await rejects(
       contract.connect(buyer).submitJob(
-        price, stake, 1, 1, 0, 'img',
+        price, 1, 1, 0, 'img',
         { value: price }
       ),
       'Execution time must be positive'

@@ -5,13 +5,15 @@
 #
 #   cd blockchain && npm run dev                                    # chain + deploy
 #   client/.venv/bin/python client/dev/contract_controller.py       # shell
-#   client/.venv/bin/python client/dev/contract_controller.py submitJob 1 100 3 2 60 img --value 100
+#   client/.venv/bin/python client/dev/contract_controller.py submitJob 100 2 3 60 img --value 100
+#   (submitJob args: price k quorum executionTime image; k = matching results, quorum = providers)
 #   (payable calls take --value WEI: submitJob escrows the price, submitCommitment posts STAKE)
 import cmd
 import json
 import shlex
 import sys
 import threading
+import os
 import time
 
 from web3 import Web3
@@ -46,11 +48,13 @@ class ContractController(cmd.Cmd):
 
     def __init__(self):
         super().__init__()
-        self.env = load_env(REPO_ROOT / "dev.env")
+        # RPC_URL can be overridden from the environment (e.g. http://blockchain:8545 in docker compose)
+        self.env = {**load_env(REPO_ROOT / "dev.env"), **({"RPC_URL": os.environ["RPC_URL"]} if "RPC_URL" in os.environ else {})}
         deployment = json.loads((REPO_ROOT / self.env["OFFBALANCE_DEPLOYMENT"]).read_text())
 
         artifact = REPO_ROOT / "blockchain/artifacts/contracts/OffBalance.sol/OffBalance.json"
-        if json.loads(artifact.read_text())["abi"] != deployment["abi"]:
+        # absent in the client container, where the deployment always matches its own build
+        if artifact.exists() and json.loads(artifact.read_text())["abi"] != deployment["abi"]:
             print("WARNING: OffBalance was recompiled since it was deployed. Restart `npm run dev` to redeploy.")
 
         self.w3 = Web3(Web3.HTTPProvider(self.env["RPC_URL"]))

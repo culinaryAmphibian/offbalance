@@ -32,7 +32,7 @@ export function jobRoutes({ chain, matcher }: Deps): Router {
 	router.use("/jobs", requireAuth);
 
 	// Creates the job and reserves its on-chain id. The buyer's wallet then calls
-	// submitJob(id, price, k, quorum, timeWindow, image), escrowing the price;
+	// submitJob(price, k, quorum, timeWindow, image), escrowing the price;
 	// matching starts on JOB_SUBMITTED.
 	//
 	// The image is one of:

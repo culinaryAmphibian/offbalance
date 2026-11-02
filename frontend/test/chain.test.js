@@ -11,10 +11,10 @@ const image = 'repo@sha256:' + 'c'.repeat(64);
 const job = () => ({ id: '42', maxPrice: '0.000000000000000123', k: 3, quorum: 2, window: 3600, dockerImage: image, canSubmit: true, submitWallet: wallet, status: 'PENDING', submittedAt: null });
 // The production Solidity signature: five uint256 arguments and the image, payable with the escrowed price.
 const abi = [{ type: 'function', name: 'submitJob', stateMutability: 'payable', inputs: [
-  { name: 'jobId', type: 'uint256' }, { name: 'price', type: 'uint256' },
+  { name: 'price', type: 'uint256' },
   { name: 'k', type: 'uint256' }, { name: 'quorum', type: 'uint256' }, { name: 'executionTime', type: 'uint256' },
-  { name: 'dockerImage', type: 'string' },
-], outputs: [] }];
+  { name: 'dockerName', type: 'string' },
+], outputs: [{ type: 'bool' }] }];
 
 function mockWallet({ accounts = [wallet], chains = ['0x7a69'], transactionHash = hash } = {}) {
   const calls = [];
@@ -44,7 +44,8 @@ test('stored job submission encodes the real contract call and escrows the exact
   assert.equal(BigInt(transaction.value), parseEther(job().maxPrice));
   const decoded = decodeFunctionData({ abi, data: transaction.data });
   assert.equal(decoded.functionName, 'submitJob');
-  assert.deepEqual(decoded.args, [42n, parseEther(job().maxPrice), 3n, 2n, 3600n, image]);
+  // contract k = our quorum, contract quorum = our k
+  assert.deepEqual(decoded.args, [parseEther(job().maxPrice), 2n, 3n, 3600n, image]);
 });
 
 test('wrong wallet network rejects before sending a transaction', async () => {

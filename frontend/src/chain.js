@@ -1,9 +1,10 @@
 import { encodeFunctionData, parseEther, toHex } from 'viem';
 
-// The buyer escrows the price with the job, so the call is payable.
+// submitJob(price, k, quorum, executionTime, dockerName) in OffBalance.sol.
+// The contract assigns the job id itself. The buyer escrows the price, so the call is payable.
 const submitAbi = [{ type: 'function', name: 'submitJob', stateMutability: 'payable',
-  inputs: [...['jobId', 'price', 'k', 'quorum', 'executionTime'].map(name => ({ name, type: 'uint256' })),
-    { name: 'dockerImage', type: 'string' }], outputs: [] }];
+  inputs: [...['price', 'k', 'quorum', 'executionTime'].map(name => ({ name, type: 'uint256' })),
+    { name: 'dockerName', type: 'string' }], outputs: [{ type: 'bool' }] }];
 
 export async function submitStoredJob(job, config, provider = globalThis.window?.ethereum, { signal } = {}) {
   signal?.throwIfAborted();
@@ -28,8 +29,10 @@ export async function submitStoredJob(job, config, provider = globalThis.window?
   signal?.throwIfAborted();
   if (BigInt(actual) !== BigInt(chainId)) throw new Error(`Switch your wallet to chain ${chainId} before submitting.`);
   const price = parseEther(String(job.maxPrice));
+  // The names are swapped on chain: the contract's `quorum` is how many providers get
+  // assigned (our job.k), and its `k` is how many matching results settle the job (our job.quorum).
   const data = encodeFunctionData({ abi: submitAbi, functionName: 'submitJob',
-    args: [BigInt(job.id), price, BigInt(job.k), BigInt(job.quorum), BigInt(job.window), job.dockerImage] });
+    args: [price, BigInt(job.quorum), BigInt(job.k), BigInt(job.window), job.dockerImage] });
   const [current] = await provider.request({ method: 'eth_accounts' });
   signal?.throwIfAborted();
   const currentChain = await provider.request({ method: 'eth_chainId' });
