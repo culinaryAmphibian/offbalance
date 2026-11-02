@@ -19,8 +19,8 @@ const Status = Object.freeze({
   NO_QUORUM: 9,
 });
 
-const REVEAL_WINDOW = 120;
-const DELIVERY_WINDOW = 300;
+const REVEAL_WINDOW = 15;
+const DELIVERY_WINDOW = 30;
 const ETHER = ethers.parseEther;
 
 let factory;

@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from job.Archive import result_archive
 from job.RunManager import RunManager
 from ProviderClient import ProviderClient
+from server.ServerManager import DeliveryError
 from blockchain.BlockchainManager import BlockchainManager
 from blockchain.BlockchainEvent import BlockchainEvent
 from blockchain.EventData import CommitPhaseStartEvent, DeliveryPhaseStartEvent, RevealPhaseStartEvent, event_class_factory
@@ -214,6 +215,17 @@ class DeliveryEventTests(unittest.TestCase):
         self.assertNotIn(7, self.client._delivering)
         self.server.report_error.assert_not_called()
 
+    def test_delivery_retries_until_the_server_opens_the_job(self):
+        self.server.deliver_result.side_effect = [DeliveryError(409, 'job is not taking deliveries'), {'results': []}]
+        self.client._delivering.add(7)
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output), contextlib.redirect_stdout(io.StringIO()), \
+                patch.object(ProviderClient, 'DELIVERY_RETRY_INTERVAL_S', 0):
+            self.client._deliverResult(7, self.output, self.result)
+        self.assertEqual(self.server.deliver_result.call_count, 2)
+        self.assertIn('retrying', output.getvalue())
+        self.assertNotIn(7, self.client._delivering)
+
     def test_reveal_event_preserves_existing_commit_reveal_flow(self):
         event = RevealPhaseStartEvent(2, BlockchainEvent.REVEAL_PHASE_START, 7)
         self.client._handle_event(event)
@@ -257,8 +269,19 @@ class UploadTests(unittest.TestCase):
                          SimpleNamespace(status_code=201, json=lambda: {'results': [{'receiptVerified': False}]})):
             with self.subTest(status=response.status_code), patch('server.ServerManager.requests.Session') as factory:
                 factory.return_value.__enter__.return_value.post.return_value = response
-                with self.assertRaisesRegex(requests.RequestException, '^Result upload failed.$'):
+                with self.assertRaises(DeliveryError) as raised:
                     self.manager.deliver_result(7, self.output, self.result)
+                self.assertEqual(raised.exception.status, response.status_code)
+
+    def test_server_reason_is_reported_and_409_is_retryable(self):
+        response = SimpleNamespace(status_code=409, json=lambda: {'error': 'job is not taking deliveries'})
+        with patch('server.ServerManager.requests.Session') as factory:
+            factory.return_value.__enter__.return_value.post.return_value = response
+            with self.assertRaises(DeliveryError) as raised:
+                self.manager.deliver_result(7, self.output, self.result)
+        self.assertIn('job is not taking deliveries', str(raised.exception))
+        self.assertTrue(raised.exception.retryable)
+        self.assertFalse(DeliveryError(422, 'mismatch').retryable)
 
     def test_verified_offchain_or_local_delivery_keeps_chain_receipt_false(self):
         for mode in ('offchain', 'local'):
@@ -283,7 +306,7 @@ class UploadTests(unittest.TestCase):
         for result in responses:
             with self.subTest(response=result), patch('server.ServerManager.requests.Session') as factory:
                 factory.return_value.__enter__.return_value.post.return_value = SimpleNamespace(status_code=202, json=lambda: result)
-                with self.assertRaisesRegex(requests.RequestException, '^Result upload failed.$'):
+                with self.assertRaisesRegex(DeliveryError, 'not confirmed'):
                     self.manager.deliver_result(7, self.output, self.result)
 
 
