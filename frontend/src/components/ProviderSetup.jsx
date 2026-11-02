@@ -91,7 +91,7 @@ export default function ProviderSetup({ api, clientKey }) {
       <dl className="detail-grid">
         <div><dt>Last seen</dt><dd>{timeLabel(provider.lastSeen)}</dd></div>
         <div><dt>Current stake</dt><dd>{chain.available
-          ? (chain.balances ? `${formatEth(chain.balances.stake, 3, { wei: true })} ETH` : '—')
+          ? (chain.balances?.stake != null ? `${formatEth(chain.balances.stake, 3, { wei: true })} ETH` : '—')
           : provider.currentStake == null ? '—' : `${formatEth(provider.currentStake)} ETH`}</dd></div>
         {machine?.cpu && <>
           <div><dt>CPU</dt><dd>

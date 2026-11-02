@@ -49,7 +49,21 @@ const creditsAbi = [
   { type: 'function', name: 'credits', stateMutability: 'view', inputs: [{ name: '', type: 'address' }], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'withdraw', stateMutability: 'nonpayable', inputs: [], outputs: [] },
   { type: 'function', name: 'lockedStake', stateMutability: 'view', inputs: [{ name: '', type: 'address' }], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'getProviderCommitment', stateMutability: 'view',
+    inputs: [{ name: 'jobId', type: 'uint256' }, { name: 'provider', type: 'address' }],
+    outputs: [{ name: 'commitmentHash', type: 'bytes32' }, { name: 'outputHash', type: 'bytes32' }, { name: 'revealed', type: 'bool' },
+      { name: 'winning', type: 'bool' }, { name: 'delivered', type: 'bool' }, { name: 'stake', type: 'uint256' }] },
 ];
+
+// Stake the provider still has in each job; settlement sets it to 0 (paid back or slashed).
+async function stakeAcrossJobs(provider, to, account, jobIds) {
+  const stakes = await Promise.all(jobIds.map(async id => {
+    const data = encodeFunctionData({ abi: creditsAbi, functionName: 'getProviderCommitment', args: [BigInt(id), account] });
+    const result = await provider.request({ method: 'eth_call', params: [{ to, data }, 'latest'] });
+    return decodeFunctionResult({ abi: creditsAbi, functionName: 'getProviderCommitment', data: result })[5];
+  }));
+  return stakes.reduce((sum, value) => sum + value, 0n);
+}
 
 async function readUint(provider, to, functionName, account) {
   const data = encodeFunctionData({ abi: creditsAbi, functionName, args: [account] });
@@ -90,16 +104,23 @@ export async function readCredits(config, provider = globalThis.window?.ethereum
  * On-chain balances of a provider (default: the connected wallet): `credits` is what it can
  * collect, `stake` what it has locked in unsettled jobs. Both in wei.
  */
-export async function readProviderBalances(config, provider = globalThis.window?.ethereum, { account, signal } = {}) {
+export async function readProviderBalances(config, provider = globalThis.window?.ethereum, { account, jobIds, signal } = {}) {
   const { address, chainId } = chainTarget(config);
   const wallet = await connectedWallet(provider, chainId, signal);
   const target = /^0x[\da-f]{40}$/i.test(account ?? '') ? account : wallet;
-  const [credits, stake] = await Promise.all([
+  const [credits, locked] = await Promise.all([
     readUint(provider, address, 'credits', target),
-    // lockedStake is newer than credits/withdraw; an older deployment lacks it (stake: null)
+    // lockedStake is newer than credits/withdraw; an older deployment lacks it
     readUint(provider, address, 'lockedStake', target).catch(() => null),
   ]);
   signal?.throwIfAborted();
+  let stake = locked;
+  if (stake === null) {
+    // older contract: add up the per-job stakes instead (jobIds: a function or a list of on-chain ids)
+    const ids = typeof jobIds === 'function' ? await jobIds(signal) : jobIds;
+    stake = Array.isArray(ids) ? await stakeAcrossJobs(provider, address, target, ids.filter(id => /^\d+$/.test(String(id)))).catch(() => null) : null;
+    signal?.throwIfAborted();
+  }
   return { wallet, account: target, credits, stake };
 }
 

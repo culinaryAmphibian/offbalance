@@ -46,6 +46,20 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 	try {
 		await mongoose.syncIndexes();
 
+		await t.test("PAID records one payout per provider and DELIVERED marks the job settled", async () => {
+			const f = await fixture();
+			await handleChainEvent({ ...f.event("PAID"), args: { ...f.event("PAID").args, amount: 5_000_000_000_000_000n } }, f.matcher);
+			await handleChainEvent({ ...f.event("PAID", "replayed-with-new-id"), args: { ...f.event("PAID").args, amount: 5_000_000_000_000_000n } }, f.matcher);
+			await handleChainEvent(f.event("DELIVERED"), f.matcher);
+			const job = await JobModel.findById(f.job._id).orFail();
+			assert.equal(job.status, JobStatus.PAYOUT);
+			assert.deepEqual(job.payouts.map(p => [String(p.provider), p.amount.toString()]), [[String(f.provider._id), "0.005"]]);
+			assert.ok(job.settledAt instanceof Date);
+			const settled = job.settledAt;
+			await handleChainEvent(f.event("DELIVERED", "again"), f.matcher);
+			assert.equal((await JobModel.findById(f.job._id).orFail()).settledAt?.getTime(), settled.getTime());
+		});
+
 		await t.test("PAID and SLASHED replay only apply financial and reputation effects once", async () => {
 			const f = await fixture();
 			await handleChainEvent(f.event("PAID"), f.matcher);

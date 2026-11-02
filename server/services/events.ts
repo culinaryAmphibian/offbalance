@@ -61,6 +61,11 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 					{ _id: account, processedChainEvents: { $ne: `${effectId}:provider` } },
 					{ $inc: { reputation: 1, totalEarned: earned }, $addToSet: { processedChainEvents: `${effectId}:provider` } },
 				);
+				// the job view's payment details; one payout per provider per job
+				await JobModel.updateOne(
+					{ _id: job._id, "payouts.provider": { $ne: account } },
+					{ $push: { payouts: { provider: account, amount: earned } } },
+				);
 			}
 			await AccountModel.updateOne({ _id: job.owner, processedChainEvents: { $ne: `${effectId}:buyer` } }, { $inc: { totalSpent: job.runningPrice }, $addToSet: { processedChainEvents: `${effectId}:buyer` } });
 			return;
@@ -79,6 +84,7 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 		return;
 	}
 	job.status = status;
+	if (TERMINAL_STATUSES.includes(status) && !job.settledAt) job.settledAt = new Date();
 	await job.save();
 
 	if (TERMINAL_STATUSES.includes(status)) {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { dateLabel, jobPhase, resourceSummary, statusLabel, timeLabel, windowMinutes } from '../jobs';
+import { formatEth } from '../eth';
 import { useResource } from '../useResource';
 import { submitStoredJob } from '../chain';
 
@@ -97,7 +98,7 @@ export default function JobDetail({ api, id, notice }) {
           <Item label="Providers assigned">{job.providerCount ?? '—'} / {job.k ?? '—'}</Item><Item label="Matching results">{job.consensus?.agreeing ?? '—'} / {job.consensus?.required ?? job.quorum ?? '—'}</Item>
           <Item label="Runtime">{job.runtimeSeconds == null ? '—' : `${job.runtimeSeconds} seconds`}</Item><Item label="Execution window">{job.window == null ? '—' : `${windowMinutes(job.window)} ${job.window === 60 ? 'minute' : 'minutes'}`}</Item>
           <Item label="Resources per provider">{resourceSummary(job.requirements)}</Item>
-          <Item label="Amount spent">{job.spent == null ? '—' : `${job.spent} ETH`}</Item>
+          <Item label="Amount spent">{job.spent == null ? '—' : `${formatEth(job.spent)} ETH`}</Item>
           {job.onChainJobId != null && <Item label="On-chain job ID" mono>{job.onChainJobId}</Item>}
         </dl>
         {job.error && <p className="notice error" role="alert">{job.error}</p>}
@@ -105,11 +106,12 @@ export default function JobDetail({ api, id, notice }) {
       <section className="panel" aria-labelledby="result-heading">
         <div className="section-heading"><h2 id="result-heading">Result</h2></div>
         <dl className="detail-grid result-metadata">
-          <Item label="Delivery">{job.delivery?.status ? statusLabel(job.delivery.status) : 'Not reported'}</Item>
+          <Item label="Delivery">{job.delivery?.status ? statusLabel(job.delivery.status) : 'Not reported'}{job.delivery?.providersDelivered > 0 && job.providerCount ? ` · ${job.delivery.providersDelivered} of ${job.providerCount} providers` : ''}</Item>
           <Item label="Payment">{job.payment?.status ? statusLabel(job.payment.status) : 'Not reported'}</Item>
           {job.delivery?.receivedAt && <Item label="Output received">{timeLabel(job.delivery.receivedAt)}</Item>}
           {job.delivery?.verifiedAt && <Item label="Receipt verified">{timeLabel(job.delivery.verifiedAt)}</Item>}
-          {job.payment?.settledAt && <Item label="Payment settled">{timeLabel(job.payment.settledAt)}</Item>}
+          {job.payment?.settledAt && <Item label={job.payment.status === 'REFUNDED' ? 'Refunded' : 'Payment settled'}>{timeLabel(job.payment.settledAt)}</Item>}
+          {job.payment?.paidToProviders != null && <Item label="Paid to providers">{formatEth(job.payment.paidToProviders)} ETH</Item>}
           {job.result?.retainedUntil && <Item label="Available until">{timeLabel(job.result.retainedUntil)}</Item>}
         </dl>
         {job.delivery?.error && <p className="notice error" role="alert">{job.delivery.error}</p>}

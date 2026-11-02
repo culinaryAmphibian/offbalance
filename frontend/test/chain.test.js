@@ -231,3 +231,25 @@ test('readProviderBalances still reads credits from a contract without lockedSta
   assert.equal(result.credits, parseEther('0.006'));
   assert.equal(result.stake, null);
 });
+
+test('without lockedStake the stake is summed from getProviderCommitment over the given jobs', async () => {
+  const commitmentAbi = [{ type: 'function', name: 'getProviderCommitment', stateMutability: 'view',
+    inputs: [{ name: 'jobId', type: 'uint256' }, { name: 'provider', type: 'address' }],
+    outputs: ['bytes32', 'bytes32', 'bool', 'bool', 'bool', 'uint256'].map(type => ({ type })) }];
+  const stakes = { 4: parseEther('0.001'), 7: parseEther('0.001'), 9: 0n };
+  const provider = creditWallet();
+  const request = provider.request;
+  provider.request = async call => {
+    if (call.method === 'eth_call') {
+      const all = [...viewAbi, ...commitmentAbi];
+      const { functionName, args } = decodeFunctionData({ abi: all, data: call.params[0].data });
+      if (functionName === 'lockedStake') throw Object.assign(new Error('Internal JSON-RPC error.'), { code: -32603 });
+      if (functionName === 'getProviderCommitment') {
+        return encodeAbiParameters(commitmentAbi[0].outputs, [`0x${'0'.repeat(64)}`, `0x${'0'.repeat(64)}`, false, false, false, stakes[Number(args[0])]]);
+      }
+    }
+    return request(call);
+  };
+  const result = await readProviderBalances(config(), provider, { jobIds: async () => ['4', '7', '9', 'bad'] });
+  assert.equal(result.stake, parseEther('0.002'));
+});

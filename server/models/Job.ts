@@ -32,6 +32,15 @@ const providerResultSchema = new Schema(
 	{ _id: false },
 );
 
+// One provider's on-chain payout (its share of the price; a returned stake isn't included).
+const payoutSchema = new Schema(
+	{
+		provider: { type: Schema.Types.ObjectId, ref: "Account", required: true },
+		amount: money({ required: true }), // ETH
+	},
+	{ _id: false },
+);
+
 const jobSchema = new Schema(
 	{
 		// the id used everywhere else: contract calls, events, the client's /jobManifest/:jobId
@@ -84,6 +93,9 @@ const jobSchema = new Schema(
 		timeWindow: { type: Number, required: true, min: 1, validate: Number.isSafeInteger }, // seconds
 		requirements: { type: jobRequirementsSchema, default: () => ({}) },
 		results: { type: [providerResultSchema], default: [] },
+		// settlement, from the contract's PAID and DELIVERED / NO_QUORUM / CANCELED events
+		payouts: { type: [payoutSchema], default: [] },
+		settledAt: { type: Date, default: null },
 	},
 	{ timestamps: { createdAt: true, updatedAt: false } },
 );
