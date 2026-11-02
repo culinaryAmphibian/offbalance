@@ -3,7 +3,8 @@ import { Router } from "express";
 import { decimalString } from "../models/decimal.ts";
 import { hourlyPrice } from "../adapters/repository.ts";
 import { requireAuth } from "../middleware/auth.ts";
-import { HardwareModel, JobModel, JobStatus, TutorialModel } from "../models/index.ts";
+import { HardwareModel, JobModel, JobStatus, TutorialModel, type Hardware } from "../models/index.ts";
+import { formulaPrice, similarMachines, type HardwareProfile } from "../services/hardware.ts";
 import { errorMessage } from "../services/chain.ts";
 import { providerControlRoutes } from "../services/providers.ts";
 import { loadJob, type Deps } from "./deps.ts";
@@ -16,13 +17,18 @@ function median(xs: number[]): number | null {
 	return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 
-// market price suggestion: the median rate of machines with a similar CPU score,
-// or of every priced machine if none are similar
-async function suggestedPrice(cpuScore: number, exclude: unknown): Promise<number | null> {
-	const priced = { price: { $ne: null }, _id: { $ne: exclude } };
-	const similar = await HardwareModel.find({ ...priced, cpuScore: { $gte: cpuScore * 0.75, $lte: cpuScore * 1.25 } }, "price");
-	const pool = similar.length ? similar : await HardwareModel.find(priced, "price");
-	return median(pool.map((h) => h.price!));
+// Suggested hourly price: a formula from the machine's specs and benchmarks (always available,
+// with its breakdown), next to the median rate of similar machines when there are any.
+async function suggestedPrice(hw: Hardware & { _id: unknown }) {
+	if (!hw.cpu || !hw.memory) return null; // a record from before hardware profiles
+	const profile = hw as unknown as HardwareProfile;
+	const others = await HardwareModel.find({ price: { $ne: null }, _id: { $ne: hw._id }, cpu: { $exists: true } }, "cpu memory gpus price");
+	const similar = similarMachines(profile, others as unknown as HardwareProfile[]) as unknown as Hardware[];
+	const market = median(similar.map((h) => h.price!));
+	return {
+		formula: formulaPrice(profile),
+		market: market === null ? null : { pricePerHour: decimalString(market), similarMachines: similar.length },
+	};
 }
 
 export function providerRoutes({ chain, matcher }: Deps): Router {
@@ -44,7 +50,7 @@ export function providerRoutes({ chain, matcher }: Deps): Router {
 		const timeout = matcher.manager.pool.heartbeatTimeoutMs;
 		const online = Boolean(live && live.lastHeartbeat > 0 && live.lastHeartbeat <= Date.now() && Date.now() - live.lastHeartbeat <= timeout);
 		res.json({ hardware: hw ? serializeHardware(hw) : null,
-			suggestedPrice: hw ? await suggestedPrice(hw.cpuScore, hw._id) : null,
+			suggestedPrice: hw ? await suggestedPrice(hw) : null,
 			online, lastSeen: live?.lastHeartbeat ? new Date(live.lastHeartbeat).toISOString() : null });
 	});
 

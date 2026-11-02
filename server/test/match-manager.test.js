@@ -5,9 +5,9 @@ import { ProviderPoolCache } from '../matching/ProviderPoolCache.ts';
 
 const epoch = 1_000_000;
 const job = (id, changes = {}) => ({ id, owner: 'buyer', k: 1, quorum: 1, window: 3600, maxPrice: '10',
-  requirements: { minCpuScore: 10, minGpuScore: 0, minMemoryScore: 0 }, createdAt: '2026-10-18T12:00:00.000Z', ...changes });
+  requirements: { minVcpus: 2, minMemoryGb: 4, gpu: 'none', minGpuVramGb: 0 }, createdAt: '2026-10-18T12:00:00.000Z', ...changes });
 const provider = (id, changes = {}) => ({ id, accountId: `account-${id}`, wallet: `wallet-${id}`, registered: true,
-  pricePerHour: '1', machine: { cpuScore: 20, gpuScore: null, memoryScore: 10 }, ...changes });
+  pricePerHour: '1', machine: { vcpus: 4, memoryGb: 8, gpus: [] }, ...changes });
 
 function fixture(options = {}) {
   const jobs = new Map();
@@ -47,7 +47,7 @@ test('findMatchingScores loads the job/provider repository and returns ordered t
   f.addJob(job('job', { k: 2 }));
   f.addProvider(provider('expensive', { pricePerHour: '2' }));
   f.addProvider(provider('ordinary'));
-  f.addProvider(provider('headroom', { machine: { cpuScore: 30, gpuScore: null, memoryScore: 10 } }));
+  f.addProvider(provider('headroom', { machine: { vcpus: 8, memoryGb: 16, gpus: [] } }));
   f.addProvider(provider('self', { accountId: 'buyer', pricePerHour: '0.01' }));
   assert.deepEqual(await f.manager.findMatchingScores('job'), ['headroom', 'ordinary']);
   assert.deepEqual(f.reads, [['getJob', 'job'], ['listProviders', 'job']]);
@@ -77,16 +77,16 @@ test('repository metadata cannot forge liveness, including when the clock is wit
 
 test('provider metadata/spec triggers refresh pending jobs without clearing existing reservations', async () => {
   const f = fixture();
-  f.addJob(job('job', { requirements: { minCpuScore: 25, minGpuScore: 0, minMemoryScore: 0 } }));
+  f.addJob(job('job', { requirements: { minVcpus: 6, minMemoryGb: 4, gpu: 'none', minGpuVramGb: 0 } }));
   f.addProvider(provider('one'));
   assert.deepEqual(await f.manager.onJobSubmitted('job'), []);
   const heartbeat = f.pool.get('wallet-one').lastHeartbeat;
-  f.providers.set('one', provider('one', { machine: { cpuScore: 25.5, gpuScore: null, memoryScore: 10.25 } }));
+  f.providers.set('one', provider('one', { machine: { vcpus: 6, memoryGb: 15.5, gpus: [] } }));
   const matches = await f.manager.onMachineSpecsUpdated('wallet-one');
   assert.equal(matches.length, 1);
   assert.equal(f.pool.get('wallet-one').lastHeartbeat, heartbeat);
   assert.equal(f.pool.get('wallet-one').busyJobId, 'job');
-  assert.equal(f.assignments[0][1][0].machine.cpuScore, 25.5);
+  assert.equal(f.assignments[0][1][0].machine.vcpus, 6);
   assert.equal(f.assignments[0][2].totalPrice, '1');
   await f.manager.findMatchingScores('job');
   assert.equal(f.pool.get('wallet-one').busyJobId, 'job');
@@ -110,7 +110,7 @@ test('queued jobs are refreshed from the repository and an unavailable head does
   const f = fixture();
   f.addProvider(provider('one'));
   f.addJob(job('a', { k: 2 }));
-  f.addJob(job('b', { requirements: { minCpuScore: 100 } }));
+  f.addJob(job('b', { requirements: { minVcpus: 100 } }));
   await f.manager.onJobSubmitted('a');
   await f.manager.onJobSubmitted('b');
   f.jobs.set('b', job('b'));

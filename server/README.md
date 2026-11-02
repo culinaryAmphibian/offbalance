@@ -32,7 +32,7 @@ To use the deployed contract, remove `CHAIN=off`, start/deploy the local chain u
 The existing Python HTTP endpoints remain available:
 
 - `GET /contract_address` (`{ address, chainId, abi }`, so a provider on another machine needs no deployment file)
-- `POST /scores` (form-encoded `cpu`, optional `gpu`, `mem`)
+- `POST /scores` (JSON hardware profile from `client/benchmark/`; validated in `services/hardware.ts`)
 - `GET /jobManifest/:jobId` (assigned providers only)
 
 Authenticate with `Authorization: Bearer <token>`. Wallet sign-in is `GET /auth/nonce?wallet=...` followed by `POST /auth {wallet, signature}`; its token is also the provider API key. Report benchmarks and set a positive rate with `POST /provider/price {"price": 1}`. The Python client sends authenticated `POST /provider/heartbeat` immediately after benchmarking and every **10 seconds** while polling (timeout: 30 seconds). Neither saved benchmarks nor pricing establishes liveness. Stopping the client lets availability expire without releasing unfinished assignments.

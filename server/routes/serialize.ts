@@ -2,6 +2,7 @@
 import type { Types } from "mongoose";
 import { decimalString } from "../models/decimal.ts";
 import type { Account, Hardware, Job } from "../models/index.ts";
+import { REFERENCE, relativeScores, type HardwareProfile } from "../services/hardware.ts";
 
 type WithId<T> = T & { _id: Types.ObjectId };
 
@@ -45,9 +46,11 @@ export function serializeHardware(hw: WithId<Hardware>) {
 	return {
 		id: String(hw._id),
 		address: hw.address,
-		cpuScore: hw.cpuScore,
-		gpuScore: hw.gpuScore,
-		memoryScore: hw.memoryScore,
+		cpu: hw.cpu,
+		memory: hw.memory,
+		gpus: hw.gpus,
+		// null for a record from before hardware profiles
+		relative: hw.cpu && hw.memory ? { ...relativeScores(hw as unknown as HardwareProfile), reference: REFERENCE.description } : null,
 		price: hw.price,
 		updatedAt: hw.updatedAt,
 	};

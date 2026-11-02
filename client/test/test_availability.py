@@ -22,6 +22,7 @@ def http_error(status):
 class AvailabilityTests(unittest.TestCase):
     def setUp(self):
         self.benchmark = Mock()
+        self.benchmark.do_benchmark.return_value.gpus = ()
         self.blockchain = Mock()
         self.blockchain.pollEvents.return_value = []
         self.server = Mock()

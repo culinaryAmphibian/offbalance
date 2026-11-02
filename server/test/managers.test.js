@@ -9,9 +9,9 @@ test('the three managers integrate through owner-supplied ports without a databa
   const wallet = '0x1111111111111111111111111111111111111111';
   const address = '0x2222222222222222222222222222222222222222';
   const job = { id: 'job-1', owner: 'buyer', k: 1, quorum: 1, window: 60, maxPrice: '1',
-    requirements: { minCpuScore: 1, minGpuScore: 0, minMemoryScore: 1 }, createdAt: '2026-10-18T12:00:00Z' };
+    requirements: { minVcpus: 1, minMemoryGb: 1, gpu: 'none', minGpuVramGb: 0 }, createdAt: '2026-10-18T12:00:00Z' };
   const provider = { id: 'provider-1', accountId: 'provider-1', wallet, registered: true, pricePerHour: '0.001',
-    machine: { cpuScore: 100, gpuScore: null, memoryScore: 100 } };
+    machine: { vcpus: 8, memoryGb: 16, gpus: [] } };
   const assignments = new Map();
   const repository = {
     async getJob(id) { return id === job.id && !assignments.has(id) ? job : null; },

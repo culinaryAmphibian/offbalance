@@ -114,13 +114,17 @@ test('configuration exposes the coordinator chain and execution mode', async () 
 });
 
 test('provider hardware, runtime liveness and account stake map to the setup view', async () => {
-  const hardware = { id: 'machine', price: 0.002, cpuScore: 100, gpuScore: 50, memoryScore: 200, updatedAt: '2026-10-19T00:00:00Z' };
+  const hardware = { id: 'machine', price: 0.002, cpu: { model: 'CPU', cores: 4, threads: 8, singleThreadMBps: 45, multiThreadMBps: 300 },
+    memory: { totalGb: 15.5, bandwidthGBps: 9.8 }, gpus: [], relative: { cpuSingleThread: 1 }, updatedAt: '2026-10-19T00:00:00Z' };
+  const suggestedPrice = { formula: { pricePerHour: '0.003', items: [{ label: 'CPU', detail: '8 vCPUs', pricePerHour: '0.003' }] },
+    market: { pricePerHour: '0.0025', similarMachines: 2 } };
   const api = createApi({ fetcher: async url => json(url.endsWith('/dashboard') ? dashboard : {
-    hardware, suggestedPrice: 0.003, online: true, lastSeen: '2026-10-19T01:00:00Z',
+    hardware, suggestedPrice, online: true, lastSeen: '2026-10-19T01:00:00Z',
   }) });
   const { provider } = await api.getProvider();
   assert.deepEqual(provider, {
-    registered: true, machine: hardware, pricePerHour: '0.002', suggestedPricePerHour: '0.003', currentStake: '0.05', online: true, lastSeen: '2026-10-19T01:00:00Z',
+    registered: true, machine: hardware, pricePerHour: '0.002', suggestedPrice, suggestedPricePerHour: '0.003',
+    currentStake: '0.05', online: true, lastSeen: '2026-10-19T01:00:00Z',
   });
 });
 

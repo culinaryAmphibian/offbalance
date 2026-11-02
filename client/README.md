@@ -16,11 +16,28 @@ Has the following responsibilities:
 
 ---
 
-## Hardware benchmark scores
+## Hardware profile
 
-`BenchmarkManager` measures resources from inside the provider VM, so results reflect the VM allocation rather than the host's advertised hardware. It returns only three raw throughput scores: CPU SHA-256 operations per second, GPU score, and memory-copy throughput in MiB per second. CPU and memory scores use the median of repeated samples.
+On startup `BenchmarkManager` (in [`benchmark/`](benchmark/)) reports the machine to `POST /scores` as specs plus benchmarks in real units. It takes about 6 seconds, plus the GPU benchmark if there is a GPU. It measures what this process can use, so inside a VM or a CPU-pinned container it reports that allocation, not the host's.
 
-GPU is reported as unavailable (`null`) until a GPU benchmark backend is implemented; it must not be interpreted as a measured zero. Compare scores only when the benchmark implementation and settings match. Re-run the benchmark after changing the VM's CPU or memory allocation. These client-reported measurements help with provider matching but do not prove hardware identity or guarantee job performance.
+| | Detected | Measured |
+|---|---|---|
+| CPU | model, physical cores, vCPUs (logical CPUs this process may use) | zlib compression throughput, MB/s of input, on one thread and on every thread at once (the same kind of workload as the 7-Zip benchmark) |
+| Memory | GB the OS can use (`/proc/meminfo`; a 16 GB machine reports about 15.5) | copy bandwidth in GB/s, read + write, from up to 8 processes over a 1 GiB working set, which is larger than CPU caches |
+| GPU | NVIDIA via `nvidia-smi`, AMD via `rocm-smi`: model, VRAM, driver, CUDA/ROCm version | FP32 matmul TFLOPS and device memory bandwidth, measured in a container (below) |
+
+The server shows each measurement as a multiple of a reference machine (1.0× = Intel Core i7-9700K limited to 4 cores, 16 GB dual-channel DDR4, NVIDIA RTX 2070), and suggests an hourly price from the specs. Matching uses the specs: a job asks for vCPUs, GB of memory, and optionally a GPU with a minimum of VRAM, and its container gets exactly that (Docker `--cpus`, `--memory` with no extra swap, and one GPU).
+
+### GPU benchmark
+
+Each detected GPU is benchmarked by [`benchmark/gpu_benchmark.py`](benchmark/gpu_benchmark.py) inside a PyTorch container, given the GPU the same way a GPU job is. A GPU that benchmarks is one jobs can use. The images are pinned by digest in [`benchmark/gpu.py`](benchmark/gpu.py) and pulled once, on the first run (several GB):
+
+- NVIDIA: `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`, run with `--gpus device=N`. Needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and a driver that supports CUDA 12.
+- AMD: `rocm/pytorch:rocm6.3_ubuntu22.04_py3.10_pytorch_release_2.4.0`, run with `/dev/kfd`, `/dev/dri`, the `video` group and `HIP_VISIBLE_DEVICES=N`. Needs ROCm on the host. The AMD path has only been tested with mocked tools and Docker, not on AMD hardware.
+
+If Docker can't use a GPU, the profile still lists it, with the reason (for example a missing toolkit), and it isn't offered for jobs. `OFFBALANCE_SKIP_GPU_BENCHMARK=1` skips the GPU benchmark; detected GPUs are then reported as not usable.
+
+These are self-reported measurements: they help match jobs and price machines, but don't prove what hardware a provider has. Restart the client after changing the machine's or VM's hardware.
 
 ## Provider availability
 
@@ -55,6 +72,12 @@ Test availability and execution handling without a running Docker daemon or bloc
 ```bash
 python3 -m pip install requests docker
 python3 -m unittest discover -s test -v
+```
+
+The GPU benchmark test is skipped unless you ask for it. On a machine with a GPU and Docker GPU support, it runs the real benchmark container for each detected GPU (the first run pulls the image):
+
+```bash
+OFFBALANCE_GPU_TEST=1 python3 -m unittest discover -s test -p test_benchmark.py -k RealGpu -v
 ```
 
 ## Docker output and failures

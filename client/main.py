@@ -5,7 +5,7 @@
 #
 # the contract address always comes from the server
 from blockchain.BlockchainManager import BlockchainManager
-from benchmark.BenchmarkManager import BenchmarkManager
+from benchmark.BenchmarkManager import BenchmarkManager, gpu_benchmarks_enabled
 from server.ServerManager import ServerManager
 from ProviderClient import ProviderClient
 from web3 import Web3
@@ -89,7 +89,8 @@ def fetch_contract(s_mgr: ServerManager) -> tuple[str, list, int | None]:
 
 def main():
     args = parse_args()
-    be_mgr = BenchmarkManager()
+    # OFFBALANCE_SKIP_GPU_BENCHMARK=1 reports GPUs without benchmarking them (they then aren't offered for jobs)
+    be_mgr = BenchmarkManager(gpu_benchmarks=gpu_benchmarks_enabled())
 
     w3 = Web3(Web3.HTTPProvider(RPC_URL))
     if not w3.is_connected():

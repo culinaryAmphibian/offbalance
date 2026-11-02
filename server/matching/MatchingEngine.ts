@@ -4,7 +4,9 @@ import type { AvailableProvider, Match, MatchCallback, MatchQuote, ProviderRecor
 
 const WEI_PER_ETH = 10n ** 18n;
 const compare = (a: string | number | bigint, b: string | number | bigint) => a < b ? -1 : a > b ? 1 : 0;
-const requirementFields = [['minCpuScore', 'cpuScore'], ['minGpuScore', 'gpuScore'], ['minMemoryScore', 'memoryScore']] as const;
+
+const positive = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0;
+const nonNegative = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 
 export function parseEthAmount(value: unknown): bigint {
   if (typeof value !== 'string' || !/^\d+(?:\.\d{1,18})?$/.test(value)) {
@@ -19,23 +21,34 @@ export function formatEthAmount(wei: bigint): string {
   return `${wei / WEI_PER_ETH}${fraction ? `.${fraction}` : ''}`;
 }
 
+/** The provider's GPUs that satisfy the job's GPU requirement, largest VRAM first. */
+export function fittingGpus(job: SchedulingJob, provider: ProviderRecord) {
+  const { gpu = 'none', minGpuVramGb = 0 } = job.requirements ?? {};
+  if (gpu === 'none') return [];
+  return (provider.machine?.gpus ?? []).filter(card => (gpu === 'any' || card.vendor === gpu) && card.vramGb >= minGpuVramGb)
+    .sort((a, b) => b.vramGb - a.vramGb);
+}
+
 export function meetsRequirements(job: SchedulingJob, provider: ProviderRecord): boolean {
   if (!provider.machine || String(provider.accountId) === String(job.owner)) return false;
-  return requirementFields.every(([required, hardware]) => {
-    const minimum = job.requirements?.[required] ?? 0;
-    const measured = provider.machine?.[hardware];
-    if (!Number.isSafeInteger(minimum) || minimum < 0) return false;
-    if (hardware === 'gpuScore' && measured === null) return minimum === 0;
-    return typeof measured === 'number' && Number.isFinite(measured) && measured <= Number.MAX_SAFE_INTEGER && measured >= minimum;
-  });
+  const { minVcpus = 1, minMemoryGb = 0, gpu = 'none', minGpuVramGb = 0 } = job.requirements ?? {};
+  if (!positive(minVcpus) || !nonNegative(minMemoryGb) || !nonNegative(minGpuVramGb)) return false;
+  if (!['none', 'any', 'nvidia', 'amd'].includes(gpu)) return false;
+  const { vcpus, memoryGb } = provider.machine;
+  return positive(vcpus) && vcpus >= minVcpus && nonNegative(memoryGb) && memoryGb >= minMemoryGb &&
+    (gpu === 'none' || fittingGpus(job, provider).length > 0);
 }
 
 export function scoreProvider(job: SchedulingJob, provider: AvailableProvider) {
-  const ratios = requirementFields.filter(([required]) => (job.requirements?.[required] ?? 0) > 0)
-    .map(([required, hardware]) => (provider.machine[hardware] ?? 0) / (job.requirements?.[required] ?? 0));
+  // headroom: how many times over the tightest requirement this machine is
+  const { minVcpus = 1, minMemoryGb = 0, minGpuVramGb = 0 } = job.requirements ?? {};
+  const ratios = [provider.machine.vcpus / minVcpus];
+  if (minMemoryGb > 0) ratios.push(provider.machine.memoryGb / minMemoryGb);
+  const gpu = fittingGpus(job, provider)[0];
+  if (gpu && minGpuVramGb > 0) ratios.push(gpu.vramGb / minGpuVramGb);
   return {
     rateWei: parseEthAmount(provider.pricePerHour),
-    headroom: ratios.length ? Math.min(...ratios) : 0,
+    headroom: Math.min(...ratios),
     lastAssignedAt: provider.lastAssignedAt ?? 0,
     wallet: provider.wallet.toLowerCase(),
   };

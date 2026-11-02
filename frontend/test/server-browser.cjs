@@ -209,12 +209,18 @@ async function stop(child) {
       await page.getByRole('link', { name: 'Provider setup', exact: true }).click();
       assert.equal(await page.getByLabel('Client API key', { exact: true }).getAttribute('type'), 'password');
       assert.equal(await page.getByLabel('Client API key', { exact: true }).inputValue(), provider.token);
-      await page.getByText('Waiting for hardware scores from the provider client.', { exact: true }).waitFor();
+      await page.getByText("Waiting for the provider client's hardware benchmark.", { exact: true }).waitFor();
       assert.equal(await page.getByLabel('Price (ETH / hour)', { exact: true }).isDisabled(), true);
-      const result = await request('/scores', { token: provider.token, method: 'POST', body: { cpu: 12345, mem: 8192 } });
+      const result = await request('/scores', { token: provider.token, method: 'POST', body: { version: 2,
+        cpu: { model: 'Browser test CPU', cores: 4, threads: 8, singleThreadMBps: 90, multiThreadMBps: 328 },
+        memory: { totalGb: 15.5, bandwidthGBps: 9.8 }, gpus: [] } });
       assert.equal(result.status, 201);
       await page.getByRole('button', { name: 'Refresh status', exact: true }).click();
-      await page.getByText('CPU 12345 · GPU — · Memory 8192', { exact: true }).waitFor();
+      await page.getByText('Browser test CPU').waitFor();
+      await page.getByText('(2× reference)', { exact: true }).first().waitFor();
+      await page.getByRole('button', { name: 'Use suggested price', exact: true }).click();
+      const suggested = await page.getByLabel('Price (ETH / hour)', { exact: true }).inputValue();
+      assert.match(suggested, /^0\.\d+$/);
       await page.getByLabel('Price (ETH / hour)', { exact: true }).fill('0.002');
       await page.getByRole('button', { name: 'Save price', exact: true }).click();
       await page.getByText('Hourly price saved.', { exact: true }).waitFor();

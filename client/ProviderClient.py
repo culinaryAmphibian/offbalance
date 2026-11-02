@@ -27,9 +27,12 @@ class ProviderClient():
     # mediator methods here...
     def run(self, stop_event: threading.Event | None = None) -> None:
         stop_event = stop_event or threading.Event()
-        scores = self.benchmark.do_benchmark()
+        profile = self.benchmark.do_benchmark()
         # failures terminate with error
-        self.server.post_benchmark(scores)
+        self.server.post_benchmark(profile)
+        # GPU jobs get one of the GPUs whose benchmark container ran
+        if self.runner is not None:
+            self.runner.gpus = [gpu for gpu in profile.gpus if gpu.usable]
 
         # Advertise immediately, then renew independently of slow chain requests.
         self._heartbeat()

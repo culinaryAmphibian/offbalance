@@ -43,17 +43,26 @@ describe("Account", () => {
 	});
 });
 
+const CPU = { model: "AMD Ryzen 7 7700X", cores: 8, threads: 16, singleThreadMBps: 61, multiThreadMBps: 610 };
+const MEMORY = { totalGb: 31.2, bandwidthGBps: 18.5 };
+
 describe("Hardware", () => {
-	test("gpuScore is optional", async () => {
-		const hw = new HardwareModel({ userRef: new Types.ObjectId(), address: WALLET, cpuScore: 100, memoryScore: 50 });
+	test("GPUs are optional; a GPU's measurements may be missing when its benchmark failed", async () => {
+		const hw = new HardwareModel({ userRef: new Types.ObjectId(), address: WALLET, cpu: CPU, memory: MEMORY });
 		await hw.validate();
-		assert.equal(hw.gpuScore, null);
+		assert.deepEqual(hw.gpus.toObject(), []);
+		hw.gpus.push({ vendor: "nvidia", index: 0, model: "RTX 2070", vramGb: 8, error: "Docker can't use this GPU" });
+		await hw.validate();
+		assert.equal(hw.gpus[0].fp32Tflops, null);
 	});
 
-	test("requires owner and cpu/memory scores", async () => {
+	test("requires owner, cpu and memory, and rejects unknown GPU vendors and zero threads", async () => {
 		await assert.rejects(new HardwareModel({}).validate(), (e: Error) =>
-			["userRef", "address", "cpuScore", "memoryScore"].every((f) => e.message.includes(f)),
+			["userRef", "address", "cpu", "memory"].every((f) => e.message.includes(f)),
 		);
+		const base = { userRef: new Types.ObjectId(), address: WALLET, cpu: CPU, memory: MEMORY };
+		await assert.rejects(new HardwareModel({ ...base, cpu: { ...CPU, threads: 0 } }).validate(), /threads/);
+		await assert.rejects(new HardwareModel({ ...base, gpus: [{ vendor: "intel", index: 0, model: "Arc", vramGb: 8 }] }).validate(), /vendor/);
 	});
 });
 
@@ -65,8 +74,23 @@ describe("Job", () => {
 		assert.equal(job.submittedAt, null);
 		assert.deepEqual(job.results.toObject(), []);
 		assert.deepEqual(job.command.toObject(), []);
-		assert.equal(job.requirements?.minCpuScore, 0);
+		assert.deepEqual({ ...job.requirements?.toObject() }, { minVcpus: 1, minMemoryGb: 1, gpu: "none", minGpuVramGb: 0 });
+		assert.equal(job.cpuLimit, 1);
+		assert.equal(job.memLimitMb, 1024);
 		assert.ok(job.createdAt === undefined || job.createdAt instanceof Date);
+	});
+
+	test("container limits always follow the requirements", async () => {
+		const job = validJob({ requirements: { minVcpus: 4, minMemoryGb: 7.5, gpu: "nvidia", minGpuVramGb: 8 }, cpuLimit: 64, memLimitMb: 1 });
+		await job.validate();
+		assert.equal(job.cpuLimit, 4);
+		assert.equal(job.memLimitMb, 7680);
+	});
+
+	test("rejects fractional vCPUs, tiny memory and unknown GPU requirements", async () => {
+		for (const requirements of [{ minVcpus: 1.5 }, { minVcpus: 0 }, { minMemoryGb: 0.1 }, { gpu: "intel" }, { minGpuVramGb: -1 }]) {
+			await assert.rejects(validJob({ requirements }).validate(), undefined, JSON.stringify(requirements));
+		}
 	});
 
 	test("rejects unknown status", async () => {
