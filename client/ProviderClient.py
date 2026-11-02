@@ -6,6 +6,8 @@ from blockchain.EventData import *
 import requests
 import sys
 import threading
+import time
+from server.ServerManager import DeliveryError
 
 if TYPE_CHECKING:
     from benchmark.BenchmarkManager import BenchmarkManager
@@ -145,12 +147,31 @@ class ProviderClient():
             self._delivering.add(job_id)
         threading.Thread(target=self._deliverResult, args=(job_id, *result), daemon=True).start()
 
+    # The delivery window is 30s on chain; stop retrying a little before it closes.
+    DELIVERY_RETRY_S = 25
+    DELIVERY_RETRY_INTERVAL_S = 2
+
     def _deliverResult(self, job_id, output_dir, result_hash):
+        give_up_at = time.monotonic() + self.DELIVERY_RETRY_S
+        stop = self._stop_event or threading.Event()
         try:
-            self.server.deliver_result(job_id, output_dir, result_hash, self._stop_event)
-        except Exception:
-            # HTTP errors can contain credentials; report only the operation that failed.
-            print(f'Job {job_id}: result delivery failed.', file=sys.stderr)
+            while True:
+                try:
+                    self.server.deliver_result(job_id, output_dir, result_hash, self._stop_event)
+                    print(f'Job {job_id}: result delivered.')
+                    return
+                except DeliveryError as error:
+                    # The client sees DELIVERY_PHASE_START about when the server does, so the
+                    # first upload can land before the server opens the job for delivery (409).
+                    if not error.retryable or time.monotonic() >= give_up_at or stop.is_set():
+                        print(f'Job {job_id}: result delivery failed: {error}', file=sys.stderr)
+                        return
+                    print(f'Job {job_id}: result delivery not accepted yet ({error}); retrying', file=sys.stderr)
+                    stop.wait(self.DELIVERY_RETRY_INTERVAL_S)
+                except Exception as error:
+                    # Other errors can carry credentials; report only the type.
+                    print(f'Job {job_id}: result delivery failed ({type(error).__name__}).', file=sys.stderr)
+                    return
         finally:
             with self._job_lock:
                 self._delivering.discard(job_id)

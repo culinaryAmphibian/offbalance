@@ -4,6 +4,18 @@ from job.Archive import result_archive
 
 _SERVER_URL = "https://localhost:5173"
 
+class DeliveryError(requests.RequestException):
+    """A result upload the server refused. `reason` is the server's own error text (no credentials)."""
+    def __init__(self, status: int | None, reason: str):
+        super().__init__(f"HTTP {status}: {reason}" if status else reason)
+        self.status = status
+        self.reason = reason
+
+    @property
+    def retryable(self) -> bool:
+        # 409: the server hasn't seen DELIVERY_PHASE_START yet (or a concurrent write); 5xx/None: transient
+        return self.status is None or self.status in (409, 429) or self.status >= 500
+
 class ServerManager():
     # identity (who am i to the server?)
     def __init__(self, base_url: str, access_token: str | None = None):
@@ -78,7 +90,11 @@ class ServerManager():
                     timeout=(10, 60), allow_redirects=False,
                 )
                 if not 200 <= response.status_code < 300:
-                    raise requests.RequestException('Result upload was not accepted.')
+                    try:
+                        reason = str(response.json().get('error') or 'upload was not accepted')
+                    except Exception:  # non-JSON body
+                        reason = 'upload was not accepted'
+                    raise DeliveryError(response.status_code, reason[:300])
                 result = response.json()
                 if not isinstance(result, dict) or not isinstance(result.get('results'), list) or not any(
                     isinstance(item, dict) and item.get('contentVerified') is True and (
@@ -87,8 +103,10 @@ class ServerManager():
                     )
                     for item in result.get('results', [])
                 ):
-                    raise requests.RequestException('Result delivery is not confirmed.')
+                    raise DeliveryError(response.status_code, 'result delivery is not confirmed')
                 return result
+            except DeliveryError:
+                raise
             except (requests.RequestException, ValueError):
                 # Exception text from an HTTP library can include URL credentials or headers.
-                raise requests.RequestException('Result upload failed.') from None
+                raise DeliveryError(None, 'result upload failed (network or bad response)') from None
