@@ -8,7 +8,7 @@ import {
 } from "../services/hardware.ts";
 
 const RTX_2070 = { vendor: "nvidia", index: 0, model: "NVIDIA GeForce RTX 2070", vramGb: 8, driver: "550.54.14",
-	runtime: "CUDA 12.4", fp32Tflops: 7.5, memoryBandwidthGBps: 448, error: null };
+	runtime: "CUDA 12.4", fp32Tflops: 6.6, memoryBandwidthGBps: 354, error: null };
 // the reference machine itself, as client/benchmark would report it
 const REFERENCE_PROFILE = {
 	version: 2,
@@ -65,14 +65,14 @@ describe("derived values", () => {
 		});
 		const fast = profile({
 			cpu: { ...REFERENCE_PROFILE.cpu, threads: 16, cores: 8, singleThreadMBps: 67.5, multiThreadMBps: 820 },
-			gpus: [{ ...RTX_2070, fp32Tflops: 3 }, { ...RTX_2070, index: 1, model: "RTX 4090", fp32Tflops: 82.5, memoryBandwidthGBps: 1008 }],
+			gpus: [{ ...RTX_2070, fp32Tflops: 3.3 }, { ...RTX_2070, index: 1, model: "RTX 4090", fp32Tflops: 72.6, memoryBandwidthGBps: 796.5 }],
 		});
 		const scores = relativeScores(fast);
 		assert.equal(scores.cpuSingleThread, 1.5);
 		assert.equal(scores.cpuMultiThread, 5);
 		assert.equal(scores.gpuFp32, 11, "the fastest usable GPU is compared");
 		assert.equal(scores.gpuMemoryBandwidth, 2.25);
-		assert.deepEqual(scores.gpus, [0.4, 11]);
+		assert.deepEqual(scores.gpus, [0.5, 11]);
 		assert.deepEqual(relativeScores(profile({ gpus: [{ ...RTX_2070, fp32Tflops: null, error: "no" }] })).gpus, [null]);
 		assert.equal(relativeScores(profile({ gpus: [] })).gpuFp32, null);
 	});
@@ -84,9 +84,9 @@ describe("derived values", () => {
 	test("formula price itemises vCPUs scaled by per-thread speed, memory and each usable GPU", () => {
 		const price = formulaPrice(profile(), RATES);
 		assert.deepEqual(price.items.map(item => [item.label, item.pricePerHour]), [
-			["CPU", "0.00004"], ["Memory", "0.000016"], ["GPU 0", "0.000075"],
+			["CPU", "0.00004"], ["Memory", "0.000016"], ["GPU 0", "0.000066"],
 		]);
-		assert.equal(price.pricePerHour, "0.000131");
+		assert.equal(price.pricePerHour, "0.000122");
 		// twice the per-thread speed doubles the CPU part; speed is clamped to 0.5–2x
 		const fast = formulaPrice(profile({ cpu: { ...REFERENCE_PROFILE.cpu, singleThreadMBps: 900 } }), RATES);
 		assert.equal(fast.items[0].pricePerHour, "0.00008");

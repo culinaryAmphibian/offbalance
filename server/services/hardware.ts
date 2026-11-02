@@ -26,8 +26,10 @@ export interface HardwareProfile {
 }
 
 // 1.0x on every relative score. CPU and memory were measured with the client's own benchmark
-// on an Intel Core i7-9700K limited to 4 threads with dual-channel DDR4; the GPU is an
-// NVIDIA RTX 2070, from its spec sheet (a real card measures a little under its peak).
+// on an Intel Core i7-9700K limited to 4 threads with dual-channel DDR4. The GPU is an NVIDIA
+// RTX 2070 as the client's benchmark would measure it: its spec sheet (7.5 TFLOPS, 448 GB/s)
+// scaled by what a measured Turing card (RTX 2080 SUPER: 9.80 of 11.15 TFLOPS, 392 of 496 GB/s)
+// reaches, so a real card isn't scored against a peak no card hits.
 export const REFERENCE = {
 	description: "Intel Core i7-9700K (4 cores), 16 GB dual-channel DDR4, NVIDIA GeForce RTX 2070",
 	cpuSingleThreadMBps: 45,
@@ -35,8 +37,8 @@ export const REFERENCE = {
 	memoryGb: 16,
 	memoryBandwidthGBps: 9.8,
 	gpuVramGb: 8,
-	gpuFp32Tflops: 7.5,
-	gpuMemoryBandwidthGBps: 448,
+	gpuFp32Tflops: 6.6,
+	gpuMemoryBandwidthGBps: 354,
 } as const;
 
 export class ProfileError extends Error {}

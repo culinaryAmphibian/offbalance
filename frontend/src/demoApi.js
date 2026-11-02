@@ -39,7 +39,7 @@ export function createDemoApi() {
 			gpus: [{ vendor: "nvidia", index: 0, model: "NVIDIA GeForce RTX 3060", vramGb: 12, driver: "550.54.14",
 				runtime: "CUDA 12.4", fp32Tflops: 12.1, memoryBandwidthGBps: 338, error: null }],
 			relative: {
-				cpuSingleThread: 1.36, cpuMultiThread: 3.73, memoryBandwidth: 1.89, gpuFp32: 1.61, gpuMemoryBandwidth: 0.75, gpus: [1.61],
+				cpuSingleThread: 1.36, cpuMultiThread: 3.73, memoryBandwidth: 1.89, gpuFp32: 1.83, gpuMemoryBandwidth: 0.95, gpus: [1.83],
 				reference: "Intel Core i7-9700K (4 cores), 16 GB dual-channel DDR4, NVIDIA GeForce RTX 2070",
 			},
 			updatedAt: stamp,
