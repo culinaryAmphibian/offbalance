@@ -80,8 +80,8 @@ contract OffBalance {
     mapping(address => uint256) public credits;
 	mapping(bytes32 => uint256) private temp_hashes;
 
-    uint256 public constant REVEAL_WINDOW = 120;
-    uint256 public constant DELIVERY_WINDOW = 300;
+    uint256 public constant REVEAL_WINDOW = 15;
+    uint256 public constant DELIVERY_WINDOW = 30;
 
     modifier onlyServer() {
         require(msg.sender == server, "Only server");
