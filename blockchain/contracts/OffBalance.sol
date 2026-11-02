@@ -347,6 +347,14 @@ contract OffBalance {
         return jobs[jobId].status;
     }
 
+    // Phase deadlines in chain time (0 until the phase starts). The server's orchestrator
+    // reads these to know when to call startRevealPhase / endRevealPhase / endDeliveryPhase.
+    function getDeadlines(JobID_t jobId)
+        external view returns (Status status, uint256 commitDeadline, uint256 revealDeadline, uint256 deliveryDeadline) {
+        Job storage job = jobs[jobId];
+        return (job.status, job.commitDeadline, job.revealDeadline, job.deliveryDeadline);
+    }
+
     function getAssignedProviders(JobID_t jobId) external view returns (address[] memory) {
         return jobs[jobId].assignedProviders;
     }
