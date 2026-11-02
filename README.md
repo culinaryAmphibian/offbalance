@@ -57,10 +57,59 @@ cd client && python3 main.py --dev
 
 # 4. Call contract functions as any account
 cd client && python3 dev/contract_controller.py
-offbalance> submitJob 1 100 3 2 60 img --value 100     # as buyer: escrows the price
+offbalance> submitJob 100 2 3 60 img --value 100     # as buyer: price k quorum executionTime image; escrows the price
 ```
 
 `server/dev-server.ts` (`npm run dev:mock`) is still there for client development without MongoDB: it answers the three routes the client calls and hands out the deployed `OffBalance` address, but it doesn't match providers or drive phases.
+
+## Multiple machines (`docker compose`)
+
+One machine is the **host** (server, chain, MongoDB, a UI); any number of others are **clients** (a UI and a provider client, both pointing at the host). Each machine needs Docker, a checkout of this repo, and a `.env` in the repo root:
+
+```bash
+cp .env.example .env    # then set HOST_ADDRESS to the host's LAN IP (`hostname -I` on the host)
+```
+
+```bash
+# on the host
+docker compose --profile host up --build
+
+# on each other machine, with a different dev provider (1-4) per machine
+PROVIDER=2 docker compose --profile client up --build
+
+# optional: a provider on the host machine too
+PROVIDER=1 docker compose --profile host run --rm host-client
+```
+
+- The host publishes the server on `https://HOST_ADDRESS:5000` and the chain on `http://HOST_ADDRESS:8545`; open both ports on its firewall. MongoDB is not published. Every UI is local: `http://localhost:5173`.
+- Clients trust the host's self-signed certificate on first use: `fetch-cert` reads it from the TLS handshake, then all HTTPS is verified against it. The host's certificate names `HOST_ADDRESS`, so it must match the `.env` on every machine.
+- The provider client gets the contract address and ABI from the server; client machines need no blockchain checkout or deployment file.
+- In MetaMask on every machine, add the network `http://HOST_ADDRESS:8545`, chain ID 31337, and import the dev key you sign in with. The UI shows a provider's benchmark only when you're signed in as that provider's wallet.
+- Each host start is a fresh chain and a fresh in-memory database: restart the clients after restarting the host.
+- The dev keys and API keys in `dev.env` are public. Keep this on a trusted LAN.
+
+Everyday commands (add `-d` to `up` to run in the background):
+
+```bash
+docker compose --profile host logs -f server             # follow one service (host)
+docker compose --profile client logs -f client           # follow the provider (client)
+docker compose --profile host down                       # stop (or --profile client)
+docker compose --profile host run --rm --no-deps \
+  --entrypoint python host-client dev/contract_controller.py   # contract controller shell, on the host
+```
+
+Rebuild after code changes with `up --build`. A contract change also needs a host restart, since the chain is redeployed on every start.
+
+Troubleshooting:
+
+| Symptom | Cause |
+|---|---|
+| `required variable HOST_ADDRESS is missing a value` | no `.env` with `HOST_ADDRESS` in the repo root |
+| `set PROVIDER=1..4` and the client exits | run client mode as `PROVIDER=N docker compose --profile client up` |
+| `fetch-cert` keeps `waiting for https://HOST_ADDRESS:5000` | host mode isn't up yet, the IP is wrong, or the host firewall blocks port 5000 |
+| client fails TLS verification | the host's certificate changed (e.g. renewed after 30 days): restart client mode (`down`, then `up`), which fetches it again |
+| `address already in use` on 5000/8545/5173 | something else (e.g. `startup.py`) is using the port |
+| provider page shows no benchmark | you're signed in to the UI with a different wallet than the client's `PROVIDER` |
 
 ## Local chain (`blockchain/`)
 

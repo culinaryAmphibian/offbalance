@@ -76,15 +76,15 @@ def ask_for_session_key() -> LocalAccount:
 def ask_for_api_key() -> str:
     return os.environ.get('OFFBALANCE_API_KEY') or input("Please provide your API key for OffBalance: ")
 
-def ask_for_contract_addr(s_mgr: ServerManager) -> str:
-    # override: skip the server and use this address
-    if addr := os.environ.get('OFFBALANCE_ADDRESS'):
-        return addr
-
-    res = s_mgr.request('GET', '/contract_address')
-    data = res.json()
-    # server responds with the "address" field
-    return data['address']
+def ask_for_contract(s_mgr: ServerManager) -> tuple[str, list]:
+    """Contract address and ABI. The server sends both, so a provider on another machine
+    needs no deployment file; older servers send only the address, so the ABI then comes
+    from DEPLOYMENT_FILE."""
+    data = s_mgr.request('GET', '/contract_address').json()
+    # override: skip the server's address and use this one
+    addr = os.environ.get('OFFBALANCE_ADDRESS') or data['address']
+    abi = data.get('abi') or json.loads(DEPLOYMENT_FILE.read_text())['abi']
+    return addr, abi
 
 def main():
     args = parse_args()
@@ -99,15 +99,13 @@ def main():
     dev_api_key = 'dev' if args.provider == 1 else f'dev{args.provider}'
     api_key = os.environ.get('OFFBALANCE_API_KEY', dev_api_key) if args.dev else ask_for_api_key()
     s_mgr = ServerManager(BASE_URL, api_key)
-    # obtain contract addr from server via network call
-    addr_str = ask_for_contract_addr(s_mgr)
+    # obtain contract addr + abi from server via network call
+    addr_str, contract_abi = ask_for_contract(s_mgr)
     # get the signer account
     signer = load_dev_signer(args.provider) if args.dev else ask_for_session_key()
     key_seed = load_dev_key_seed(args.provider) if args.dev else ask_for_key_seed()
 
     contract_addr = Web3.to_checksum_address(addr_str)
-
-    contract_abi = json.loads(DEPLOYMENT_FILE.read_text())['abi']
 
     # make sure it's valid
     if not w3.eth.get_code(contract_addr):

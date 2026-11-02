@@ -14,7 +14,9 @@ export function clientRoutes({ matcher }: Deps): Router {
 
 	router.get("/contract_address", requireAuth, (_req, res) => {
 		try {
-			res.json({ address: readDeployment().address });
+			// abi + chainId let a provider on another machine run without the deployment file
+			const { address, abi, chainId } = readDeployment();
+			res.json({ address, abi, chainId });
 		} catch (e) {
 			res.status(503).json({
 				error: "can't read the deployment file; run `npm run dev` in blockchain/",
