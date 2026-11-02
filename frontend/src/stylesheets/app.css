@@ -83,8 +83,18 @@ input[aria-invalid=true]{border-color:#cf9999}
 .field-error{color:#f3b9b9;font-size:12px;line-height:1.5}
 .form-grid,.detail-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));column-gap:28px}
 .hardware-fields{border-top:1px solid #383838;border-bottom:1px solid #383838;padding:18px 0;margin-bottom:24px}
-.hardware-fields summary{cursor:pointer;font-size:13px;color:#b0b0b0}
-.hardware-fields[open] summary{margin-bottom:22px}
+.hardware-fields>legend{float:left;width:100%;padding:0;margin-bottom:8px;font-size:13px;color:#b0b0b0}
+.hardware-fields>legend+*{clear:both}
+.hardware-fields>p{margin:0 0 18px}
+.hardware-fields>p:last-child{margin:0}
+.spec-list{margin:0;padding:0;list-style:none}
+.spec-list li+li{margin-top:6px}
+.relative{color:#a3a3a3;white-space:nowrap}
+.price-suggestion{margin-bottom:22px}
+.price-suggestion>p{font-size:13px;line-height:1.65}
+.price-breakdown{margin:0 0 18px;padding:0;list-style:none;font-size:13px;line-height:1.65}
+.price-breakdown li{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #2c2c2c;padding:6px 0}
+.price-breakdown .muted{display:block;font-size:12px}
 .form-note{font-size:11px;margin-top:18px}
 .detail-grid{margin:0;row-gap:28px}
 .detail-grid dt{font-size:11px;color:#a3a3a3;margin-bottom:9px}

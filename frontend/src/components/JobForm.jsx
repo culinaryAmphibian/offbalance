@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { jobPayload, validateJob } from '../jobs';
+import { GPU_OPTIONS, jobPayload, validateJob } from '../jobs';
 import { convertBudget } from '../budget';
 import { fetchEthUsdQuote, QUOTE_MAX_AGE_MS } from '../rates';
 
-const initial = { name: '', dockerImage: '', maxPrice: '', budgetCurrency: 'ETH', k: '3', quorum: '2', window: '60', minCpuScore: '0', minGpuScore: '0', minMemoryScore: '0' };
+const initial = { name: '', dockerImage: '', maxPrice: '', budgetCurrency: 'ETH', k: '3', quorum: '2', window: '60', vcpus: '1', memoryGb: '1', gpu: 'none', gpuVram: '0' };
 
 export default function JobForm({ api, onCreated }) {
   const [values, setValues] = useState(initial);
@@ -118,14 +118,23 @@ export default function JobForm({ api, onCreated }) {
           {field('k', 'Provider count', { inputMode: 'numeric' })}
           {field('quorum', 'Required matching results', { inputMode: 'numeric' })}
         </div>
-        <details className="hardware-fields"><summary>Minimum hardware scores</summary>
+        <fieldset className="hardware-fields">
+          <legend>Resources per provider</legend>
+          <p className="muted">Each provider's container gets exactly this much, and only machines that have it are matched.</p>
           <div className="form-grid">
-            {field('minCpuScore', 'CPU score', { inputMode: 'numeric' })}
-            {field('minGpuScore', 'GPU score', { inputMode: 'numeric' })}
-            {field('minMemoryScore', 'Memory score', { inputMode: 'numeric' })}
+            {field('vcpus', 'vCPUs (CPU threads)', { inputMode: 'numeric' })}
+            {field('memoryGb', 'Memory (GB)', { inputMode: 'decimal' })}
+            <div className="field">
+              <label htmlFor="gpu">GPU</label>
+              <select id="gpu" name="gpu" value={values.gpu} onChange={event => change('gpu', event.target.value)} aria-invalid={!!errors.gpu} aria-describedby={errors.gpu ? 'gpu-error' : undefined}>
+                {GPU_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+              {errors.gpu && <span className="field-error" id="gpu-error">{errors.gpu}</span>}
+            </div>
+            {values.gpu !== 'none' && field('gpuVram', 'Minimum GPU memory (GB)', { inputMode: 'numeric' })}
           </div>
-          <p className="muted">Leave at zero for no minimum.</p>
-        </details>
+          <p className="muted">Machines report the memory the OS can use, a little under what's installed: a 16 GB machine shows about 15.5 GB, so ask for 15 to include it.</p>
+        </fieldset>
         <div className="form-actions"><button className="button primary" type="submit">{pending ? 'Saving…' : 'Save job'}</button><a className="text-link" href="#/">Cancel</a></div>
         <p className="muted form-note">The cap limits each provider’s hourly rate{usd ? ', converted to ETH at the quoted rate' : ''}. Total cost also depends on provider count and runtime. Saving does not transfer funds.</p>
       </fieldset>

@@ -159,7 +159,9 @@ function providerProfile({ hardware, suggestedPrice, online, lastSeen }, current
 		lastSeen: lastSeen ?? null,
 		currentStake,
 		pricePerHour: hardware?.price == null ? null : rateText(hardware.price),
-		suggestedPricePerHour: suggestedPrice == null ? null : rateText(suggestedPrice),
+		// { formula: { pricePerHour, items: [{ label, detail, pricePerHour }] }, market: { pricePerHour, similarMachines } | null }
+		suggestedPrice: suggestedPrice ?? null,
+		suggestedPricePerHour: suggestedPrice?.formula?.pricePerHour ?? null,
 		machine: hardware ?? null,
 	};
 }

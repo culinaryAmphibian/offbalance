@@ -26,7 +26,7 @@ async function fixture(selfProvider = false) {
 	});
 	const matcher = new Matcher(null);
 	matcher.manager.pool.register({ wallet: provider.walletIds[0], accountId: String(provider._id),
-		registered: true, pricePerHour: "2.75", machine: { cpuScore: 1, gpuScore: null, memoryScore: 1 },
+		registered: true, pricePerHour: "2.75", machine: { vcpus: 1, memoryGb: 1, gpus: [] },
 		busyJobId: String(job.onChainJobId), lastHeartbeat: Date.now() });
 	const event = (name: string, id = `${job.onChainJobId}:${name}`): ChainEvent & { id: string } => ({
 		id, name, blockNumber: 1n,

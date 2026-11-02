@@ -1,11 +1,12 @@
-import type { AvailableProvider, LiveProvider, MachineScores, ProviderRecord } from './types.ts';
+import type { AvailableProvider, LiveProvider, MachineSpecs, ProviderRecord } from './types.ts';
 
 const key = (wallet: string): string => String(wallet).toLowerCase();
 const copy = (provider: LiveProvider | undefined): LiveProvider | null => provider ? structuredClone(provider) : null;
 const priced = (value: unknown): value is string => typeof value === 'string' && /^\d+(?:\.\d{1,18})?$/.test(value) && /[1-9]/.test(value);
-const validScore = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
-const machineReady = (machine: ProviderRecord['machine']): machine is MachineScores => Boolean(machine &&
-  validScore(machine.cpuScore) && (validScore(machine.gpuScore) || machine.gpuScore === null) && validScore(machine.memoryScore));
+const validAmount = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+const machineReady = (machine: ProviderRecord['machine']): machine is MachineSpecs => Boolean(machine &&
+  Number.isSafeInteger(machine.vcpus) && machine.vcpus! > 0 && validAmount(machine.memoryGb) && Array.isArray(machine.gpus) &&
+  machine.gpus.every(gpu => (gpu?.vendor === 'nvidia' || gpu?.vendor === 'amd') && validAmount(gpu.vramGb)));
 
 export interface ProviderPoolOptions {
   now?: () => number;

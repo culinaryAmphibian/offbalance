@@ -6,6 +6,7 @@
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { hardwareFields } from "./helpers/hardware.ts";
 import type { Server } from "node:http";
 import mongoose from "mongoose";
 import { createApp } from "../app.ts";
@@ -48,7 +49,7 @@ async function startApp(chain: unknown, matcher = new Matcher(null)) {
 async function provider(c: string) {
 	const account = await AccountModel.create({ walletIds: [w(c)] });
 	await AuthTokenModel.create({ account: account._id, wallet: w(c), tokenHash: hashToken(`tok-${c}`) });
-	await HardwareModel.create({ userRef: account._id, address: w(c), cpuScore: 10, memoryScore: 10, price: 1 });
+	await HardwareModel.create({ userRef: account._id, address: w(c), ...hardwareFields(), price: 1 });
 	return account;
 }
 

@@ -10,7 +10,8 @@ import { loadJob, type Deps } from "./deps.ts";
 import { serializeJob, serializeResults } from "./serialize.ts";
 
 const SETTABLE = [
-	"name", "dockerImageDigest", "command", "env", "inputUrl", "cpuLimit", "memLimitMb",
+	// no cpuLimit/memLimitMb: the job model derives them from requirements
+	"name", "dockerImageDigest", "command", "env", "inputUrl",
 	"maxPrice", "minNodesToRunOn", "minNodesToAgree", "timeWindow", "requirements",
 ] as const;
 

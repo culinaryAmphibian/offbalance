@@ -12,7 +12,7 @@ test('demo pricing persists only within its own adapter', async () => {
   assert.deepEqual((await second.getProvider()).provider, initial);
   assert.equal(provider.currentStake, initial.currentStake);
   assert.deepEqual(provider.machine, initial.machine);
-  provider.machine.cpuScore = -1;
+  provider.machine.cpu.threads = -1;
   assert.deepEqual((await first.getProvider()).provider.machine, initial.machine);
 });
 
