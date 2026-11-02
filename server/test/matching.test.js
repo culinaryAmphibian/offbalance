@@ -6,10 +6,10 @@ import { MatchingEngine, parseEthAmount, formatEthAmount, quoteProviders } from 
 
 const epoch = 1_000_000;
 const provider = (wallet, changes = {}) => ({ wallet, accountId: `account-${wallet}`, registered: true,
-  pricePerHour: '1', machine: { cpuScore: 100, gpuScore: 100, memoryScore: 100 },
+  pricePerHour: '1', machine: { vcpus: 8, memoryGb: 16, gpus: [] },
   lastHeartbeat: epoch, busyJobId: null, lastAssignedAt: 0, ...changes });
 const job = (id, changes = {}) => ({ id, owner: 'buyer', k: 1, quorum: 1, window: 3600,
-  maxPrice: '100', requirements: { minCpuScore: 10, minGpuScore: 0, minMemoryScore: 0 },
+  maxPrice: '100', requirements: { minVcpus: 2, minMemoryGb: 4, gpu: 'none', minGpuVramGb: 0 },
   createdAt: '2026-10-18T00:00:00.000Z', ...changes });
 const setup = (options = {}) => {
   const queue = new JobQueue();
@@ -25,12 +25,12 @@ test('FIFO queue deduplicates ids, sorts timestamp/id, and isolates caller mutat
   later.id = 'mutated';
   assert.deepEqual(queue.getPending().map(value => value.id), ['a', 'b', 'later']);
   assert.equal(queue.peek().k, 1);
-  queue.peek().requirements.minCpuScore = 9000;
-  assert.equal(queue.peek().requirements.minCpuScore, 10);
+  queue.peek().requirements.minVcpus = 9000;
+  assert.equal(queue.peek().requirements.minVcpus, 2);
   assert.equal(queue.remove('a'), true);
 });
 
-test('availability requires registration, heartbeat, machine scores, positive known price and idle', () => {
+test('availability requires registration, heartbeat, machine specs, positive known price and idle', () => {
   const { pool } = setup();
   pool.add(provider('ready'));
   pool.add(provider('stale', { lastHeartbeat: epoch - 30_001 }));
@@ -40,7 +40,7 @@ test('availability requires registration, heartbeat, machine scores, positive kn
   pool.add(provider('missing-price', { pricePerHour: undefined }));
   pool.add(provider('free', { pricePerHour: '0.0000' }));
   pool.add(provider('invalid-price', { pricePerHour: '1e-2' }));
-  pool.add(provider('unmeasured', { machine: { cpuScore: 100 } }));
+  pool.add(provider('unmeasured', { machine: { vcpus: 8 } }));
   pool.add(provider('missing-account', { accountId: undefined }));
   assert.deepEqual(pool.getAvailable().map(value => value.wallet), ['ready']);
   pool.heartbeat('stale');
@@ -77,21 +77,22 @@ test('reservations are atomic, reject duplicate wallets, and prevent double allo
 test('hardware thresholds and buyer exclusion precede ranking', () => {
   const { pool, engine } = setup();
   pool.add(provider('self', { accountId: 'buyer', pricePerHour: '0.001' }));
-  pool.add(provider('weak', { pricePerHour: '0.001', machine: { cpuScore: 9, gpuScore: 999, memoryScore: 999 } }));
+  pool.add(provider('weak', { pricePerHour: '0.001', machine: { vcpus: 1, memoryGb: 999, gpus: [{ vendor: 'nvidia', vramGb: 80 }] } }));
   pool.add(provider('good'));
   assert.deepEqual(engine.findTopK(job('job')).map(value => value.wallet), ['good']);
 });
 
 test('ranking is hourly price, bottleneck headroom, longest idle, then lexical wallet', () => {
   const { pool, engine } = setup();
-  pool.add(provider('expensive', { pricePerHour: '2', machine: { cpuScore: 999, gpuScore: 999, memoryScore: 999 } }));
+  pool.add(provider('expensive', { pricePerHour: '2', machine: { vcpus: 64, memoryGb: 256, gpus: [] } }));
   pool.add(provider('c', { lastAssignedAt: 10 }));
   pool.add(provider('B', { lastAssignedAt: 0 }));
   pool.add(provider('a', { lastAssignedAt: 0 }));
-  pool.add(provider('headroom', { machine: { cpuScore: 200, gpuScore: 200, memoryScore: 200 } }));
+  pool.add(provider('headroom', { machine: { vcpus: 16, memoryGb: 32, gpus: [] } }));
   assert.deepEqual(engine.findTopK(job('job', { k: 5 })).map(value => value.wallet), ['headroom', 'a', 'B', 'c', 'expensive']);
-  assert.equal(engine.scoreProvider(job('none', { requirements: {} }), provider('a')).headroom, 0);
-  assert.equal(engine.scoreProvider(job('bottleneck', { requirements: { minCpuScore: 10, minGpuScore: 100 } }), provider('a')).headroom, 1);
+  // no requirements means the 1-vCPU default; memory is the bottleneck when it's tighter than CPU
+  assert.equal(engine.scoreProvider(job('none', { requirements: {} }), provider('a')).headroom, 8);
+  assert.equal(engine.scoreProvider(job('bottleneck', { requirements: { minVcpus: 2, minMemoryGb: 16 } }), provider('a')).headroom, 1);
 });
 
 test('quotes use exact 18-decimal BigInt arithmetic and round each provider upward', () => {
@@ -204,34 +205,44 @@ test('forgetAssignment removes retry bookkeeping without releasing providers or 
   assert.equal(queue.peek(), null);
 });
 
-test('fractional benchmarks with unknown GPU qualify only for workloads without a GPU requirement', async () => {
+test('CPU-only machines only take jobs without a GPU; GPU jobs need a usable GPU of the right vendor and VRAM', async () => {
   const { pool, engine } = setup();
-  pool.register(provider('cpu-only', { machine: { cpuScore: 20.5, gpuScore: null, memoryScore: 31.25 } }));
-  assert.equal(pool.getAvailable().length, 1);
-  const cpuJob = job('cpu-job', { requirements: { minCpuScore: 10, minGpuScore: 0, minMemoryScore: 10 } });
-  assert.deepEqual(engine.findTopK(cpuJob).map(value => value.wallet), ['cpu-only']);
-  assert.equal(engine.scoreProvider(cpuJob, pool.get('cpu-only')).headroom, 2.05);
-  const gpuJob = job('gpu-job', { requirements: { minCpuScore: 10, minGpuScore: 1, minMemoryScore: 10 } });
-  assert.deepEqual(engine.findTopK(gpuJob), []);
-  assert.equal(pool.get('cpu-only').machine.gpuScore, null);
-  assert.equal((await engine.enqueue(cpuJob)).length, 1);
+  pool.register(provider('cpu-only', { machine: { vcpus: 4, memoryGb: 15.5, gpus: [] } }));
+  pool.register(provider('nvidia-8', { pricePerHour: '2', machine: { vcpus: 8, memoryGb: 31.2, gpus: [{ vendor: 'nvidia', vramGb: 8 }] } }));
+  pool.register(provider('amd-16', { pricePerHour: '3', machine: { vcpus: 8, memoryGb: 31.2, gpus: [{ vendor: 'amd', vramGb: 16 }] } }));
+  const top = requirements => engine.findTopK(job('j', { k: 3, requirements })).map(value => value.wallet);
+  const cpuJob = { minVcpus: 2, minMemoryGb: 15 };
+  assert.deepEqual(top(cpuJob), ['cpu-only', 'nvidia-8', 'amd-16']);
+  assert.equal(engine.scoreProvider(job('j', { requirements: cpuJob }), pool.get('cpu-only')).headroom, 15.5 / 15);
+  // a 16 GB machine reports about 15.5 GB usable, so it doesn't qualify for 16
+  assert.deepEqual(top({ minVcpus: 2, minMemoryGb: 16 }), ['nvidia-8', 'amd-16']);
+  assert.deepEqual(top({ gpu: 'any', minGpuVramGb: 8 }), ['nvidia-8', 'amd-16']);
+  assert.deepEqual(top({ gpu: 'amd' }), ['amd-16']);
+  assert.deepEqual(top({ gpu: 'nvidia', minGpuVramGb: 12 }), []);
+  assert.equal(engine.scoreProvider(job('j', { requirements: { minVcpus: 1, gpu: 'any', minGpuVramGb: 4 } }), pool.get('amd-16')).headroom, 4);
+  assert.equal((await engine.enqueue(job('cpu-job', { requirements: cpuJob }))).length, 1);
 });
 
-test('pool and matching reject missing, negative, nonfinite or oversized scores while allowing measured zero GPU', () => {
+test('pool and matching reject missing, negative, nonfinite or fractional specs and unknown GPU vendors', () => {
   const { pool, engine } = setup();
-  const cpuOnly = { cpuScore: 20.5, gpuScore: null, memoryScore: 31.25 };
+  const cpuOnly = { vcpus: 4, memoryGb: 15.5, gpus: [] };
+  const bad = {
+    vcpus: [undefined, null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1],
+    memoryGb: [undefined, null, -1, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1],
+    gpus: [undefined, null, 'gpu', [{ vendor: 'intel', vramGb: 8 }], [{ vendor: 'nvidia', vramGb: -1 }], [{ vendor: 'nvidia' }]],
+  };
   let index = 0;
-  for (const name of ['cpuScore', 'gpuScore', 'memoryScore']) {
-    const bad = [undefined, -1, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1];
-    if (name !== 'gpuScore') bad.push(null);
-    for (const value of bad) {
+  for (const [name, values] of Object.entries(bad)) {
+    for (const value of values) {
       const invalid = provider(`invalid-${index++}`, { machine: { ...cpuOnly, [name]: value } });
       pool.register(invalid);
-      assert.equal(engine.meetsRequirements(job('job'), invalid), false);
+      if (name !== 'gpus' && value !== Number.MAX_SAFE_INTEGER + 1) assert.equal(engine.meetsRequirements(job('job'), invalid), false, `${name}=${value}`);
     }
   }
   assert.equal(pool.getAvailable().length, 0);
-  pool.register(provider('zero-gpu', { machine: { cpuScore: Number.MAX_SAFE_INTEGER, gpuScore: 0, memoryScore: 0 } }));
-  assert.deepEqual(engine.findTopK(job('job')).map(value => value.wallet), ['zero-gpu']);
-  assert.equal(engine.meetsRequirements(job('fractional-min', { requirements: { minCpuScore: 1.5 } }), pool.get('zero-gpu')), false);
+  pool.register(provider('valid', { machine: cpuOnly }));
+  assert.deepEqual(engine.findTopK(job('job')).map(value => value.wallet), ['valid']);
+  for (const requirements of [{ minVcpus: 0 }, { minVcpus: NaN }, { minMemoryGb: -1 }, { gpu: 'intel' }, { gpu: 'any', minGpuVramGb: -1 }]) {
+    assert.equal(engine.meetsRequirements(job('bad', { requirements }), pool.get('valid')), false, JSON.stringify(requirements));
+  }
 });

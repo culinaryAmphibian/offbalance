@@ -11,6 +11,7 @@ import { connectDB, disconnectDB } from "../db.ts";
 import { AccountModel, JobModel } from "../models/index.ts";
 import { Builder } from "../services/builder.ts";
 import { Matcher } from "../services/matcher.ts";
+import { testProfile } from "./helpers/hardware.ts";
 
 const uri = process.env.MONGODB_URI;
 const image = `docker.io/library/alpine@sha256:${"a".repeat(64)}`;
@@ -64,7 +65,7 @@ const job = (changes: Record<string, unknown> = {}) => ({
 	minNodesToRunOn: 1,
 	minNodesToAgree: 1,
 	timeWindow: 60,
-	requirements: { minCpuScore: 0, minGpuScore: 0, minMemoryScore: 0 },
+	requirements: { minVcpus: 1, minMemoryGb: 1, gpu: "none", minGpuVramGb: 0 },
 	...changes,
 });
 
@@ -101,7 +102,7 @@ describe("frontend/server database contracts", { skip: !uri && "set MONGODB_URI 
 	});
 
 	test("provider pricing rejects lossy decimal conversion without changing the saved rate", async () => {
-		const scored = await call("POST", "/scores", { as: "buyer", body: { cpu: 100, mem: 200 } });
+		const scored = await call("POST", "/scores", { as: "buyer", body: testProfile() });
 		assert.equal(scored.status, 201, JSON.stringify(scored.body));
 		const initial = await call("POST", "/provider/price", { as: "buyer", body: { price: "0.1" } });
 		assert.equal(initial.status, 200, JSON.stringify(initial.body));

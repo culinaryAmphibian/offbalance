@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import { MongoRepository } from '../adapters/repository.ts';
 import { AccountModel, HardwareModel, JobModel, JobStatus } from '../models/index.ts';
 import { Matcher } from '../services/matcher.ts';
+import { hardwareFields } from './helpers/hardware.ts';
 
 const uri = process.env.MONGODB_URI;
 const image = `example/compute@sha256:${'a'.repeat(64)}`;
@@ -18,7 +19,7 @@ async function account(id: number) {
 async function provider(id: number, price = 0.1) {
   const owner = await account(id);
   const hardware = await HardwareModel.create({ userRef: owner._id, address: wallet(id),
-    cpuScore: 100.5, gpuScore: null, memoryScore: 200.25, price });
+    ...hardwareFields({ threads: 8, totalGb: 31.2 }), price });
   owner.hardware = hardware._id;
   await owner.save();
   return { owner, hardware, wallet: wallet(id) };
@@ -27,7 +28,7 @@ async function provider(id: number, price = 0.1) {
 async function job(owner: mongoose.Types.ObjectId, id: number, changes: Record<string, unknown> = {}) {
   return JobModel.create({ owner, onChainJobId: id, dockerImageDigest: image,
     maxPrice: '0.1', minNodesToRunOn: 1, minNodesToAgree: 1, timeWindow: 3600,
-    requirements: { minCpuScore: 10, minGpuScore: 0, minMemoryScore: 20 },
+    requirements: { minVcpus: 4, minMemoryGb: 20 },
     submittedAt: new Date('2026-10-19T00:00:00.000Z'), ...changes });
 }
 
@@ -67,12 +68,12 @@ describe('MongoDB scheduler integration', { skip: !uri }, () => {
     // ceil(0.1 ETH in wei / 3600 seconds), independently for each of two providers.
     assert.equal(mapped.maxPrice, '0.000055555555555556');
     assert.equal(mapped.createdAt, pending.createdAt.toISOString());
-    assert.deepEqual(mapped.requirements, { minCpuScore: 10, minGpuScore: 0, minMemoryScore: 20 });
+    assert.deepEqual(mapped.requirements, { minVcpus: 4, minMemoryGb: 20, gpu: 'none', minGpuVramGb: 0 });
     const candidates = await repository.listProviders(mapped);
     assert.deepEqual(candidates.map(p => p.accountId).sort(), [String(cheap.owner._id), String(atCap.owner._id)].sort());
     const cheapRecord = candidates.find(p => p.wallet === cheap.wallet);
     assert.equal(cheapRecord?.pricePerHour, '0.05');
-    assert.deepEqual(cheapRecord?.machine, { cpuScore: 100.5, gpuScore: null, memoryScore: 200.25 });
+    assert.deepEqual(cheapRecord?.machine, { vcpus: 8, memoryGb: 31.2, gpus: [] });
     assert.equal(await repository.getJob('102'), null);
     assert.equal(await repository.getJob('1.5'), null);
     assert.equal(await repository.getJob('9007199254740992'), null);
@@ -123,7 +124,7 @@ describe('MongoDB scheduler integration', { skip: !uri }, () => {
     assert.equal(matcher.manager.pool.get(machine.wallet)?.lastHeartbeat, 0);
     assert.deepEqual(matcher.manager.pool.getAvailable(), []);
     assert.equal((await JobModel.findById(pending._id))?.providers.length, 0);
-    await HardwareModel.updateOne({ _id: machine.hardware._id }, { cpuScore: 500, price: 0.09 });
+    await HardwareModel.updateOne({ _id: machine.hardware._id }, { 'cpu.threads': 64, price: 0.09 });
     await matcher.ping();
     assert.equal(matcher.manager.pool.get(machine.wallet)?.lastHeartbeat, 0);
     assert.equal((await JobModel.findById(pending._id))?.providers.length, 0);
@@ -188,7 +189,7 @@ describe('MongoDB scheduler integration', { skip: !uri }, () => {
     const repository = new MongoRepository();
     const manifest = await repository.getAssignedJob(1, String(selected.owner._id));
     assert.deepEqual(JSON.parse(JSON.stringify(manifest)), { id: '1', dockerImage: image,
-      requirements: { minCpuScore: 10, minGpuScore: 0, minMemoryScore: 20 }, window: 3600 });
+      requirements: { minVcpus: 4, minMemoryGb: 20, gpu: 'none', minGpuVramGb: 0 }, window: 3600 });
     assert.equal(await repository.getAssignedJob(1, String(stranger.owner._id)), null);
     assert.equal(await repository.getAssignedJob(1, 'malformed-account'), null);
     assert.equal(await repository.getAssignedJob('-1', String(selected.owner._id)), null);

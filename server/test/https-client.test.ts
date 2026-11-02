@@ -128,13 +128,13 @@ describe('real HTTPS server and provider client', { skip: !mongodbUri && 'set MO
 import os, sys
 sys.path.insert(0, os.environ['CLIENT_DIRECTORY'])
 import requests
-from benchmark.Scores import Scores
+from benchmark.HardwareProfile import CpuInfo, HardwareProfile, MemoryInfo
 from server.ServerManager import ServerManager
 
 client = ServerManager(os.environ['SERVER_URL'], 'dev')
 try:
     assert client.session.verify is True
-    client.post_benchmark(Scores(cpu=234567.5, gpu=None, memory=8192.25))
+    client.post_benchmark(HardwareProfile(cpu=CpuInfo('HTTPS test CPU', 4, 8, 45.5, 300.25), memory=MemoryInfo(15.5, 9.75)))
     manifest = client.getDockerManifest(1)
     assert manifest['jobId'] == 1
     assert manifest['image'].startswith('docker.io/library/alpine@sha256:')
@@ -156,10 +156,11 @@ finally:
       CLIENT_DIRECTORY: path.join(serverDirectory, '..', 'client'), PYTHONDONTWRITEBYTECODE: '1',
       NO_PROXY: 'localhost,127.0.0.1', no_proxy: 'localhost,127.0.0.1' });
     assert.match(result, /PYTHON_HTTPS_CLIENT_OK/);
-    const hardware = await HardwareModel.findOne({ cpuScore: 234567.5 });
+    const hardware = await HardwareModel.findOne({ 'cpu.model': 'HTTPS test CPU' });
     assert.ok(hardware, 'Python benchmark must be persisted by the real MongoDB-backed route');
-    assert.equal(hardware.memoryScore, 8192.25);
-    assert.equal(hardware.gpuScore, null);
+    assert.equal(hardware.cpu.threads, 8);
+    assert.equal(hardware.memory.totalGb, 15.5);
+    assert.deepEqual(hardware.gpus.toObject(), []);
   });
 
   test('the actual Python provider loop becomes available and matches a waiting job over HTTPS', async () => {
@@ -170,7 +171,7 @@ finally:
       onChainJobId: 2, owner: fixture.owner, submittedAt: new Date(),
       dockerImageDigest: fixture.dockerImageDigest, command: ['echo', 'availability'],
       maxPrice: '0.02', minNodesToRunOn: 1, minNodesToAgree: 1, timeWindow: 60,
-      requirements: { minCpuScore: 400000, minMemoryScore: 4096 },
+      requirements: { minVcpus: 8, minMemoryGb: 16 },
     });
     assert.equal(job.status, JobStatus.PENDING);
     assert.equal(job.providers.length, 0);
@@ -179,17 +180,17 @@ finally:
 import os, sys, threading, time
 from unittest.mock import patch
 sys.path.insert(0, os.environ['CLIENT_DIRECTORY'])
-from benchmark.Scores import Scores
+from benchmark.HardwareProfile import CpuInfo, HardwareProfile, MemoryInfo
 from ProviderClient import ProviderClient
 from server.ServerManager import ServerManager
 
-scores = Scores(cpu=500000, gpu=None, memory=8192)
+profile = HardwareProfile(cpu=CpuInfo('Availability test CPU', 8, 16, 45, 600), memory=MemoryInfo(31.2, 10))
 server = ServerManager(os.environ['SERVER_URL'], 'dev2')
 stop = threading.Event()
 
 class Benchmark:
     def do_benchmark(self):
-        return scores
+        return profile
 
 class Blockchain:
     def pollEvents(self):
@@ -210,7 +211,7 @@ class Blockchain:
         return []
 
 try:
-    server.post_benchmark(scores)
+    server.post_benchmark(profile)
     server.request('POST', '/provider/price', json={'price': '0.01'})
     state = server.request('GET', '/provider/hardware').json()
     assert state['online'] is False, 'benchmark and price must not establish liveness'
@@ -227,7 +228,7 @@ finally:
       CLIENT_DIRECTORY: path.join(serverDirectory, '..', 'client'), PYTHONDONTWRITEBYTECODE: '1',
       NO_PROXY: 'localhost,127.0.0.1', no_proxy: 'localhost,127.0.0.1' });
     assert.match(result, /PYTHON_PROVIDER_AVAILABILITY_OK/);
-    const hardware = await HardwareModel.findOne({ cpuScore: 500000 }).orFail();
+    const hardware = await HardwareModel.findOne({ 'cpu.model': 'Availability test CPU' }).orFail();
     const assigned = await JobModel.findById(job._id).orFail();
     assert.deepEqual(assigned.providers.map(String), [String(hardware.userRef)]);
     assert.equal(assigned.runningPrice.toString(), '0.01');

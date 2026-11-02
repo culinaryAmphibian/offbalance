@@ -16,7 +16,6 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://
 export function createApp(deps: Deps, { log = true } = {}) {
 	const app = express();
 	app.use(express.json({ limit: "1mb" })); // room for a Dockerfile in POST /builds
-	app.use(express.urlencoded({ extended: false })); // ServerManager.post_benchmark sends form data
 
 	// the React app (vite dev server) calls us cross-origin with a bearer token
 	app.use((req: Request, res: Response, next: NextFunction) => {

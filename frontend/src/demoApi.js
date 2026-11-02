@@ -8,7 +8,7 @@ const defaults = {
 	k: 3,
 	quorum: 2,
 	window: 3600,
-	requirements: { minCpuScore: 0, minGpuScore: 0, minMemoryScore: 0 },
+	requirements: { minVcpus: 2, minMemoryGb: 4, gpu: "none", minGpuVramGb: 0 },
 	createdAt: stamp,
 	providerCount: 3,
 	executionMode: "demo",
@@ -21,11 +21,27 @@ export function createDemoApi() {
 		lastSeen: stamp,
 		currentStake: "0.050",
 		pricePerHour: "0.002",
-		suggestedPricePerHour: "0.002",
+		suggestedPricePerHour: "0.0004423",
+		suggestedPrice: {
+			formula: {
+				pricePerHour: "0.0004423",
+				items: [
+					{ label: "CPU", detail: "16 vCPUs × 1.36× reference speed × 0.0000133 ETH", pricePerHour: "0.0002894" },
+					{ label: "Memory", detail: "31.2 GB × 0.00000167 ETH", pricePerHour: "0.0000521" },
+					{ label: "GPU 0", detail: "NVIDIA GeForce RTX 3060: 12.1 TFLOPS × 0.00000833 ETH", pricePerHour: "0.0001008" },
+				],
+			},
+			market: { pricePerHour: "0.002", similarMachines: 3 },
+		},
 		machine: {
-			cpuScore: 8420,
-			gpuScore: 12680,
-			memoryScore: 6240,
+			cpu: { model: "AMD Ryzen 7 7700X 8-Core Processor", cores: 8, threads: 16, singleThreadMBps: 61.2, multiThreadMBps: 612.4 },
+			memory: { totalGb: 31.2, bandwidthGBps: 18.5 },
+			gpus: [{ vendor: "nvidia", index: 0, model: "NVIDIA GeForce RTX 3060", vramGb: 12, driver: "550.54.14",
+				runtime: "CUDA 12.4", fp32Tflops: 12.1, memoryBandwidthGBps: 338, error: null }],
+			relative: {
+				cpuSingleThread: 1.36, cpuMultiThread: 3.73, memoryBandwidth: 1.89, gpuFp32: 1.83, gpuMemoryBandwidth: 0.95, gpus: [1.83],
+				reference: "Intel Core i7-9700K (4 cores), 16 GB dual-channel DDR4, NVIDIA GeForce RTX 2070",
+			},
 			updatedAt: stamp,
 		},
 	};

@@ -121,21 +121,38 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 			for (const who of ["p1", "p2", "p3", "p4"] as const) await signIn(who);
 		});
 
-		test("providers report scores and set prices", async () => {
-			for (const [who, cpu, price] of [["p1", 100, 1], ["p2", 200, 2], ["p3", 300, 9]] as const) {
-				const res = await fetch(`${base}/scores`, {
-					method: "POST",
-					headers: { Authorization: `Bearer ${tokens[who]}` },
-					body: new URLSearchParams({ cpu: String(cpu), mem: "50" }),
-				});
-				assert.equal(res.status, 201);
+		test("providers report hardware profiles and set prices", async () => {
+			const profile = (threads: number, totalGb: number) => ({
+				version: 2,
+				cpu: { model: "Test CPU", cores: threads, threads, singleThreadMBps: 45, multiThreadMBps: 40 * threads },
+				memory: { totalGb, bandwidthGBps: 10 },
+				gpus: [],
+			});
+			// p2 is within 25% of p1 on vCPUs and memory; p3 isn't
+			for (const [who, threads, totalGb, price] of [["p1", 4, 16, 1], ["p2", 5, 15.5, 2], ["p3", 16, 64, 9]] as const) {
+				const res = await call("POST", "/scores", { as: who, body: profile(threads, totalGb) });
+				assert.equal(res.status, 201, JSON.stringify(res.body));
 				assert.equal((await call("POST", "/provider/price", { as: who, body: { price } })).status, 200);
 				assert.equal((await call("POST", "/provider/heartbeat", { as: who })).status, 200);
 			}
 			const { body } = await call("GET", "/provider/hardware", { as: "p1" });
 			assert.equal(body.hardware.address, wallets.p1.address.toLowerCase());
-			assert.equal(body.hardware.gpuScore, null);
-			assert.equal(body.suggestedPrice, 5.5); // no machine within 25% of p1's cpu, so the median of the others (2, 9)
+			assert.equal(body.hardware.cpu.threads, 4);
+			assert.deepEqual(body.hardware.gpus, []);
+			assert.equal(body.hardware.relative.cpuSingleThread, 1);
+			assert.deepEqual(body.suggestedPrice.market, { pricePerHour: "2", similarMachines: 1 });
+			assert.deepEqual(body.suggestedPrice.formula.items.map((item: { label: string }) => item.label), ["CPU", "Memory"]);
+			assert.match(body.suggestedPrice.formula.pricePerHour, /^0\.\d+$/);
+		});
+
+		test("the old form-encoded scores are refused with an update hint", async () => {
+			const res = await fetch(`${base}/scores`, {
+				method: "POST",
+				headers: { Authorization: `Bearer ${tokens.p1}` },
+				body: new URLSearchParams({ cpu: "100", mem: "50" }),
+			});
+			assert.equal(res.status, 400);
+			assert.match((await res.json()).error, /Update the client/);
 		});
 
 		test("rejects invalid jobs", async () => {

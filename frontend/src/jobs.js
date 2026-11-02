@@ -109,22 +109,25 @@ export function validateJob(values, usdPerEth = null) {
 	} catch (error) {
 		errors.maxPrice = error.message;
 	}
-	for (const field of [
-		"k",
-		"quorum",
-		"window",
-		"minCpuScore",
-		"minGpuScore",
-		"minMemoryScore",
-	]) {
-		const minimum = field.startsWith("min") ? 0 : 1;
-		if (
-			!/^\d+$/.test(values[field]) ||
-			!Number.isSafeInteger(Number(values[field])) ||
-			Number(values[field]) < minimum
-		)
-			errors[field] = `Enter a whole number of ${minimum} or more.`;
+	const whole = (field, minimum) =>
+		/^\d+$/.test(values[field]) &&
+		Number.isSafeInteger(Number(values[field])) &&
+		Number(values[field]) >= minimum;
+	for (const field of ["k", "quorum", "window", "vcpus"]) {
+		if (!whole(field, 1)) errors[field] = "Enter a whole number of 1 or more.";
 	}
+	if (!errors.vcpus && Number(values.vcpus) > MAX_VCPUS)
+		errors.vcpus = `Enter ${MAX_VCPUS} vCPUs or fewer.`;
+	if (
+		!/^\d+(?:\.\d{1,2})?$/.test(values.memoryGb ?? "") ||
+		Number(values.memoryGb) < MIN_MEMORY_GB ||
+		Number(values.memoryGb) > MAX_MEMORY_GB
+	)
+		errors.memoryGb = `Enter ${MIN_MEMORY_GB}–${MAX_MEMORY_GB} GB, with up to 2 decimal places.`;
+	if (!GPU_OPTIONS.some(([value]) => value === values.gpu))
+		errors.gpu = "Choose a GPU option.";
+	else if (values.gpu !== "none" && (!whole("gpuVram", 0) || Number(values.gpuVram) > MAX_VRAM_GB))
+		errors.gpuVram = `Enter a whole number of GB from 0 to ${MAX_VRAM_GB}.`;
 	for (const field of ["k", "quorum"]) {
 		if (!errors[field] && Number(values[field]) > 255)
 			errors[field] = "Enter a value of 255 or less.";
@@ -150,14 +153,42 @@ export function jobPayload(values, usdPerEth = null) {
 		minNodesToRunOn: Number(values.k),
 		minNodesToAgree: Number(values.quorum),
 		timeWindow: Number(values.window) * 60,
-		requirements: Object.fromEntries(
-			["minCpuScore", "minGpuScore", "minMemoryScore"].map((field) => [
-				field,
-				Number(values[field]),
-			]),
-		),
+		// the provider's container gets exactly this: the server derives its Docker limits from it
+		requirements: {
+			minVcpus: Number(values.vcpus),
+			minMemoryGb: Number(values.memoryGb),
+			gpu: values.gpu,
+			minGpuVramGb: values.gpu === "none" ? 0 : Number(values.gpuVram),
+		},
 	};
 }
+// limits match server/models/Job.ts
+export const MAX_VCPUS = 1024;
+export const MIN_MEMORY_GB = 0.25;
+export const MAX_MEMORY_GB = 4096;
+export const MAX_VRAM_GB = 1024;
+export const GPU_OPTIONS = [
+	["none", "No GPU"],
+	["any", "Any GPU (NVIDIA or AMD)"],
+	["nvidia", "NVIDIA GPU (CUDA)"],
+	["amd", "AMD GPU (ROCm)"],
+];
+
+/** "2 vCPUs · 4 GB memory · NVIDIA GPU with 8 GB+ VRAM" for a job's requirements. */
+export function resourceSummary(requirements) {
+	if (!requirements) return "—";
+	const { minVcpus, minMemoryGb, gpu = "none", minGpuVramGb = 0 } = requirements;
+	const parts = [];
+	if (minVcpus != null) parts.push(`${minVcpus} vCPU${Number(minVcpus) === 1 ? "" : "s"}`);
+	if (minMemoryGb != null) parts.push(`${minMemoryGb} GB memory`);
+	if (gpu === "none") parts.push("no GPU");
+	else {
+		const vendor = gpu === "any" ? "" : `${gpu === "nvidia" ? "NVIDIA" : "AMD"} `;
+		parts.push(`${vendor}GPU${Number(minGpuVramGb) > 0 ? ` with ${minGpuVramGb} GB+ VRAM` : ""}`);
+	}
+	return parts.join(" · ");
+}
+
 export function windowMinutes(seconds) {
 	return Number.isFinite(seconds) && seconds > 0
 		? String(Number((seconds / 60).toFixed(6)))

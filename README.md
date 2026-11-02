@@ -105,7 +105,7 @@ python3 main.py --dev                    # provider 1, keys from dev.env
 python3 main.py --dev --provider 2       # run as provider 2 (start several to simulate many providers)
 ```
 
-The client always needs a server: it gets the contract address from `GET /contract_address` and posts its benchmark to `POST /scores`. Locally that's the real server (`npm start`, port 5000) or the route mock (`npm run dev:mock`). The client reads the ABI from `deployments/localhost.json`.
+The client always needs a server: it gets the contract address from `GET /contract_address` and posts its hardware profile (specs plus benchmarks, see [client/README.md](client/README.md#hardware-profile)) to `POST /scores`. Locally that's the real server (`npm start`, port 5000) or the route mock (`npm run dev:mock`). The client reads the ABI from `deployments/localhost.json`.
 
 `--dev` only changes where credentials come from:
 - the session key is `PROVIDER_N_PRIVATE_KEY` from `dev.env`;
@@ -193,14 +193,14 @@ SERVER_PRIVATE_KEY=<SERVER_PRIVATE_KEY from dev.env> npm start   # port 5000
 
 Seeded API keys: `dev`, `dev2`, `dev3`, `dev4` are providers 1–4 (matching `python3 main.py --dev --provider N`), `dev-buyer` is the buyer.
 
-**Job flow.** `POST /jobs` saves the job and reserves its on-chain id → the buyer's wallet calls `submitJob(id, …)` → on `JOB_SUBMITTED` the matcher picks the cheapest `k` idle providers that meet the requirements and are priced at or under `maxPrice`, saves them, and calls `assignProviders` → phase events (`COMMIT_PHASE_START`, …, `DELIVERED`) update the job's status, and the server drives each phase transition (below) → in the delivery phase providers `POST /provider/results/:jobId` and the server calls `verifyReceipt`. A provider is only matched once it has posted `/scores` (the client does) **and** set a price (`POST /provider/price {"price": 1}`). The matcher also reruns when a provider scores or prices, and when a job finishes.
+**Job flow.** `POST /jobs` saves the job and reserves its on-chain id → the buyer's wallet calls `submitJob(id, …)` → on `JOB_SUBMITTED` the matcher picks the cheapest `k` idle providers that have the job's resources (vCPUs, memory in GB, optionally a GPU with enough VRAM) and are priced at or under `maxPrice`, saves them, and calls `assignProviders` → phase events (`COMMIT_PHASE_START`, …, `DELIVERED`) update the job's status, and the server drives each phase transition (below) → in the delivery phase providers `POST /provider/results/:jobId` and the server calls `verifyReceipt`. A provider is only matched once it has posted `/scores` (the client does) **and** set a price (`POST /provider/price {"price": 1}`). The matcher also reruns when a provider scores or prices, and when a job finishes.
 
 | Routes | |
 |---|---|
 | `GET /auth/nonce?wallet=`, `POST /auth {wallet, signature}`, `POST /auth/logout` | Sign in with a wallet (a new wallet signs up). The token is the web session **and** the client's API key |
 | `GET /contract_address`, `POST /scores`, `GET /jobManifest/:jobId` | Provider client (manifest: assigned providers only) |
 | `POST /jobs`, `GET /jobs[?role=provider]`, `GET /jobs/:jobId`, `POST /jobs/:jobId/cancel`, `GET /jobs/:jobId/result` | Buyers; `:jobId` is the on-chain id |
-| `GET /provider/tutorial`, `GET /provider/hardware` (with a suggested price), `POST /provider/price`, `POST /provider/results/:jobId` | Providers |
+| `GET /provider/tutorial`, `GET /provider/hardware` (profile, scores relative to the reference machine, and a suggested price), `POST /provider/price`, `POST /provider/results/:jobId` | Providers |
 | `GET /account/:id/dashboard`, `POST /account/:id/wallets`, `DELETE /account/:id/wallets/:wallet`, `DELETE /account/:id` | Own account only; `:id` may be `me` |
 | `POST /images/resolve`, `POST /builds`, `GET /builds`, `GET /builds/:buildId` | Job images (below) |
 
@@ -260,8 +260,8 @@ SERVER_URL=https://localhost:5000 NODE_EXTRA_CA_CERTS="$PWD/.local/tls/cert.pem"
 |---|---|
 | all three | `401` without `Authorization: Bearer <key>` |
 | `GET /contract_address` | `200 { "address": "0x…" }` (40 hex chars) |
-| `POST /scores` | Form-encoded `cpu`, `gpu`, `mem` (not JSON; that's what python `requests` sends). `gpu` may be missing, because `requests` drops `None`. 2xx on success, `400` if `cpu` or `mem` is missing |
-| `GET /jobManifest/:jobId` | `200 { "manifest": { jobId, image, command: string[], env: {string: string} \| null, input_url: string \| null, timeout_s, cpu_limit, mem_limit_mb } }` with positive numbers. `400` for a jobId that isn't a non-negative integer |
+| `POST /scores` | JSON hardware profile `{ version: 2, cpu: { model, cores, threads, singleThreadMBps, multiThreadMBps }, memory: { totalGb, bandwidthGBps }, gpus: [{ vendor, index, model, vramGb, driver, runtime, fp32Tflops, memoryBandwidthGBps, error }] }`; `gpus` may be empty, and a GPU whose benchmark failed has null measurements and an `error`. 2xx on success, `400` for an incomplete profile, and `400` with an "update the client" message for the old form-encoded `cpu`/`mem` scores |
+| `GET /jobManifest/:jobId` | `200 { "manifest": { jobId, image, command: string[], env: {string: string} \| null, input_url: string \| null, timeout_s, cpu_limit, mem_limit_mb, gpu } }` with positive numbers. `400` for a jobId that isn't a non-negative integer. `gpu` is `null` or `{ vendor: "any" \| "nvidia" \| "amd", min_vram_gb }` |
 
 The suite starts the server file itself on a free port, so **the server must listen on `process.env.PORT`**. It also sets `DEPLOYMENT_FILE` to a fake deployment, so the dev server doesn't need a running chain. For the real server, `TEST_API_KEY` sets a valid API key (default `dev`) and `TEST_JOB_ID` sets a job that exists (default `1`).
 

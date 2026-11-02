@@ -5,6 +5,7 @@ from requests.exceptions import ConnectionError, ReadTimeout
 from pathlib import Path
 import os
 from job.JobResult import JobResult
+from benchmark.gpu import container_gpu_options
 import hashlib
 
 class RunManager():
@@ -15,6 +16,8 @@ class RunManager():
         self.client = docker.from_env()
         self.jobs_dir = Path.home() / '.offbalance' / 'jobs'
         self.out_dir = None
+        # usable GPUs from the benchmark (ProviderClient sets them); GPU jobs get one of these
+        self.gpus = []
 
     def prepareJob(self, manifest, jobId):
         self.currentJobId = None
@@ -33,6 +36,26 @@ class RunManager():
         if any(option.split(',')[0] == 'name=rootless' for option in options):
             return '0:0'
         return f"{os.getuid()}:{os.getgid()}"
+
+    def resource_options(self, manifest) -> tuple[dict, dict]:
+        """docker-py limits for the job, its CPUs, memory (no swap, so OOM is detected) and GPU,
+        plus any environment the GPU needs."""
+        options, environment = {}, {}
+        if manifest.get('cpu_limit'):
+            options['nano_cpus'] = int(float(manifest['cpu_limit']) * 1e9)
+        if manifest.get('mem_limit_mb'):
+            options['mem_limit'] = options['memswap_limit'] = f"{int(manifest['mem_limit_mb'])}m"
+        if gpu_request := manifest.get('gpu'):
+            vendor = gpu_request.get('vendor') or 'any'
+            min_vram = gpu_request.get('min_vram_gb') or 0
+            gpu = next((g for g in self.gpus if vendor in ('any', g.vendor) and g.vram_gb >= min_vram), None)
+            if gpu is None:
+                raise RuntimeError(f"Job needs a {'' if vendor == 'any' else vendor.upper() + ' '}GPU with "
+                                   f"{min_vram} GB VRAM, and this machine has no usable one.")
+            gpu_options = container_gpu_options(gpu.vendor, gpu.index)
+            environment = gpu_options.pop('environment', {})
+            options.update(gpu_options)
+        return options, environment
 
     @staticmethod
     def _remove_container(container):
@@ -64,11 +87,13 @@ class RunManager():
             env = dict(self.currentManifest.get('env') or {})
             if self.currentManifest.get('input_url'):
                 env['INPUT_URL'] = self.currentManifest['input_url']
+            limits, gpu_env = self.resource_options(self.currentManifest)
+            env.update(gpu_env)
 
             container = self.client.containers.run(
                 image, command=self.currentManifest['command'], environment=env,
                 network_disabled=not self.currentManifest.get('input_url'),
-                volumes=volumes, user=user, detach=True,
+                volumes=volumes, user=user, detach=True, **limits,
             )
             try:
                 result = container.wait(timeout=deadline)

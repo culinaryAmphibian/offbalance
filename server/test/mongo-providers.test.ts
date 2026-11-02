@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import mongoose from 'mongoose';
 import { createApp } from '../app.ts';
 import { AccountModel, AuthTokenModel, HardwareModel, JobModel, JobStatus, hashToken } from '../models/index.ts';
+import { hardwareFields } from './helpers/hardware.ts';
 import { Builder } from '../services/builder.ts';
 import { Matcher } from '../services/matcher.ts';
 
@@ -35,7 +36,7 @@ async function fixture(t: test.TestContext, { assigned = true, submitted = true 
   const owner = await AccountModel.create({ walletIds: [buyerWallet] });
   await AuthTokenModel.create({ account: provider._id, wallet, tokenHash: hashToken(token) });
   await AuthTokenModel.create({ account: owner._id, wallet: buyerWallet, tokenHash: hashToken('buyer-token') });
-  await HardwareModel.create({ userRef: provider._id, address: wallet, cpuScore: 5, memoryScore: 8, price: 1 });
+  await HardwareModel.create({ userRef: provider._id, address: wallet, ...hardwareFields({ threads: 4 }), price: 1 });
   const job = await JobModel.create({ onChainJobId: 37, owner: owner._id, dockerImageDigest: image,
     maxPrice: '5', minNodesToRunOn: 1, minNodesToAgree: 1, timeWindow: 60,
     submittedAt: submitted ? new Date() : null, providers: assigned ? [provider._id] : [] });
@@ -58,8 +59,8 @@ async function fixture(t: test.TestContext, { assigned = true, submitted = true 
 
 test('HTTP provider restores its Mongo assignment, accepts it idempotently and ignores claimed benchmark scores', { skip: !uri }, async t => {
   const f = await fixture(t);
-  assert.equal((await f.call('/provider/heartbeat', { method: 'POST', body: { cpuScore: 999999 } })).status, 200);
-  assert.equal(f.matcher.manager.pool.get(wallet)?.machine?.cpuScore, 5);
+  assert.equal((await f.call('/provider/heartbeat', { method: 'POST', body: { cpu: { threads: 999 } } })).status, 200);
+  assert.equal(f.matcher.manager.pool.get(wallet)?.machine?.vcpus, 4);
   const assigned = await f.call('/provider/assignment');
   assert.equal(assigned.status, 200);
   assert.equal(assigned.body.assignment.id, '37');

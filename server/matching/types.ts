@@ -1,9 +1,15 @@
 export type Awaitable<T> = T | Promise<T>;
 
+export type GpuVendor = 'nvidia' | 'amd';
+/** 'none': no GPU needed; 'any': one GPU of either vendor. */
+export type GpuRequirement = 'none' | 'any' | GpuVendor;
+
+/** Capacity the job's container gets: the agent enforces vCPUs and memory as Docker limits. */
 export interface HardwareRequirements {
-  minCpuScore?: number;
-  minGpuScore?: number;
-  minMemoryScore?: number;
+  minVcpus?: number;     // logical CPUs (threads)
+  minMemoryGb?: number;  // GiB
+  gpu?: GpuRequirement;
+  minGpuVramGb?: number; // GiB, only with a GPU
 }
 
 export interface SchedulingJob {
@@ -18,10 +24,17 @@ export interface SchedulingJob {
   [key: string]: unknown;
 }
 
-export interface MachineScores {
-  cpuScore: number;
-  gpuScore: number | null;
-  memoryScore: number;
+/** A GPU the provider's benchmark container could use; others aren't offered for jobs. */
+export interface MachineGpu {
+  vendor: GpuVendor;
+  vramGb: number;
+}
+
+/** What the matcher checks against HardwareRequirements, from the provider's benchmark. */
+export interface MachineSpecs {
+  vcpus: number;
+  memoryGb: number;
+  gpus: MachineGpu[];
 }
 
 /** Durable metadata may be incomplete until benchmarks and pricing are reported. */
@@ -31,7 +44,7 @@ export interface ProviderRecord {
   accountId?: string;
   registered?: boolean;
   pricePerHour?: string;
-  machine?: Partial<MachineScores> | null;
+  machine?: Partial<MachineSpecs> | null;
   lastHeartbeat?: number;
   busyJobId?: string | null;
   lastAssignedAt?: number;
@@ -48,7 +61,7 @@ export interface AvailableProvider extends LiveProvider {
   registered: true;
   accountId: string;
   pricePerHour: string;
-  machine: MachineScores;
+  machine: MachineSpecs;
 }
 
 export interface ProviderQuote {

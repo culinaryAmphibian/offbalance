@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { jobPayload, validateJob, normalizeJob, jobPhase, timeLabel, windowMinutes, resultUrl } from '../src/jobs.js';
+import { jobPayload, validateJob, normalizeJob, jobPhase, timeLabel, windowMinutes, resultUrl, resourceSummary } from '../src/jobs.js';
 
-const valid = () => ({ name: 'Example job', dockerImage: 'registry.example/workload:latest', maxPrice: '0.01', k: '3', quorum: '2', window: '10', minCpuScore: '0', minGpuScore: '1', minMemoryScore: '100' });
+const valid = () => ({ name: 'Example job', dockerImage: 'registry.example/workload:latest', maxPrice: '0.01', k: '3', quorum: '2', window: '10', vcpus: '2', memoryGb: '4', gpu: 'none', gpuVram: '0' });
 
-test('valid submission accepts zero hardware requirements and exact decimal budgets', () => {
+test('valid submission accepts default resources and exact decimal budgets', () => {
   assert.deepEqual(validateJob(valid()), {});
   assert.deepEqual(validateJob({ ...valid(), maxPrice: '0.000000000000000001' }), {});
   assert.deepEqual(validateJob({ ...valid(), k: '1', quorum: '1' }), {});
@@ -13,7 +13,7 @@ test('valid submission accepts zero hardware requirements and exact decimal budg
 test('job payload trims text and converts only integer fields to numbers', () => {
   assert.deepEqual(jobPayload({ ...valid(), name: '  Example job  ', dockerImage: '  registry.example/workload:latest  ' }), {
     name: 'Example job', image: 'registry.example/workload:latest', maxPrice: '0.01', minNodesToRunOn: 3, minNodesToAgree: 2, timeWindow: 600,
-    requirements: { minCpuScore: 0, minGpuScore: 1, minMemoryScore: 100 },
+    requirements: { minVcpus: 2, minMemoryGb: 4, gpu: 'none', minGpuVramGb: 0 },
   });
 });
 
@@ -38,13 +38,32 @@ test('provider count, quorum and window require positive safe integers', () => {
   }
 });
 
-test('hardware scores require nonnegative safe integers', () => {
-  for (const field of ['minCpuScore', 'minGpuScore', 'minMemoryScore']) {
-    assert.equal(validateJob({ ...valid(), [field]: '0' })[field], undefined);
-    for (const value of ['', '-1', '0.5', '1e2', '9007199254740992']) {
-      assert.ok(validateJob({ ...valid(), [field]: value })[field], `${field}=${JSON.stringify(value)}`);
-    }
+test('vCPUs are whole numbers from 1 to 1024; memory is 0.25–4096 GB with up to 2 decimals', () => {
+  for (const vcpus of ['1', '1024']) assert.equal(validateJob({ ...valid(), vcpus }).vcpus, undefined, vcpus);
+  for (const vcpus of ['', '0', '-1', '1.5', '1e2', '1025', '9007199254740992']) {
+    assert.ok(validateJob({ ...valid(), vcpus }).vcpus, `vcpus=${JSON.stringify(vcpus)}`);
   }
+  for (const memoryGb of ['0.25', '15.5', '4096']) assert.equal(validateJob({ ...valid(), memoryGb }).memoryGb, undefined, memoryGb);
+  for (const memoryGb of ['', '0', '0.2', '1.555', '-1', '1e2', '4097', ' 4']) {
+    assert.ok(validateJob({ ...valid(), memoryGb }).memoryGb, `memoryGb=${JSON.stringify(memoryGb)}`);
+  }
+});
+
+test('GPU requirements: a known option, and VRAM checked only when a GPU is wanted', () => {
+  assert.ok(validateJob({ ...valid(), gpu: 'intel' }).gpu);
+  assert.equal(validateJob({ ...valid(), gpu: 'none', gpuVram: 'junk' }).gpuVram, undefined);
+  for (const gpuVram of ['', '-1', '1.5', '1025']) assert.ok(validateJob({ ...valid(), gpu: 'any', gpuVram }).gpuVram, gpuVram);
+  assert.deepEqual(validateJob({ ...valid(), gpu: 'nvidia', gpuVram: '8' }), {});
+  assert.deepEqual(jobPayload({ ...valid(), gpu: 'amd', gpuVram: '16' }).requirements, { minVcpus: 2, minMemoryGb: 4, gpu: 'amd', minGpuVramGb: 16 });
+  // VRAM left over from switching the GPU off isn't sent
+  assert.equal(jobPayload({ ...valid(), gpu: 'none', gpuVram: '16' }).requirements.minGpuVramGb, 0);
+});
+
+test('resource summaries read as plain capacity', () => {
+  assert.equal(resourceSummary({ minVcpus: 1, minMemoryGb: 0.5, gpu: 'none' }), '1 vCPU · 0.5 GB memory · no GPU');
+  assert.equal(resourceSummary({ minVcpus: 4, minMemoryGb: 16, gpu: 'nvidia', minGpuVramGb: 8 }), '4 vCPUs · 16 GB memory · NVIDIA GPU with 8 GB+ VRAM');
+  assert.equal(resourceSummary({ minVcpus: 2, minMemoryGb: 4, gpu: 'any', minGpuVramGb: 0 }), '2 vCPUs · 4 GB memory · GPU');
+  assert.equal(resourceSummary(null), '—');
 });
 
 test('quorum cannot exceed provider count, and may equal it', () => {

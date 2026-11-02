@@ -1,5 +1,5 @@
 import requests
-from benchmark.Scores import Scores
+from benchmark.HardwareProfile import HardwareProfile
 
 _SERVER_URL = "https://localhost:5173"
 
@@ -30,18 +30,12 @@ class ServerManager():
         return response
 
     # throws if post failed
-    def post_benchmark(self, scores: Scores) -> None:
-        # post scores
-
-        data = {
-            "cpu": scores.cpu,
-            "gpu": scores.gpu,
-            "mem": scores.memory
-        }
+    def post_benchmark(self, profile: HardwareProfile) -> None:
         try:
-            self.request("POST", "/scores", data=data)        
+            self.request("POST", "/scores", json=profile.to_json())
         except requests.HTTPError as e:
-            raise requests.HTTPError(f"Failed to post benchmark: {e}")
+            detail = e.response.text[:500] if e.response is not None else ""
+            raise requests.HTTPError(f"Failed to post benchmark: {e} {detail}".strip(), response=e.response)
 
     # cleanup :D
     def close(self) -> None:
