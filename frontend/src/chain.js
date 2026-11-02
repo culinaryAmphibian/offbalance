@@ -134,15 +134,43 @@ export async function collectFunds(config, provider = globalThis.window?.ethereu
   await provider.request({ method: 'eth_call', params: [{ from: wallet, to: address, data }, 'latest'] });
   signal?.throwIfAborted();
   const hash = await provider.request({ method: 'eth_sendTransaction', params: [{ from: wallet, to: address, data }] });
+  await waitForReceipt(provider, hash, 'withdrawal', { signal, pollMs, maxPolls });
+  return { hash, wei };
+}
+
+const cancelAbi = [{ type: 'function', name: 'cancelJob', stateMutability: 'nonpayable',
+  inputs: [{ name: 'jobId', type: 'uint256' }], outputs: [{ type: 'bool' }] }];
+
+/**
+ * The buyer cancels an on-chain job nobody has been assigned to yet: cancelJob(jobId).
+ * The contract credits the escrowed price back to the buyer (collect it with collectFunds).
+ * Resolves once the transaction is mined.
+ */
+export async function cancelStoredJob(job, config, provider = globalThis.window?.ethereum, { signal, pollMs = 1000, maxPolls = 120 } = {}) {
+  signal?.throwIfAborted();
+  const { address, chainId } = chainTarget(config);
+  if (!job?.canCancel || !/^\d+$/.test(String(job.id))) throw new Error('This job can no longer be canceled.');
+  const wallet = await connectedWallet(provider, chainId, signal);
+  if (job.submitWallet && wallet.toLowerCase() !== job.submitWallet.toLowerCase()) throw new Error('Connect the wallet that submitted this job.');
+  const data = encodeFunctionData({ abi: cancelAbi, functionName: 'cancelJob', args: [BigInt(job.id)] });
+  // dry run first, so a revert (e.g. providers were just assigned) is reported before the wallet prompts
+  await provider.request({ method: 'eth_call', params: [{ from: wallet, to: address, data }, 'latest'] });
+  signal?.throwIfAborted();
+  const hash = await provider.request({ method: 'eth_sendTransaction', params: [{ from: wallet, to: address, data }] });
+  await waitForReceipt(provider, hash, 'cancel', { signal, pollMs, maxPolls });
+  return { hash };
+}
+
+async function waitForReceipt(provider, hash, what, { signal, pollMs, maxPolls }) {
   if (!/^0x[\da-f]{64}$/i.test(hash ?? '')) throw new Error('The wallet returned an invalid transaction hash. Check your wallet before retrying.');
   for (let i = 0; i < maxPolls; i++) {
     const receipt = await provider.request({ method: 'eth_getTransactionReceipt', params: [hash] });
     if (receipt) {
-      if (BigInt(receipt.status) !== 1n) throw new Error('The withdrawal transaction failed on chain.');
-      return { hash, wei };
+      if (BigInt(receipt.status) !== 1n) throw new Error(`The ${what} transaction failed on chain.`);
+      return receipt;
     }
     await new Promise(resolve => setTimeout(resolve, pollMs));
     signal?.throwIfAborted();
   }
-  throw new Error('The withdrawal was sent but is not confirmed yet. Check your wallet.');
+  throw new Error(`The ${what} was sent but is not confirmed yet. Check your wallet.`);
 }

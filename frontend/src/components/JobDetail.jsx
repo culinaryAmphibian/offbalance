@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { dateLabel, jobPhase, resourceSummary, statusLabel, timeLabel, windowMinutes } from '../jobs';
 import { formatEth } from '../eth';
 import { useResource } from '../useResource';
-import { submitStoredJob } from '../chain';
+import { cancelStoredJob, collectFunds, submitStoredJob } from '../chain';
+import { walletError } from '../wallet';
 
 export function Status({ value }) {
   return <span className={`status ${jobPhase(value)[0]}`}>{statusLabel(value)}</span>;
@@ -27,6 +28,47 @@ export default function JobDetail({ api, id, notice }) {
   useEffect(() => { active.current = true; return () => { active.current = false; resultController.current?.abort(); chainController.current?.abort(); }; }, []);
   const job = data?.job;
   const needsChain = job?.executionMode === 'chain' && !job.submittedAt && job.status === 'PENDING';
+  const [cancelPending, setCancelPending] = useState(false);
+  const [cancelError, setCancelError] = useState('');
+  const [refundPending, setRefundPending] = useState(false);
+  const [refundNotice, setRefundNotice] = useState('');
+  const onChain = job?.executionMode === 'chain' && !!job.submittedAt;
+  // hidden while this page's own submitJob is in flight: the server hasn't seen the escrow yet
+  const showCancel = !!job?.canCancel && !transaction && !chainPending;
+  // a canceled or unmatched on-chain job: the contract credited the escrow back to the buyer
+  const showRefund = onChain && !job.canCancel && job.canViewResults !== false && ['CANCELED', 'NO_QUORUM'].includes(job.status);
+
+  async function cancel() {
+    if (cancelPending || !window.confirm(onChain
+      ? 'Cancel this job? Your wallet will ask you to confirm the cancellation; the escrowed price is returned to you.'
+      : 'Cancel this job? It has not been sent to the blockchain, so nothing is charged.')) return;
+    setCancelPending(true);
+    setCancelError('');
+    try {
+      if (onChain) await cancelStoredJob(job, await api.getConfig(), window.ethereum);
+      else await api.cancelJob(id);
+      if (active.current) refresh();
+    } catch (problem) {
+      if (active.current) setCancelError(onChain ? walletError(problem) : problem.message || 'Could not cancel the job.');
+    } finally {
+      if (active.current) setCancelPending(false);
+    }
+  }
+
+  async function collectRefund() {
+    if (refundPending) return;
+    setRefundPending(true);
+    setCancelError('');
+    setRefundNotice('');
+    try {
+      const { wei } = await collectFunds(await api.getConfig(), window.ethereum);
+      if (active.current) setRefundNotice(`Collected ${formatEth(wei, 3, { wei: true })} ETH to your wallet.`);
+    } catch (problem) {
+      if (active.current) setCancelError(walletError(problem));
+    } finally {
+      if (active.current) setRefundPending(false);
+    }
+  }
 
   async function download() {
     resultController.current?.abort();
@@ -84,6 +126,20 @@ export default function JobDetail({ api, id, notice }) {
       {job.canSubmit !== false && <button className="button primary" onClick={submitChain} disabled={chainPending || !!transaction}>{chainPending ? 'Check your wallet…' : transaction ? 'Transaction sent' : 'Submit to blockchain'}</button>}
       {transaction && <p className="notice" role="status">Transaction sent: <span className="mono">{transaction}</span>. Waiting for the coordinator to observe the submission. Keep this page open while it is pending.</p>}
       {chainError && <p className="notice error" role="alert">{chainError}</p>}
+    </section>}
+    {(showCancel || showRefund || cancelError) && <section className="panel" aria-label="Cancel job">
+      {showCancel && <>
+        <p>{job.status === 'CANCELED'
+          ? 'This job was canceled, but its blockchain submission went through, so the price is still in escrow. Cancel it on chain to get it back.'
+          : 'No providers have been assigned yet, so you can still cancel this job.'}</p>
+        <button className="button" onClick={cancel} disabled={cancelPending}>{cancelPending ? (onChain ? 'Check your wallet…' : 'Canceling…') : onChain ? 'Cancel job and refund escrow' : 'Cancel job'}</button>
+      </>}
+      {showRefund && <>
+        <p>The escrowed price was returned to your OffBalance balance. Collect it to your wallet.</p>
+        <button className="button" onClick={collectRefund} disabled={refundPending}>{refundPending ? 'Check your wallet…' : 'Collect refund'}</button>
+      </>}
+      {refundNotice && <p className="notice" role="status">{refundNotice}</p>}
+      {cancelError && <p className="notice error" role="alert">{cancelError}</p>}
     </section>}
     {error && <ResourceError message={error} retry={refresh} />}
     {loading && !job && <p className="muted" role="status">Loading job…</p>}

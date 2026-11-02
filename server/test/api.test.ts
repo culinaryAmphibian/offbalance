@@ -225,7 +225,7 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 			assert.equal(p1.body.provider.hardware.price, 1);
 
 			const buyer = await call("GET", `/account/${accountIds.buyer}/dashboard`, { as: "buyer" });
-			assert.equal(buyer.body.buyer.totalSpent, "2");
+			assert.equal(buyer.body.buyer.totalSpent, "5"); // the escrowed maxPrice, once
 			assert.equal(buyer.body.buyer.completedJobs, 1);
 			assert.equal(buyer.body.buyer.jobs.length, 2);
 			assert.equal(buyer.body.marketplace.providers, 3);
@@ -243,9 +243,13 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 			assert.equal((await call("POST", `/jobs/${waitingJobId}/cancel`, { as: "buyer" })).status, 409);
 			const res = await call("POST", "/jobs", { as: "buyer", body: job({ maxPrice: "0.1" }) });
 			const id = res.body.job.id;
+			assert.equal(res.body.job.canCancel, true);
+			assert.equal((await call("GET", `/jobs/${waitingJobId}`, { as: "buyer" })).body.job.canCancel, false);
 			assert.equal((await call("POST", `/jobs/${id}/cancel`, { as: "p1" })).status, 403);
 			const canceled = await call("POST", `/jobs/${id}/cancel`, { as: "buyer" });
 			assert.equal(canceled.body.job.status, "CANCELED");
+			assert.equal(canceled.body.job.canCancel, false);
+			assert.equal((await call("POST", `/jobs/${id}/cancel`, { as: "buyer" })).status, 409);
 		});
 	});
 

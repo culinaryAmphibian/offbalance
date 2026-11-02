@@ -49,7 +49,7 @@ test("serialized jobs carry delivery, payment and the amount spent", () => {
 		payouts: [{ provider, amount: Types.Decimal128.fromString("0.01") }] }));
 	assert.equal(paid.delivery.status, "DELIVERED");
 	assert.equal(paid.payment.status, "PAID");
-	assert.equal(paid.spent, "0.01");
+	assert.equal(paid.spent, "1"); // the escrow, not the sum of payouts
 	assert.equal(serializeJob(job({ ...base, status: JobStatus.NO_QUORUM, submittedAt: at })).spent, "0");
 	assert.equal(serializeJob(job({ ...base, status: JobStatus.REVEAL_PHASE, submittedAt: at })).spent, null);
 });

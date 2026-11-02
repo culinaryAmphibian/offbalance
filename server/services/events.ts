@@ -67,8 +67,19 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 					{ $push: { payouts: { provider: account, amount: earned } } },
 				);
 			}
-			await AccountModel.updateOne({ _id: job.owner, processedChainEvents: { $ne: `${effectId}:buyer` } }, { $inc: { totalSpent: job.runningPrice }, $addToSet: { processedChainEvents: `${effectId}:buyer` } });
+			// the buyer is charged once per job, on DELIVERED, not once per provider payout
 			return;
+		}
+
+		// The buyer escrowed job.maxPrice in submitJob; settlement spends exactly that escrow.
+		// Keyed by job (not by log) so a replayed or duplicate DELIVERED never charges twice.
+		case "DELIVERED": {
+			const charge = `job:${job._id}:buyer-spent`;
+			await AccountModel.updateOne(
+				{ _id: job.owner, processedChainEvents: { $ne: charge } },
+				{ $inc: { totalSpent: job.maxPrice }, $addToSet: { processedChainEvents: charge } },
+			);
+			break; // then the status update below
 		}
 
 		case "SLASHED": {

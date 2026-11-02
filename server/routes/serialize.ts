@@ -75,8 +75,8 @@ export function serializeJob(job: WithId<Job>) {
 		createdAt: job.createdAt,
 		delivery: deliveryState(job),
 		payment,
-		// what the buyer ended up paying: the payouts once settled, nothing if refunded
-		spent: payment.status === "PAID" ? payment.paidToProviders : payment.status === "REFUNDED" ? "0" : null,
+		// what the buyer ended up paying: the escrowed price once settled, nothing if refunded
+		spent: payment.status === "PAID" ? dec(job.maxPrice) : payment.status === "REFUNDED" ? "0" : null,
 		result: result ? { available: true, filename: result.filename, hash: result.hash,
 			size: result.size, deliveryTime: result.deliveryTime, retainedUntil: result.retainedUntil,
 			receiptVerified: result.receiptVerified, receiptMode: result.receiptMode } : { available: false },

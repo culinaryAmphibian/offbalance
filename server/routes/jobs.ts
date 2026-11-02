@@ -29,7 +29,13 @@ export function jobRoutes({ chain, matcher, results }: Deps): Router {
 		canViewResults: String(job.owner) === String(me),
 		...(String(job.owner) === String(me) ? { submitWallet: wallet } : {}),
 		canSubmit: String(job.owner) === String(me) && Boolean(chain) && !job.submittedAt && job.status === JobStatus.PENDING,
+		canCancel: String(job.owner) === String(me) && cancelable(job),
 	});
+	// Pending with nobody assigned; or canceled here while the buyer's submitJob was still in
+	// flight, so the escrow landed on chain anyway and only the buyer's cancelJob() returns it.
+	const cancelable = (job: Parameters<typeof serializeJob>[0]) =>
+		(job.status === JobStatus.PENDING && job.providers.length === 0) ||
+		(Boolean(chain) && job.status === JobStatus.CANCELED && Boolean(job.submittedAt) && !job.settledAt);
 	router.use("/jobs", requireAuth);
 
 	// Creates the job and reserves its on-chain id. The buyer's wallet then calls
@@ -132,9 +138,19 @@ export function jobRoutes({ chain, matcher, results }: Deps): Router {
 			res.status(409).json({ error: `job is on-chain; call cancelJob(${job.onChainJobId}) from your wallet` });
 			return;
 		}
-		job.status = JobStatus.CANCELED;
-		await job.save();
-		res.json({ job: browserJob(job, res.locals.account._id, res.locals.wallet) });
+		// atomic, so the matcher can't claim the job between the check above and the cancel
+		const canceled = await JobModel.findOneAndUpdate(
+			{ _id: job._id, status: JobStatus.PENDING, providers: { $size: 0 }, ...(chain ? { submittedAt: null } : {}) },
+			{ $set: { status: JobStatus.CANCELED, settledAt: chain ? null : new Date() } },
+			{ returnDocument: "after" },
+		);
+		if (!canceled) {
+			res.status(409).json({ error: "the job changed while canceling; refresh and try again" });
+			return;
+		}
+		await AccountModel.updateOne({ _id: canceled.owner }, { $addToSet: { completedJobs: canceled._id } });
+		matcher.release(canceled.onChainJobId);
+		res.json({ job: browserJob(canceled, res.locals.account._id, res.locals.wallet) });
 	});
 
 	router.get("/jobs/:jobId/result", async (req, res) => {

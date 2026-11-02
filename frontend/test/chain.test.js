@@ -253,3 +253,49 @@ test('without lockedStake the stake is summed from getProviderCommitment over th
   const result = await readProviderBalances(config(), provider, { jobIds: async () => ['4', '7', '9', 'bad'] });
   assert.equal(result.stake, parseEther('0.002'));
 });
+
+test('cancelStoredJob dry-runs then sends cancelJob(id) and waits for the receipt', async () => {
+  const { cancelStoredJob } = await import('../src/chain.js');
+  const calls = [];
+  const provider = { request: async request => {
+    calls.push(request);
+    if (request.method === 'eth_accounts') return [wallet];
+    if (request.method === 'eth_chainId') return '0x7a69';
+    if (request.method === 'eth_call') return '0x' + '0'.repeat(63) + '1';
+    if (request.method === 'eth_sendTransaction') return hash;
+    if (request.method === 'eth_getTransactionReceipt') return { status: '0x1' };
+    throw new Error(`Unexpected wallet request: ${request.method}`);
+  } };
+  const pending = { ...job(), canCancel: true, submittedAt: '2026-11-02T00:00:00Z' };
+  assert.deepEqual(await cancelStoredJob(pending, config(), provider, { pollMs: 0 }), { hash });
+  const cancelAbi = [{ type: 'function', name: 'cancelJob', inputs: [{ name: 'jobId', type: 'uint256' }], outputs: [{ type: 'bool' }] }];
+  const [dryRun] = calls.filter(c => c.method === 'eth_call');
+  const [tx] = sent({ calls });
+  assert.ok(calls.indexOf(dryRun) < calls.indexOf(tx), 'dry run happens before the wallet prompt');
+  for (const { params: [call] } of [dryRun, tx]) {
+    assert.equal(call.to, contract);
+    assert.equal(call.value, undefined, 'canceling sends no ETH');
+    assert.deepEqual(decodeFunctionData({ abi: cancelAbi, data: call.data }), { functionName: 'cancelJob', args: [42n] });
+  }
+});
+
+test('cancelStoredJob refuses jobs the server marks uncancelable, a reverted dry run, and the wrong wallet', async () => {
+  const { cancelStoredJob } = await import('../src/chain.js');
+  const provider = (overrides = {}) => ({ calls: [], async request(request) {
+    this.calls.push(request);
+    if (overrides[request.method]) return overrides[request.method]();
+    if (request.method === 'eth_accounts') return [wallet];
+    if (request.method === 'eth_chainId') return '0x7a69';
+    if (request.method === 'eth_sendTransaction') return hash;
+    throw new Error(`Unexpected wallet request: ${request.method}`);
+  } });
+  const untouched = provider();
+  await assert.rejects(cancelStoredJob({ ...job(), canCancel: false }, config(), untouched), /can no longer be canceled/);
+  assert.equal(untouched.calls.length, 0);
+  const reverting = provider({ eth_call: () => { throw new Error('execution reverted: Job no longer pending'); } });
+  await assert.rejects(cancelStoredJob({ ...job(), canCancel: true }, config(), reverting), /Job no longer pending/);
+  assert.equal(sent(reverting).length, 0);
+  const other = provider({ eth_accounts: () => ['0x3333333333333333333333333333333333333333'] });
+  await assert.rejects(cancelStoredJob({ ...job(), canCancel: true }, config(), other), /wallet that submitted/);
+  assert.equal(sent(other).length, 0);
+});

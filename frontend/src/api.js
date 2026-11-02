@@ -64,6 +64,10 @@ export function createApi({
 			});
 			return { ...data, job: normalizeJob(data.job) };
 		},
+		cancelJob: async (id) => {
+			const data = await request(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+			return { ...data, job: normalizeJob(data.job) };
+		},
 		getResult: (id, signal) =>
 			request(`/jobs/${encodeURIComponent(id)}/result`, {
 				signal, binary: true,
