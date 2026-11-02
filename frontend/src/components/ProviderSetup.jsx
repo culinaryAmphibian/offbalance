@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { timeLabel } from '../jobs';
-import { formatEth } from '../eth';
+import { describeReputation, formatEth } from '../eth';
 import { useProviderBalances } from '../useProviderBalances';
 import { useResource } from '../useResource';
 import { ResourceError } from './JobDetail';
@@ -15,6 +15,19 @@ const amount = (value, digits) => Number.isFinite(Number(value)) && value !== nu
 // a measurement as a multiple of the server's reference machine
 function Relative({ value }) {
   return Number.isFinite(value) ? <span className="relative">({amount(value, 2)}× reference)</span> : null;
+}
+
+// From the contract: agreeing with the consensus earns trust, failures cost it, and trust sets the
+// stake the provider posts with each commitment. The full discount only applies to jobs priced at
+// or below the value the provider has already delivered.
+function Reputation({ value }) {
+  const described = describeReputation(value);
+  if (!described) return '—';
+  return <>
+    {described.trust} trust<br />
+    Stakes {described.multiplier} the base stake
+    {value.multiplierBps < 10_000n && value.earned > 0n && <><br /><span className="muted">on jobs up to {formatEth(value.earned, 3, { wei: true })} ETH; less discount above that</span></>}
+  </>;
 }
 
 export default function ProviderSetup({ api, clientKey }) {
@@ -93,6 +106,7 @@ export default function ProviderSetup({ api, clientKey }) {
         <div><dt>Current stake</dt><dd>{chain.available
           ? (chain.balances?.stake != null ? `${formatEth(chain.balances.stake, 3, { wei: true })} ETH` : '—')
           : provider.currentStake == null ? '—' : `${formatEth(provider.currentStake)} ETH`}</dd></div>
+        {chain.available && <div><dt>Reputation</dt><dd><Reputation value={chain.balances?.reputation} /></dd></div>}
         {machine?.cpu && <>
           <div><dt>CPU</dt><dd>
             {machine.cpu.model}<br />

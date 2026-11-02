@@ -9,7 +9,7 @@ import JobForm from "./components/JobForm";
 import JobDetail, { ResourceError, Status } from "./components/JobDetail";
 import ProviderSetup from "./components/ProviderSetup";
 import CollectFunds from "./components/CollectFunds";
-import { formatEth } from "./eth";
+import { describeReputation, formatEth } from "./eth";
 import { useProviderBalances } from "./useProviderBalances";
 import "./stylesheets/app.css";
 
@@ -164,6 +164,8 @@ function Overview({ view, setView }) {
 			: formatEth(summary?.currentStake),
 		"ETH",
 	]);
+	// the contract's trust score, which scales this provider's stakes (see Provider setup)
+	if (!isBuyer && chain.available) stats.push(["Reputation", describeReputation(chain.balances?.reputation)?.trust]);
 	return (
 		<>
 			<div className="page-heading">

@@ -212,6 +212,7 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 		test("payout frees the providers and the waiting job gets matched", async () => {
 			await event("PAID", { jobId: BigInt(jobId), provider: wallets.p1.address, amount: 2_000_000_000_000_000_000n });
 			await event("SLASHED", { jobId: BigInt(jobId), provider: wallets.p2.address, amount: 100_000_000_000_000n });
+			await event("REPUTATION_UPDATED", { jobId: BigInt(jobId), provider: wallets.p1.address, earned: 2_000_000_000_000_000_000n, strikes: 0n, trustBps: 9_952n });
 			await event("DELIVERED", { jobId: BigInt(jobId) });
 
 			const waiting = await call("GET", `/jobs/${waitingJobId}`, { as: "buyer" });
@@ -219,7 +220,7 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 
 			const p1 = await call("GET", "/account/me/dashboard", { as: "p1" });
 			assert.equal(p1.body.provider.totalEarned, "2");
-			assert.equal(p1.body.account.reputation, 1);
+			assert.equal(p1.body.account.reputation, 0.9952); // the contract's trust score
 			assert.equal(p1.body.provider.completedJobs, 1);
 			assert.equal(p1.body.provider.activeJobs, 1);
 			assert.equal(p1.body.provider.hardware.price, 1);

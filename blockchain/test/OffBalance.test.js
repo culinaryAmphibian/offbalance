@@ -1,10 +1,25 @@
 'use strict';
-// make sure hardhat, hardhat-ether, and hardhat toolbox viem are installed
-// cd blockchain && npx hardhat compile
-// run with node --test <filename>
+// Runs with the rest: cd blockchain && npx hardhat test
+// Written against the Hardhat 2 `ethers` helpers; the few it uses are rebuilt below from
+// ethers v6 and Hardhat 3's network connection.
 import {test, before, beforeEach} from 'node:test';
 import assert from 'node:assert/strict';
-import ethers from 'hardhat';
+import { artifacts, network } from 'hardhat';
+import * as ethersLib from 'ethers';
+
+const connection = await network.create();
+const ethers = {
+  ...ethersLib,
+  // no request cache: a retried call right after a time jump must reach the node again
+  provider: new ethersLib.BrowserProvider(connection.provider, undefined, { cacheTimeout: -1 }),
+  getSigners() {
+    return this.provider.listAccounts();
+  },
+  async getContractFactory(name) {
+    const { abi, bytecode } = await artifacts.readArtifact(name);
+    return new ethersLib.ContractFactory(abi, bytecode, await this.provider.getSigner(0));
+  },
+};
 
 const Status = Object.freeze({
   JOB_SUBMITTED: 0,
@@ -83,7 +98,6 @@ async function status(jobId) {
 
 async function submitJob(opts = {}) {
   const price = opts.price ?? ETHER('1');
-  const stake = ETHER('0.001'); // OffBalance.STAKE, the same for every job
   const k = opts.k ?? 2;
   const quorum = opts.quorum ?? 3;
   const executionTime = opts.executionTime ?? 30;
@@ -114,7 +128,8 @@ async function submitJob(opts = {}) {
   return {
     id: parsed.args.jobId,
     price,
-    stake,
+    // what a provider with no history stakes: 10% of its share of the price (Reputation.ts covers the rest)
+    stake: price / 10n / BigInt(quorum),
     k,
     quorum,
     executionTime,
@@ -242,7 +257,7 @@ test(
     assert.equal(second.id, first.id + 1n);
 
     assert.deepEqual(
-      await contract.getAssignedProviders(first.id),
+      [...await contract.getAssignedProviders(first.id)],
       []
     );
   }
@@ -367,7 +382,7 @@ test(
     assert.equal(await status(job.id), Status.COMMIT);
 
     assert.deepEqual(
-      await contract.getAssignedProviders(job.id),
+      [...await contract.getAssignedProviders(job.id)],
       [p1.address, p2.address, p3.address]
     );
 
@@ -662,34 +677,6 @@ test(
       false
     );
 
-    await rejects(
-      contract.connect(outsider).verifyReceipt(
-        job.id,
-        p1.address
-      ),
-      'Only server'
-    );
-
-    await rejects(
-      contract.verifyReceipt(job.id, p3.address),
-      'Provider is not a winner'
-    );
-
-    await contract.verifyReceipt(job.id, p1.address);
-    await contract.verifyReceipt(job.id, p2.address);
-
-    assert.equal(
-      (await contract.getProviderCommitment(
-        job.id, p1.address
-      )).delivered,
-      true
-    );
-
-    await rejects(
-      contract.verifyReceipt(job.id, p1.address),
-      'Already delivered'
-    );
-
     const payoutEvents = await eventNames(
       closeDelivery(job)
     );
@@ -780,7 +767,7 @@ test(
 );
 
 test(
-  'no quorum: buyer refunded, no provider rewarded, all submitted stakes slashed',
+  'no quorum: buyer refunded, no provider rewarded, submitted stakes returned',
   async () => {
     const job = await submitJob({ k: 2, quorum: 3 });
 
@@ -792,7 +779,7 @@ test(
     const s1 = await commit(job, p1, a, salt('nq1'));
     const s2 = await commit(job, p2, b, salt('nq2'));
 
-    // p3 does not commit and has no stake to forfeit.
+    // p3 does not commit and has no stake to return.
     await beginReveal(job);
 
     await contract.connect(p1).submitReveal(job.id, a, s1);
@@ -808,8 +795,9 @@ test(
       job.price
     );
 
-    assert.equal(await contract.credits(p1.address), 0n);
-    assert.equal(await contract.credits(p2.address), 0n);
+    assert.equal(await contract.credits(p1.address), job.stake);
+    assert.equal(await contract.credits(p2.address), job.stake);
+    assert.equal(await contract.credits(p3.address), 0n);
 
     assert.equal(
       (await contract.getProviderCommitment(
@@ -833,7 +821,7 @@ test(
 );
 
 test(
-  'zero reveals also ends in NO_QUORUM and refunds the buyer',
+  'zero reveals also ends in NO_QUORUM and refunds the buyer and the stakes',
   async () => {
     const job = await submitJob({ k: 1, quorum: 2 });
 
@@ -857,8 +845,8 @@ test(
       job.price
     );
 
-    assert.equal(await contract.credits(p1.address), 0n);
-    assert.equal(await contract.credits(p2.address), 0n);
+    assert.equal(await contract.credits(p1.address), job.stake);
+    assert.equal(await contract.credits(p2.address), job.stake);
   }
 );
 
@@ -886,48 +874,6 @@ test(
     await rejects(
       contract.endRevealPhase(job.id),
       'Not in reveal phase'
-    );
-  }
-);
-
-test(
-  'verifyReceipt rejects wrong phase and expired delivery window',
-  async () => {
-    const job = await submitJob({ k: 1, quorum: 2 });
-
-    await assign(job, [p1, p2]);
-
-    await rejects(
-      contract.verifyReceipt(job.id, p1.address),
-      'Not in delivery phase'
-    );
-
-    const out = bytes('same answer');
-
-    const s1 = await commit(
-      job, p1, out, salt('vr1')
-    );
-
-    const s2 = await commit(
-      job, p2, out, salt('vr2')
-    );
-
-    await beginReveal(job);
-
-    await contract.connect(p1).submitReveal(
-      job.id, out, s1
-    );
-
-    await contract.connect(p2).submitReveal(
-      job.id, out, s2
-    );
-
-    await closeReveal(job);
-    await advance(DELIVERY_WINDOW + 1);
-
-    await rejects(
-      contract.verifyReceipt(job.id, p1.address),
-      'Delivery window ended'
     );
   }
 );
@@ -1033,7 +979,7 @@ test(
     );
 
     assert.deepEqual(
-      await contract.getAssignedProviders(job.id),
+      [...await contract.getAssignedProviders(job.id)],
       []
     );
 

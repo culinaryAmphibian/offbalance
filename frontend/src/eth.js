@@ -25,3 +25,13 @@ function weiToEth(value) {
   const fraction = (value % 10n ** 18n).toString().padStart(18, '0').replace(/0+$/, '');
   return fraction ? `${whole}.${fraction}` : String(whole);
 }
+
+// The contract's reputationOf in words: trust as a percentage, and the stake multiplier
+// (times the base stake, 10% of the provider's share of a job's price).
+export function describeReputation(reputation) {
+  if (!reputation || typeof reputation.trustBps !== 'bigint' || typeof reputation.multiplierBps !== 'bigint') return null;
+  return {
+    trust: `${(Number(reputation.trustBps) / 100).toLocaleString('en-US', { maximumFractionDigits: 1 })}%`,
+    multiplier: `${(Number(reputation.multiplierBps) / 10_000).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}×`,
+  };
+}

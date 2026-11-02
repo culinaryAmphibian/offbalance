@@ -7,7 +7,8 @@
 #   client/.venv/bin/python client/dev/contract_controller.py       # shell
 #   client/.venv/bin/python client/dev/contract_controller.py submitJob 100 2 3 60 img --value 100
 #   (submitJob args: price k quorum executionTime image; k = matching results, quorum = providers)
-#   (payable calls take --value WEI: submitJob escrows the price, submitCommitment posts STAKE)
+#   (payable calls take --value WEI: submitJob escrows the price; submitCommitment posts the
+#   provider's stake for that job, which `stakeFor <jobId> <provider>` returns)
 import cmd
 import json
 import shlex

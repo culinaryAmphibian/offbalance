@@ -146,6 +146,20 @@ The deploy writes `blockchain/deployments/localhost.json`, which is gitignored a
 
 This is the source of truth for the local address and ABI. The servers read the address from it, and the client reads the ABI from it, so both stay correct even when the address has shifted.
 
+### Reputation and stakes
+
+Each provider stakes ETH with its commitment, and the contract sets how much from the job's price and the provider's on-chain reputation. The reputation lives in the contract, because the stake is enforced there.
+
+- **Base stake:** 10% of the provider's share of the price, `price / quorum / 10`.
+- **Record:** two totals per provider, in wei of job value (`reputation(address)`).
+  - `earned` grows by the payout each time the provider's answer is part of the consensus.
+  - A failure adds a strike to `strikes` and takes the same amount off `earned`. Strikes are weighted by the provider's share of the price: 3× for a revealed answer the consensus rejected, 2× for committing without revealing, 1× for never committing. With no quorum, providers that revealed aren't struck, since the contract can't tell who was right.
+- **Trust:** `(earned + prior) / (earned + strikes + 2·prior)`, with `REPUTATION_PRIOR` = 0.01 ETH. A new provider is at 50%.
+- **Stake multiplier:** from 0.5× (full trust) to 3× (no trust); a new provider is at 1×. The discount only counts in proportion to `earned / price`, so trust built on cheap jobs doesn't discount an expensive one.
+- `assignProviders` fixes each provider's stake for the job. `stakeFor(jobId, provider)` returns it, and `submitCommitment` must send exactly that.
+- `stakeQuote(provider, price, quorum)` gives the stake for a hypothetical job. `reputationOf(provider)` gives the totals, trust and best-case multiplier, which the provider page shows. Each settled job emits `REPUTATION_UPDATED`, and the server copies its trust score into `Account.reputation` (0 to 1).
+- A provider can start over with a fresh wallet, which puts it back at 1×. So the system mainly rewards providers who stay: leaving costs the discount they earned, plus any slashed stake.
+
 ## Provider client (`client/`)
 
 ```bash
@@ -198,7 +212,8 @@ Type the function name and its arguments in contract order:
 offbalance> functions                      # every function, its arguments, and its default sender
 offbalance> submitJob 1 100 3 2 60 img --value 100   # jobId price k quorum executionTime image, escrowing 100 wei
 offbalance> assignProviders 1 p1,p2,p3               # exactly k providers
-offbalance> submitCommitment 1 0xabc… --as p2 --value 100000000000000   # with STAKE
+offbalance> stakeFor 1 p2                            # the stake p2 must send for job 1
+offbalance> submitCommitment 1 0xabc… --as p2 --value 3   # with exactly that stake
 offbalance> REVEAL_WINDOW                            # views/constants are read, not sent
 ```
 
@@ -322,7 +337,6 @@ When the client starts calling a new route or reading a new field, add it here f
 - On startup, the client's first poll includes the current block, so it can replay that block's events.
 - `COMMIT_PHASE_START`'s `deadline` is the job's `executionTime` (a duration), not the absolute `commitDeadline` timestamp.
 - The server's phase timers live in memory: after a restart, jobs already in progress aren't driven until someone calls the transition (anyone can, e.g. with the contract controller).
-- Every provider stakes the same `STAKE`; `stakeFor` is where reputation will scale it.
 - The server's buyer `totalSpent` is booked at the job's `runningPrice`, not from the contract's amounts.
 - The server's job statuses (`PENDING`, `COMMIT_PHASE`, …) differ from the contract's `Status` enum. The event → status mapping is in `server/models/JobStatus.ts`.
 - Providers deliver bounded tar archives to the authenticated API. The server verifies their directory hashes, stores them locally or in private R2, and serves retained archives to their buyers. See [R2 setup](server/R2_SETUP.md) for server-only credentials and usage limits.

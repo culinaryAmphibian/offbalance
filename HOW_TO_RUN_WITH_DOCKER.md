@@ -131,7 +131,7 @@ What to expect, so you can tell when something is stuck:
 3. **Commit.** Providers run the container and commit a hash of the result. This lasts the job's execution time.
 4. **Reveal,** about 15 s. Providers reveal their results, and the contract checks for agreement.
 5. **Delivery,** about 30 s. Providers upload the result to the server.
-6. **Settlement.** Winners are paid their share and get their stake back as credits, collected with **Collect funds** in the provider view. With no quorum, the buyer and every provider that committed are refunded.
+6. **Settlement.** Winners are paid their share and get their stake back as credits, collected with **Collect funds** in the provider view. With no quorum, the buyer and every provider that committed are refunded. Settlement also updates each provider's reputation, which sets its stake on the next job (see [Reputation and stakes](README.md#reputation-and-stakes)).
 
 The server moves each job through these phases by itself. Its logs show `Job N: startRevealPhase in Xs` and `… done` for each step.
 

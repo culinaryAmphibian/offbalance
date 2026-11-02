@@ -158,7 +158,7 @@ test('a job without a Docker image rejects before requesting wallet access', asy
 import { collectFunds, readCredits, readProviderBalances } from '../src/chain.js';
 import { encodeAbiParameters } from 'viem';
 
-function creditWallet({ credits = parseEther('0.0060'), stake = parseEther('0.001'), receipt = { status: '0x1' }, chain = '0x7a69' } = {}) {
+function creditWallet({ credits = parseEther('0.0060'), stake = parseEther('0.001'), reputation = [parseEther('0.02'), 0n, 7500n, 7500n], receipt = { status: '0x1' }, chain = '0x7a69' } = {}) {
   const calls = [];
   return {
     calls,
@@ -168,7 +168,9 @@ function creditWallet({ credits = parseEther('0.0060'), stake = parseEther('0.00
         case 'eth_accounts': return [wallet];
         case 'eth_chainId': return chain;
         case 'eth_call': {
-          if (decodeFunctionData({ abi: [...viewAbi, ...withdrawAbi], data: request.params[0].data }).functionName === 'withdraw') return '0x';
+          const called = decodeFunctionData({ abi: [...viewAbi, ...withdrawAbi, ...reputationAbi], data: request.params[0].data }).functionName;
+          if (called === 'withdraw') return '0x';
+          if (called === 'reputationOf') return encodeAbiParameters(reputationAbi[0].outputs, reputation);
           const { functionName } = decodeFunctionData({ abi: viewAbi, data: request.params[0].data });
           return encodeAbiParameters([{ type: 'uint256' }], [functionName === 'lockedStake' ? stake : credits]);
         }
@@ -181,6 +183,8 @@ function creditWallet({ credits = parseEther('0.0060'), stake = parseEther('0.00
 }
 const viewAbi = ['credits', 'lockedStake'].map(name => ({ type: 'function', name, stateMutability: 'view', inputs: [{ name: '', type: 'address' }], outputs: [{ type: 'uint256' }] }));
 const withdrawAbi = [{ type: 'function', name: 'withdraw', stateMutability: 'nonpayable', inputs: [], outputs: [] }];
+const reputationAbi = [{ type: 'function', name: 'reputationOf', stateMutability: 'view', inputs: [{ name: 'provider', type: 'address' }],
+  outputs: ['earned', 'strikes', 'trust', 'multiplierBps'].map(name => ({ name, type: 'uint256' })) }];
 
 test('readCredits reads the connected wallet\'s balance from the contract', async () => {
   const provider = creditWallet();
@@ -208,13 +212,15 @@ test('collectFunds refuses an empty balance, a wrong chain, and a reverted withd
   await assert.rejects(readCredits({ executionMode: 'demo', chain: null }, creditWallet()), /no real contract/);
 });
 
-test('readProviderBalances reads credits and locked stake for the provider address, defaulting to the wallet', async () => {
+test('readProviderBalances reads credits, locked stake and reputation for the provider address, defaulting to the wallet', async () => {
   const other = '0x3333333333333333333333333333333333333333';
   const provider = creditWallet();
-  assert.deepEqual(await readProviderBalances(config(), provider, { account: other }),
-    { wallet, account: other, credits: parseEther('0.006'), stake: parseEther('0.001') });
-  const reads = provider.calls.filter(c => c.method === 'eth_call').map(c => decodeFunctionData({ abi: viewAbi, data: c.params[0].data }));
-  assert.deepEqual(reads.map(r => [r.functionName, r.args[0].toLowerCase()]), [['credits', other], ['lockedStake', other]]);
+  assert.deepEqual(await readProviderBalances(config(), provider, { account: other }), {
+    wallet, account: other, credits: parseEther('0.006'), stake: parseEther('0.001'),
+    reputation: { earned: parseEther('0.02'), strikes: 0n, trustBps: 7500n, multiplierBps: 7500n },
+  });
+  const reads = provider.calls.filter(c => c.method === 'eth_call').map(c => decodeFunctionData({ abi: [...viewAbi, ...reputationAbi], data: c.params[0].data }));
+  assert.deepEqual(reads.map(r => [r.functionName, r.args[0].toLowerCase()]), [['credits', other], ['lockedStake', other], ['reputationOf', other]]);
   assert.equal((await readProviderBalances(config(), creditWallet())).account, wallet);
 });
 
@@ -230,6 +236,20 @@ test('readProviderBalances still reads credits from a contract without lockedSta
   const result = await readProviderBalances(config(), provider);
   assert.equal(result.credits, parseEther('0.006'));
   assert.equal(result.stake, null);
+});
+
+test('readProviderBalances reports no reputation for a contract without reputationOf', async () => {
+  const provider = creditWallet();
+  const request = provider.request;
+  provider.request = async call => {
+    if (call.method === 'eth_call' && decodeFunctionData({ abi: [...viewAbi, ...reputationAbi], data: call.params[0].data }).functionName === 'reputationOf') {
+      throw Object.assign(new Error('Internal JSON-RPC error.'), { code: -32603 });
+    }
+    return request(call);
+  };
+  const result = await readProviderBalances(config(), provider);
+  assert.equal(result.stake, parseEther('0.001'));
+  assert.equal(result.reputation, null);
 });
 
 test('without lockedStake the stake is summed from getProviderCommitment over the given jobs', async () => {

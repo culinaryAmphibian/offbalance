@@ -60,18 +60,29 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 			assert.equal((await JobModel.findById(f.job._id).orFail()).settledAt?.getTime(), settled.getTime());
 		});
 
-		await t.test("PAID and SLASHED replay only apply financial and reputation effects once", async () => {
+		await t.test("PAID replay only applies financial effects once; SLASHED changes nothing", async () => {
 			const f = await fixture();
 			await handleChainEvent(f.event("PAID"), f.matcher);
 			await handleChainEvent(f.event("PAID"), f.matcher);
 			assert.equal((await account(f.provider._id)).earned, "2.75");
-			assert.equal((await account(f.provider._id)).reputation, 1);
 			// PAID pays the provider; the buyer's charge comes with DELIVERED
 			assert.equal((await account(f.owner._id)).spent, "0");
 			await handleChainEvent(f.event("SLASHED"), f.matcher);
-			await handleChainEvent(f.event("SLASHED"), f.matcher);
-			assert.equal((await account(f.provider._id)).reputation, 0);
+			// reputation comes from REPUTATION_UPDATED only
+			assert.equal((await account(f.provider._id)).reputation, 0.5);
 			assert.equal(await ChainEventModel.countDocuments({ _id: { $in: [f.event("PAID").id, f.event("SLASHED").id] } }), 2);
+		});
+
+		await t.test("REPUTATION_UPDATED copies the contract's trust score, latest first, without a database job", async () => {
+			const f = await fixture();
+			const updated = (id: string, trustBps: bigint, jobId = BigInt(f.job.onChainJobId)) => ({ ...f.event("REPUTATION_UPDATED", id),
+				args: { jobId, provider: f.provider.walletIds[0], earned: 0n, strikes: 0n, trustBps } });
+			await handleChainEvent(updated("rep-1", 6_667n), f.matcher);
+			assert.equal((await account(f.provider._id)).reputation, 0.6667);
+			await handleChainEvent(updated("rep-2", 4_000n, 999_999n), f.matcher); // a job only on chain
+			assert.equal((await account(f.provider._id)).reputation, 0.4);
+			await handleChainEvent(updated("rep-1", 6_667n), f.matcher); // a replay is skipped
+			assert.equal((await account(f.provider._id)).reputation, 0.4);
 		});
 
 		await t.test("the buyer is charged the escrowed price exactly once, however many providers are paid", async () => {
@@ -110,7 +121,6 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 			await handleChainEvent(f.event("DELIVERED"), f.matcher);
 			await handleChainEvent(f.event("DELIVERED"), f.matcher);
 			assert.equal((await account(f.provider._id)).earned, "2.75");
-			assert.equal((await account(f.provider._id)).reputation, 1);
 			assert.equal((await account(f.owner._id)).spent, "3");
 			assert.ok(await ChainEventModel.exists({ _id: f.event("DELIVERED").id }));
 		});
@@ -138,7 +148,6 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 			const result = await account(f.owner._id);
 			assert.equal(result.earned, "2.75");
 			assert.equal(result.spent, "3");
-			assert.equal(result.reputation, 1);
 		});
 
 		await t.test("actual job events still reject missing and invalid job IDs without recording completion", async () => {
@@ -231,7 +240,7 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 			assert.deepEqual(await store.load(), { blockNumber: 2, blockHash: hash(3) });
 			// the provider is credited the contract's wei payout, the buyer the escrowed price
 			assert.equal((await account(f.provider._id)).earned, "2.5");
-			assert.equal((await account(f.provider._id)).reputation, 0);
+			assert.equal((await account(f.provider._id)).reputation, 0.5);
 			assert.equal((await account(f.owner._id)).spent, "3");
 			assert.deepEqual((await account(f.owner._id)).completed, [String(f.job._id)]);
 			await monitor.stop();

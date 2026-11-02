@@ -7,9 +7,10 @@ class ProviderContractWrapper():
     def __init__(self, contract: contract.Contract):
         self.contract = contract
 
-    # the commitment carries the provider's stake, which the contract sets per provider
+    # the commitment carries the provider's stake, which the contract fixed for this provider and job
+    # at assignment (from the job's price and the provider's reputation)
     def submitCommitment(self, jobId, commitment: bytes, signer, w3):
-        stake = self.contract.functions.stakeFor(signer.address).call()
+        stake = self.contract.functions.stakeFor(jobId, signer.address).call()
         tx = self.contract.functions.submitCommitment(jobId, commitment).build_transaction({
             "from": signer.address,
             "value": stake,

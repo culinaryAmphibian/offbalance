@@ -28,12 +28,14 @@ describe("OffBalance settlement", async function () {
 	// outputs[i] is provider i's answer; null means it never commits.
 	async function settled(outputs: (Hex | null)[], k = 2n) {
 		const contract = await networkHelpers.loadFixture(deploy);
-		const STAKE = await contract.read.STAKE();
 		const REVEAL_WINDOW = Number(await contract.read.REVEAL_WINDOW());
 		const DELIVERY_WINDOW = Number(await contract.read.DELIVERY_WINDOW());
 		await contract.write.submitJob([PRICE, k, BigInt(outputs.length), EXECUTION_TIME, IMAGE], { account: buyer.account, value: PRICE });
 		const jobId = 1n;
 		await contract.write.assignProviders([jobId, providers.slice(0, outputs.length).map(p => p.account.address)]);
+		// every provider is new, so each stakes the base: 10% of its share of the price
+		const STAKE = await contract.read.stakeFor([jobId, p1.account.address]);
+		assert.equal(STAKE, PRICE / 10n / BigInt(outputs.length));
 		for (const [i, output] of outputs.entries()) {
 			if (output) await contract.write.submitCommitment([jobId, commitment(output, salt(i))], { account: providers[i].account, value: STAKE });
 		}

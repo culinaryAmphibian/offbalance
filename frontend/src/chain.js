@@ -49,6 +49,11 @@ const creditsAbi = [
   { type: 'function', name: 'credits', stateMutability: 'view', inputs: [{ name: '', type: 'address' }], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'withdraw', stateMutability: 'nonpayable', inputs: [], outputs: [] },
   { type: 'function', name: 'lockedStake', stateMutability: 'view', inputs: [{ name: '', type: 'address' }], outputs: [{ type: 'uint256' }] },
+  // trust is in basis points (5000 for a new provider); multiplierBps scales the base stake (10% of
+  // the provider's share of the price) on jobs priced at or below `earned`
+  { type: 'function', name: 'reputationOf', stateMutability: 'view', inputs: [{ name: 'provider', type: 'address' }],
+    outputs: [{ name: 'earned', type: 'uint256' }, { name: 'strikes', type: 'uint256' }, { name: 'trust', type: 'uint256' },
+      { name: 'multiplierBps', type: 'uint256' }] },
   { type: 'function', name: 'getProviderCommitment', stateMutability: 'view',
     inputs: [{ name: 'jobId', type: 'uint256' }, { name: 'provider', type: 'address' }],
     outputs: [{ name: 'commitmentHash', type: 'bytes32' }, { name: 'outputHash', type: 'bytes32' }, { name: 'revealed', type: 'bool' },
@@ -102,16 +107,18 @@ export async function readCredits(config, provider = globalThis.window?.ethereum
 
 /**
  * On-chain balances of a provider (default: the connected wallet): `credits` is what it can
- * collect, `stake` what it has locked in unsettled jobs. Both in wei.
+ * collect, `stake` what it has locked in unsettled jobs, both in wei. `reputation` is
+ * { earned, strikes (wei), trustBps, multiplierBps }, or null on a contract without reputation.
  */
 export async function readProviderBalances(config, provider = globalThis.window?.ethereum, { account, jobIds, signal } = {}) {
   const { address, chainId } = chainTarget(config);
   const wallet = await connectedWallet(provider, chainId, signal);
   const target = /^0x[\da-f]{40}$/i.test(account ?? '') ? account : wallet;
-  const [credits, locked] = await Promise.all([
+  const [credits, locked, record] = await Promise.all([
     readUint(provider, address, 'credits', target),
     // lockedStake is newer than credits/withdraw; an older deployment lacks it
     readUint(provider, address, 'lockedStake', target).catch(() => null),
+    readUint(provider, address, 'reputationOf', target).catch(() => null),
   ]);
   signal?.throwIfAborted();
   let stake = locked;
@@ -121,7 +128,8 @@ export async function readProviderBalances(config, provider = globalThis.window?
     stake = Array.isArray(ids) ? await stakeAcrossJobs(provider, address, target, ids.filter(id => /^\d+$/.test(String(id)))).catch(() => null) : null;
     signal?.throwIfAborted();
   }
-  return { wallet, account: target, credits, stake };
+  const reputation = record && { earned: record[0], strikes: record[1], trustBps: record[2], multiplierBps: record[3] };
+  return { wallet, account: target, credits, stake, reputation };
 }
 
 /** Withdraw the connected wallet's credits to that wallet; resolves once the transaction is mined. */

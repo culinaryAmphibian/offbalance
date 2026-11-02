@@ -26,7 +26,7 @@ describe("Account", () => {
 		await acct.validate();
 		assert.deepEqual(acct.walletIds, [WALLET.toLowerCase()]);
 		assert.equal(acct.totalSpent?.toString(), "0");
-		assert.equal(acct.reputation, 0);
+		assert.equal(acct.reputation, 0.5); // a new provider's trust
 		assert.equal(acct.hardware, null);
 	});
 

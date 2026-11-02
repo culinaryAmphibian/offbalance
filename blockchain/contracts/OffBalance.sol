@@ -47,6 +47,8 @@ contract OffBalance {
         address[] assignedProviders;
         mapping(address => Result_t) answers;
         mapping(address => bool) isAssigned;
+        // each assigned provider's stake, fixed at assignment so later settlements can't change it
+        mapping(address => uint256) requiredStake;
         Result_t acceptedAnswer;
         uint256 consensusCount;
     }
@@ -55,6 +57,14 @@ contract OffBalance {
         address addr;
         JobID_t[] jobsAssigned;
         mapping(JobID_t => Commitment_t) answers;
+    }
+
+    // Value-weighted track record, in wei of job value. `earned` grows by each payout a provider
+    // gets for agreeing with the consensus; a failure adds its weight to `strikes` and takes the
+    // same amount off `earned`.
+    struct Reputation {
+        uint256 earned;
+        uint256 strikes;
     }
 
     event JOB_SUBMITTED(JobID_t indexed jobId);
@@ -73,6 +83,8 @@ contract OffBalance {
     event COMMITTED(JobID_t indexed jobId, address indexed provider);
     event REVEALED(JobID_t indexed jobId, address indexed provider, bytes32 outputHash);
     event CONSENSUS_REACHED(JobID_t indexed jobId, bytes32 outputHash, uint256 count);
+    // a provider's reputation after a settled job; trustBps is reputationOf's score
+    event REPUTATION_UPDATED(JobID_t indexed jobId, address indexed provider, uint256 earned, uint256 strikes, uint256 trustBps);
 
     address public immutable server;
     uint256 private nextJobId = 1;
@@ -91,12 +103,64 @@ contract OffBalance {
         _; // what is this?
     }
 
-    // Stake every provider posts with its commitment; one value for all jobs.
-    uint256 public constant STAKE = 0.001 ether;
+    mapping(address => Reputation) public reputation;
 
-    // TODO: make this an inverse function of the provider's reputation once reputation exists.
-    function stakeFor(address) public pure returns (uint256) {
-        return STAKE;
+    uint256 private constant BPS = 10_000;
+    // The base stake is 10% of a provider's fair share of the price (price / quorum).
+    uint256 public constant BASE_STAKE_BPS = 1_000;
+    // Reputation scales the base stake between 0.5x (trusted) and 3x (untrusted).
+    uint256 public constant MIN_MULTIPLIER_BPS = 5_000;
+    uint256 public constant MAX_MULTIPLIER_BPS = 30_000;
+    // Prior, in wei of job value: a new provider's trust is 50%, and a single job of about
+    // this price moves it noticeably but not all the way.
+    uint256 public constant REPUTATION_PRIOR = 0.01 ether;
+    // Strike weights, as a multiple (in bps) of the provider's share of the price.
+    uint256 public constant WRONG_ANSWER_BPS = 30_000; // revealed an answer the consensus rejected
+    uint256 public constant NO_REVEAL_BPS = 20_000;    // committed but never revealed
+    uint256 public constant NO_COMMIT_BPS = 10_000;    // assigned but never committed
+
+    // Trust in bps: (earned + prior) / (earned + strikes + 2 * prior). New providers are at 5000.
+    function trustBps(address provider) public view returns (uint256) {
+        Reputation storage r = reputation[provider];
+        return (r.earned + REPUTATION_PRIOR) * BPS / (r.earned + r.strikes + 2 * REPUTATION_PRIOR);
+    }
+
+    // Stake multiplier for a job of `price`, in bps. Below 50% trust it rises to 3x. Above it, it
+    // falls towards 0.5x, but the discount only counts in proportion to how much value the provider
+    // has already delivered relative to this job's price, so trust farmed on cheap jobs doesn't
+    // discount an expensive one.
+    function stakeMultiplierBps(address provider, uint256 price) public view returns (uint256) {
+        uint256 trust = trustBps(provider);
+        uint256 half = BPS / 2;
+        if (trust < half) return BPS + (MAX_MULTIPLIER_BPS - BPS) * (half - trust) / half;
+        uint256 discount = (BPS - MIN_MULTIPLIER_BPS) * (trust - half) / half;
+        uint256 earned = reputation[provider].earned;
+        if (earned < price) discount = discount * earned / price;
+        return BPS - discount;
+    }
+
+    // What `provider` would stake on a job of `price` split among `quorum` providers. At least 1 wei.
+    function stakeQuote(address provider, uint256 price, uint256 quorum) public view returns (uint256) {
+        require(quorum > 0, "Invalid quorum");
+        uint256 stake = price * BASE_STAKE_BPS * stakeMultiplierBps(provider, price) / (BPS * BPS * quorum);
+        return stake > 0 ? stake : 1;
+    }
+
+    // The exact stake `provider` must send with its commitment to `jobId`: fixed when the job was
+    // assigned, or, before that, what it would be now.
+    function stakeFor(JobID_t jobId, address provider) public view returns (uint256) {
+        Job storage job = jobs[jobId];
+        if (job.isAssigned[provider]) return job.requiredStake[provider];
+        require(job.creator != address(0), "Unknown job");
+        return stakeQuote(provider, job.price, job.quorum);
+    }
+
+    // Everything the provider page shows: the raw totals, trust, and the best-case multiplier
+    // (for jobs priced at or below `earned`, where the full discount applies).
+    function reputationOf(address provider)
+        external view returns (uint256 earned, uint256 strikes, uint256 trust, uint256 multiplierBps) {
+        Reputation storage r = reputation[provider];
+        return (r.earned, r.strikes, trustBps(provider), stakeMultiplierBps(provider, r.earned));
     }
 
     constructor() {
@@ -150,7 +214,7 @@ contract OffBalance {
         require(block.timestamp <= job.commitDeadline, "Commit deadline passed");
         require(job.isAssigned[msg.sender], "Provider not assigned");
         require(commitmentHash != bytes32(0), "Empty commitment");
-        require(msg.value == stakeFor(msg.sender), "Incorrect stake");
+        require(msg.value == job.requiredStake[msg.sender], "Incorrect stake");
 
         Commitment_t storage c = providers[msg.sender].answers[jobId];
         require(c.commitmentHash == bytes32(0), "Already committed"); // ? will this crash if not true?
@@ -194,6 +258,7 @@ contract OffBalance {
             require(addr != address(0), "Zero provider address");
             require(!job.isAssigned[addr], "Duplicate provider");
             job.isAssigned[addr] = true;
+            job.requiredStake[addr] = stakeQuote(addr, job.price, job.quorum);
             job.assignedProviders.push(addr);
             providers[addr].addr = addr;
             providers[addr].jobsAssigned.push(jobId);
@@ -273,7 +338,32 @@ contract OffBalance {
             // Buyer gets the escrowed price back; every submitted stake is returned.
             credits[job.creator] += job.price;
             _refundAllStakes(jobId, job);
+            // Revealing providers can't be told apart, so only missing commits and reveals count against anyone.
+            for (uint256 i; i < job.assignedProviders.length; ++i) {
+                address addr = job.assignedProviders[i];
+                Commitment_t storage c = providers[addr].answers[jobId];
+                if (!c.revealed) _recordStrike(job, addr, c.commitmentHash == bytes32(0) ? NO_COMMIT_BPS : NO_REVEAL_BPS);
+            }
         }
+    }
+
+    function _recordEarned(Job storage job, address provider, uint256 amount) private {
+        reputation[provider].earned += amount;
+        _emitReputation(job, provider);
+    }
+
+    // weight in bps of the provider's share of the job's price
+    function _recordStrike(Job storage job, address provider, uint256 weightBps) private {
+        Reputation storage r = reputation[provider];
+        uint256 strike = job.price * weightBps / (BPS * job.quorum);
+        r.strikes += strike;
+        r.earned -= strike < r.earned ? strike : r.earned;
+        _emitReputation(job, provider);
+    }
+
+    function _emitReputation(Job storage job, address provider) private {
+        Reputation storage r = reputation[provider];
+        emit REPUTATION_UPDATED(job.id, provider, r.earned, r.strikes, trustBps(provider));
     }
 
     function endRevealPhase(JobID_t jobId) public {
@@ -317,13 +407,18 @@ contract OffBalance {
                 emit PAID(jobId, addr, amount);
                 lockedStake[addr] -= c.stake;
                 c.stake = 0;
-            } else if (c.stake > 0) {
+                _recordEarned(job, addr, amount);
+                continue;
+            }
+            if (c.stake > 0) {
                 uint256 amountSlashed = c.stake;
                 // Slashed stake is retained by the contract; it is not awarded to anyone.
                 emit SLASHED(jobId, addr, amountSlashed);
                 lockedStake[addr] -= c.stake;
                 c.stake = 0;
             }
+            _recordStrike(job, addr,
+                c.revealed ? WRONG_ANSWER_BPS : c.commitmentHash != bytes32(0) ? NO_REVEAL_BPS : NO_COMMIT_BPS);
         }
         job.status = Status.PAID;
     }
