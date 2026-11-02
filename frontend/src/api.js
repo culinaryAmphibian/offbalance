@@ -42,7 +42,11 @@ export function createApi({
 				jobs: Array.isArray(data.jobs) ? data.jobs.map(normalizeJob) : data.jobs,
 				summary: {
 					...summary,
-					...(view === "provider" ? { currentStake: dashboard.account?.currentStake } : {}),
+					...(view === "provider" ? {
+						currentStake: dashboard.account?.currentStake,
+						// the chain address the provider client earns with; credits accrue there
+						providerAddress: dashboard.provider?.hardware?.address ?? null,
+					} : {}),
 				},
 			};
 		},

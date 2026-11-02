@@ -11,7 +11,7 @@ async function accountForAddress(address: unknown) {
 	return hw?.userRef ?? (await AccountModel.findOne({ walletIds: String(address).toLowerCase() }))?._id ?? null;
 }
 
-const IGNORED_EVENTS = new Set(["COMMITTED", "REVEALED", "CONSENSUS_REACHED"]);
+const IGNORED_EVENTS = new Set(["COMMITTED", "REVEALED", "CONSENSUS_REACHED", "STAKE_REFUNDED"]);
 
 export async function handleChainEvent(event: ChainEvent, matcher: Matcher): Promise<void> {
 	if (event.id && await ChainEventModel.exists({ _id: event.id })) return;

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { timeLabel } from '../jobs';
+import { formatEth } from '../eth';
+import { useProviderBalances } from '../useProviderBalances';
 import { useResource } from '../useResource';
 import { ResourceError } from './JobDetail';
 
@@ -24,6 +26,7 @@ export default function ProviderSetup({ api, clientKey }) {
   const tutorial = tutorialResource.data?.tutorial;
   const machine = provider?.machine;
   const relative = machine?.relative;
+  const chain = useProviderBalances(api, machine?.address);
   const suggestion = provider?.suggestedPrice;
   const [price, setPrice] = useState('');
   const [pending, setPending] = useState(false);
@@ -87,7 +90,9 @@ export default function ProviderSetup({ api, clientKey }) {
       <div className="section-heading"><h2 id="machine-heading">Your machine</h2><span className="muted">{!provider.registered ? 'Not registered' : provider.online ? 'Online' : 'Offline'}</span></div>
       <dl className="detail-grid">
         <div><dt>Last seen</dt><dd>{timeLabel(provider.lastSeen)}</dd></div>
-        <div><dt>Current stake</dt><dd>{provider.currentStake == null ? '—' : `${provider.currentStake} ETH`}</dd></div>
+        <div><dt>Current stake</dt><dd>{chain.available
+          ? (chain.balances ? `${formatEth(chain.balances.stake, 3, { wei: true })} ETH` : '—')
+          : provider.currentStake == null ? '—' : `${formatEth(provider.currentStake)} ETH`}</dd></div>
         {machine?.cpu && <>
           <div><dt>CPU</dt><dd>
             {machine.cpu.model}<br />

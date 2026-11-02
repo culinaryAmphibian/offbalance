@@ -35,3 +35,12 @@ test('wallet errors explain cancellation, pending requests and other failures', 
   assert.equal(walletError({ message: 'Unsupported chain' }), 'Unsupported chain');
   assert.equal(walletError({}), 'Could not sign in. Try again.');
 });
+
+test('wallet errors unwrap MetaMask internal JSON-RPC errors', () => {
+  const wrapped = data => ({ code: -32603, message: 'Internal JSON-RPC error.', data });
+  assert.match(walletError(wrapped({ message: 'Nonce too high. Expected nonce to be 3 but got 12.' })), /Clear activity tab data/);
+  assert.match(walletError(wrapped({ message: "Error: VM Exception while processing transaction: reverted with reason string 'No credit'" })),
+    /contract rejected the transaction: No credit$/);
+  assert.equal(walletError(wrapped({ message: 'insufficient funds for gas' })), 'insufficient funds for gas');
+  assert.equal(walletError({ code: -32603, message: 'Internal JSON-RPC error.' }), 'Internal JSON-RPC error.');
+});

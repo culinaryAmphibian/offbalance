@@ -153,3 +153,81 @@ test('a job without a Docker image rejects before requesting wallet access', asy
     assert.equal(provider.calls.length, 0);
   }
 });
+
+// Collect funds: credits(address) view + withdraw()
+import { collectFunds, readCredits, readProviderBalances } from '../src/chain.js';
+import { encodeAbiParameters } from 'viem';
+
+function creditWallet({ credits = parseEther('0.0060'), stake = parseEther('0.001'), receipt = { status: '0x1' }, chain = '0x7a69' } = {}) {
+  const calls = [];
+  return {
+    calls,
+    request: async request => {
+      calls.push(request);
+      switch (request.method) {
+        case 'eth_accounts': return [wallet];
+        case 'eth_chainId': return chain;
+        case 'eth_call': {
+          if (decodeFunctionData({ abi: [...viewAbi, ...withdrawAbi], data: request.params[0].data }).functionName === 'withdraw') return '0x';
+          const { functionName } = decodeFunctionData({ abi: viewAbi, data: request.params[0].data });
+          return encodeAbiParameters([{ type: 'uint256' }], [functionName === 'lockedStake' ? stake : credits]);
+        }
+        case 'eth_sendTransaction': return hash;
+        case 'eth_getTransactionReceipt': return receipt;
+        default: throw new Error(`Unexpected wallet request: ${request.method}`);
+      }
+    },
+  };
+}
+const viewAbi = ['credits', 'lockedStake'].map(name => ({ type: 'function', name, stateMutability: 'view', inputs: [{ name: '', type: 'address' }], outputs: [{ type: 'uint256' }] }));
+const withdrawAbi = [{ type: 'function', name: 'withdraw', stateMutability: 'nonpayable', inputs: [], outputs: [] }];
+
+test('readCredits reads the connected wallet\'s balance from the contract', async () => {
+  const provider = creditWallet();
+  assert.deepEqual(await readCredits(config(), provider), { wallet, wei: parseEther('0.006') });
+  const call = provider.calls.find(c => c.method === 'eth_call');
+  assert.equal(call.params[0].to, contract);
+});
+
+test('collectFunds sends withdraw() from the connected wallet with no value and waits for the receipt', async () => {
+  const provider = creditWallet();
+  assert.deepEqual(await collectFunds(config(), provider, { pollMs: 0 }), { hash, wei: parseEther('0.006') });
+  const [tx] = sent(provider).map(c => c.params[0]);
+  assert.equal(tx.from, wallet);
+  assert.equal(tx.to, contract);
+  assert.equal(tx.value, undefined);
+  assert.equal(decodeFunctionData({ abi: withdrawAbi, data: tx.data }).functionName, 'withdraw');
+});
+
+test('collectFunds refuses an empty balance, a wrong chain, and a reverted withdrawal', async () => {
+  const empty = creditWallet({ credits: 0n });
+  await assert.rejects(collectFunds(config(), empty, { pollMs: 0 }), /nothing to collect/);
+  assert.equal(sent(empty).length, 0);
+  await assert.rejects(collectFunds(config(), creditWallet({ chain: '0x1' }), { pollMs: 0 }), /Switch your wallet/);
+  await assert.rejects(collectFunds(config(), creditWallet({ receipt: { status: '0x0' } }), { pollMs: 0 }), /failed on chain/);
+  await assert.rejects(readCredits({ executionMode: 'demo', chain: null }, creditWallet()), /no real contract/);
+});
+
+test('readProviderBalances reads credits and locked stake for the provider address, defaulting to the wallet', async () => {
+  const other = '0x3333333333333333333333333333333333333333';
+  const provider = creditWallet();
+  assert.deepEqual(await readProviderBalances(config(), provider, { account: other }),
+    { wallet, account: other, credits: parseEther('0.006'), stake: parseEther('0.001') });
+  const reads = provider.calls.filter(c => c.method === 'eth_call').map(c => decodeFunctionData({ abi: viewAbi, data: c.params[0].data }));
+  assert.deepEqual(reads.map(r => [r.functionName, r.args[0].toLowerCase()]), [['credits', other], ['lockedStake', other]]);
+  assert.equal((await readProviderBalances(config(), creditWallet())).account, wallet);
+});
+
+test('readProviderBalances still reads credits from a contract without lockedStake', async () => {
+  const provider = creditWallet();
+  const request = provider.request;
+  provider.request = async call => {
+    if (call.method === 'eth_call' && decodeFunctionData({ abi: viewAbi, data: call.params[0].data }).functionName === 'lockedStake') {
+      throw Object.assign(new Error('Internal JSON-RPC error.'), { code: -32603, data: { message: 'function selector was not recognized and there\'s no fallback function' } });
+    }
+    return request(call);
+  };
+  const result = await readProviderBalances(config(), provider);
+  assert.equal(result.credits, parseEther('0.006'));
+  assert.equal(result.stake, null);
+});

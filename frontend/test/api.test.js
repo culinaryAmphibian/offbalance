@@ -75,7 +75,7 @@ test('job listings use role and full list, with authoritative dashboard totals',
   assert.equal(buyer.jobs[0].k, 3);
   assert.deepEqual(buyer.summary, { activeJobs: 4, completedJobs: 2, totalSpent: '0.008' });
   const provider = await api.listJobs('provider');
-  assert.deepEqual(provider.summary, { activeJobs: 1, completedJobs: 5, totalEarned: '0.02', currentStake: '0.05' });
+  assert.deepEqual(provider.summary, { activeJobs: 1, completedJobs: 5, totalEarned: '0.02', currentStake: '0.05', providerAddress: null });
   assert.deepEqual(urls, ['/api/jobs?role=buyer', '/api/account/me/dashboard', '/api/jobs?role=provider', '/api/account/me/dashboard']);
 });
 

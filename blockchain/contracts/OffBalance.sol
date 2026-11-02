@@ -67,6 +67,7 @@ contract OffBalance {
     event DELIVERED(JobID_t indexed jobId);
     event PAID(JobID_t indexed jobId, address indexed provider, uint256 amount);
     event SLASHED(JobID_t indexed jobId, address indexed provider, uint256 amount);
+    event STAKE_REFUNDED(JobID_t indexed jobId, address indexed provider, uint256 amount);
     event CANCELED(JobID_t indexed jobId);
     event NO_QUORUM(JobID_t indexed jobId);
     event COMMITTED(JobID_t indexed jobId, address indexed provider);
@@ -78,6 +79,8 @@ contract OffBalance {
     mapping(JobID_t => Job) private jobs;
     mapping(address => Provider) private providers;
     mapping(address => uint256) public credits;
+    // Stake each provider currently has locked in unsettled jobs (returned or slashed at settlement).
+    mapping(address => uint256) public lockedStake;
 	mapping(bytes32 => uint256) private temp_hashes;
 
     uint256 public constant REVEAL_WINDOW = 15;
@@ -152,7 +155,8 @@ contract OffBalance {
         Commitment_t storage c = providers[msg.sender].answers[jobId];
         require(c.commitmentHash == bytes32(0), "Already committed"); // ? will this crash if not true?
         c.commitmentHash = commitmentHash;
-        c.stake = msg.value; // ? is the money actually in escrow now?
+        c.stake = msg.value; // held by the contract until settlement
+        lockedStake[msg.sender] += msg.value;
         emit COMMITTED(jobId, msg.sender);
     }
 
@@ -225,8 +229,8 @@ contract OffBalance {
         emit REVEAL_PHASE_START(jobId);
     }
 
-	// The buyer receives a refund when consensus fails, while providers forfeit any stakes they actually deposited.
-	// Providers who never committed have no stake to forfeit.
+	// When consensus fails nobody is at fault for certain: the buyer gets the price back and
+	// every provider that committed gets its stake back. Providers who never committed staked nothing.
 	// todo: validate hash(revealed hash + nonce) == committed hash
     function calculateConsensus(JobID_t jobId) private {
         Job storage job = jobs[jobId];
@@ -266,9 +270,9 @@ contract OffBalance {
         } else {
             job.status = Status.NO_QUORUM;
             emit NO_QUORUM(jobId);
-            // Buyer gets the escrowed price back; all submitted stakes are forfeited.
+            // Buyer gets the escrowed price back; every submitted stake is returned.
             credits[job.creator] += job.price;
-            _slashAllStakes(jobId, job);
+            _refundAllStakes(jobId, job);
         }
     }
 
@@ -311,25 +315,30 @@ contract OffBalance {
                 uint256 amount = share;
                 credits[addr] += amount + c.stake;
                 emit PAID(jobId, addr, amount);
+                lockedStake[addr] -= c.stake;
                 c.stake = 0;
             } else if (c.stake > 0) {
                 uint256 amountSlashed = c.stake;
                 // Slashed stake is retained by the contract; it is not awarded to anyone.
                 emit SLASHED(jobId, addr, amountSlashed);
+                lockedStake[addr] -= c.stake;
                 c.stake = 0;
             }
         }
         job.status = Status.PAID;
     }
 
-    function _slashAllStakes(JobID_t jobId, Job storage job) private {
+    // Return each provider's stake as withdrawable credit.
+    function _refundAllStakes(JobID_t jobId, Job storage job) private {
         for (uint256 i; i < job.assignedProviders.length; ++i) {
             address addr = job.assignedProviders[i];
             Commitment_t storage c = providers[addr].answers[jobId];
             if (c.stake > 0) {
                 uint256 amount = c.stake;
+                lockedStake[addr] -= c.stake;
                 c.stake = 0;
-                emit SLASHED(jobId, addr, amount);
+                credits[addr] += amount;
+                emit STAKE_REFUNDED(jobId, addr, amount);
             }
         }
     }
