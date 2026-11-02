@@ -11,7 +11,8 @@ name: offbalance
 
 services:
   mongo:
-    image: mongo:8
+    # not 8.x: MongoDB 8 refuses to start on Linux kernel 6.19+ (https://jira.mongodb.org/browse/SERVER-121912)
+    image: mongo:7.0
     restart: unless-stopped
     volumes:
       - mongo-data:/data/db

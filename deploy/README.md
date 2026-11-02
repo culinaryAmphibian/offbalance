@@ -87,4 +87,5 @@ Open `https://<host>.<tailnet>.ts.net`. In MetaMask, add the network as in [fron
 | `ports are not available` on `docker compose up` | Something on the host already uses the port: move it in `.env` (above). |
 | The page says `Blocked request. This host is not allowed` | You opened the frontend under a name other than `localhost` or `*.ts.net`: add it with `ALLOWED_HOSTS=.ts.net,myname.example` in `.env`. |
 | `server` keeps restarting | `docker compose logs server`. It waits for the contract on the chain, then needs MongoDB. |
+| `mongo` is unhealthy; its log says `Linux kernel versions 6.19 and newer has a known incompatibility` | MongoDB 8 doesn't run on kernel 6.19+, which is why `docker-compose.yml` uses `mongo:7.0`. Don't point it back at 8. If an 8.x database was ever created, `docker compose down -v` first: 7.0 can't open 8.0 data. |
 | Job images built from a Dockerfile fail | Builds are off in this setup (the server image has no Docker CLI); submit jobs with a pinned image digest. |
