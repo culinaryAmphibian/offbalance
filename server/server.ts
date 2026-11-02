@@ -8,8 +8,10 @@ import { handleChainEvent } from './services/events.ts';
 import { Matcher } from './services/matcher.ts';
 import { Orchestrator } from './services/orchestrator.ts';
 import { createHttpsServer, httpsOptions } from './https.ts';
+import { createResultStore } from './storage/results.ts';
 
 const tlsOptions = await httpsOptions();
+const results = createResultStore();
 await connectDB(config.mongodbUri);
 const chain = await Chain.connect();
 const matcher = new Matcher(chain);
@@ -34,7 +36,7 @@ async function shutdown(): Promise<void> {
 
 try {
   await builder.failInterrupted();
-  server = createHttpsServer(createApp({ chain, matcher, builder }), tlsOptions).listen(config.port);
+  server = createHttpsServer(createApp({ chain, matcher, builder, results }), tlsOptions).listen(config.port, config.host);
   await new Promise<void>((resolve, reject) => {
     server!.once('listening', resolve);
     server!.once('error', reject);

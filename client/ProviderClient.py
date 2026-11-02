@@ -23,10 +23,14 @@ class ProviderClient():
         self.runner = runner
         self._job_lock = threading.Lock()
         self._running_jobs = set()
+        self._results = {}
+        self._delivering = set()
+        self._stop_event = None
 
     # mediator methods here...
     def run(self, stop_event: threading.Event | None = None) -> None:
         stop_event = stop_event or threading.Event()
+        self._stop_event = stop_event
         profile = self.benchmark.do_benchmark()
         # failures terminate with error
         self.server.post_benchmark(profile)
@@ -83,7 +87,7 @@ class ProviderClient():
 
         elif isinstance(event, CommitPhaseStartEvent):
             print("Handling commit phase start")
-            self.handleCommitPhaseStart(event.jobId, event.deadline)
+            self.handleCommitPhaseStart(event.jobId, event.deadline, event.block_number)
 
         elif isinstance(event, RevealPhaseStartEvent):
             print("Handling reveal phase start")
@@ -91,6 +95,7 @@ class ProviderClient():
 
         elif isinstance(event, DeliveryPhaseStartEvent):
             print("Handling delivery phase start")
+            self.handleDeliveryPhaseStart(event.jobId)
 
         elif isinstance(event, DeliveredEvent):
             print("Handling delivered event")
@@ -114,14 +119,41 @@ class ProviderClient():
         except Exception as error:
             self._report_error(jobId, f'Job preparation failed: {error}')
 
-    def handleCommitPhaseStart(self, jobId, deadline):
+    def handleCommitPhaseStart(self, jobId, deadline=None, block_number=None):
         with self._job_lock:
             # Commit-phase events are broadcast to every provider, including
             # machines that were not selected for this job.
             if self.runner.currentJobId != jobId or jobId in self._running_jobs:
                 return
+            if deadline is None:
+                try:
+                    deadline = self.blockchain.execution_window(block_number, self.runner.currentManifest['timeout_s'])
+                except Exception:
+                    self._report_error(jobId, 'Cannot read the commit execution window.')
+                    return
+            if deadline <= 0:
+                self._report_error(jobId, 'The commit execution window has expired; execution was skipped.')
+                return
             self._running_jobs.add(jobId)
         threading.Thread(target=self._runAndCommit, args=(jobId, deadline), daemon=True).start()
+
+    def handleDeliveryPhaseStart(self, job_id):
+        with self._job_lock:
+            result = self._results.get(job_id)
+            if result is None or job_id in self._delivering:
+                return
+            self._delivering.add(job_id)
+        threading.Thread(target=self._deliverResult, args=(job_id, *result), daemon=True).start()
+
+    def _deliverResult(self, job_id, output_dir, result_hash):
+        try:
+            self.server.deliver_result(job_id, output_dir, result_hash, self._stop_event)
+        except Exception:
+            # HTTP errors can contain credentials; report only the operation that failed.
+            print(f'Job {job_id}: result delivery failed.', file=sys.stderr)
+        finally:
+            with self._job_lock:
+                self._delivering.discard(job_id)
 
     def _report_error(self, jobId, message):
         print(f'Job {jobId}: {message}', file=sys.stderr)
@@ -135,7 +167,10 @@ class ProviderClient():
             result = self.runner.startJob(jobId, deadline)
             if result.status == 'ok' and result.output_dir:
                 print(f"Result was obtained: {result.output_dir}")
-                self.blockchain.commit(jobId, self.runner.hash_dir(result.output_dir))
+                result_hash = self.runner.hash_dir(result.output_dir)
+                self.blockchain.commit(jobId, result_hash)
+                with self._job_lock:
+                    self._results[jobId] = (result.output_dir, result_hash)
             else:
                 details = getattr(result, 'message', None) or 'No output was produced.'
                 self._report_error(jobId, f'Execution {result.status} (exit code {result.exitCode}): {details}')

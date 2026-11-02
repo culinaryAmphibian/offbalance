@@ -24,6 +24,7 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 ENV PORT=5000 \
+    HOST=0.0.0.0 \
     RPC_URL=http://blockchain:8545 \
     DEPLOYMENT_FILE=/app/blockchain/deployments/localhost.json \
     MONGODB_URI=mongodb://mongo:27017/offbalance \

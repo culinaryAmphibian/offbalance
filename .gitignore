@@ -1,2 +1,6 @@
 *.env
 *.log
+.env*
+!.env.example
+!.env.r2.example
+!.env.demo

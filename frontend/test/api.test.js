@@ -96,15 +96,26 @@ test('job detail URL encodes IDs and normalizes persisted job fields', async () 
   assert.equal(job.payment, undefined);
 });
 
-test('results are authenticated JSON metadata rather than an invented archive', async () => {
+test('result downloads use authenticated archive responses and encode the job ID', async () => {
   let requested;
-  const result = { status: 'AWAITING_DELIVERY', results: [{ provider: 'account', hash: '0xhash', location: 'https://storage.test/output', receiptVerified: false }] };
-  const api = createApi({ fetcher: async (url, options) => { requested = { url, options }; return json(result); } });
+  const bytes = new Uint8Array([0, 1, 254, 255]);
+  const api = createApi({ fetcher: async (url, options) => {
+    requested = { url, options };
+    return new Response(bytes, { headers: { 'Content-Type': 'application/x-tar' } });
+  } });
   api.setToken('session');
-  assert.deepEqual(await api.getResult('a/b'), result);
+  const archive = await api.getResult('a/b');
+  assert.deepEqual(new Uint8Array(await archive.arrayBuffer()), bytes);
   assert.equal(requested.url, '/api/jobs/a%2Fb/result');
-  assert.equal(requested.options.headers.Accept, 'application/json');
+  assert.equal(requested.options.headers.Accept, 'application/x-tar');
   assert.equal(requested.options.headers.Authorization, 'Bearer session');
+});
+
+test('result downloads reject metadata or HTML instead of saving it as an archive', async () => {
+  for (const type of ['application/json', 'text/html']) {
+    const api = createApi({ fetcher: async () => new Response('{}', { headers: { 'Content-Type': type } }) });
+    await assert.rejects(api.getResult('1'), /did not return a result archive/);
+  }
 });
 
 test('configuration exposes the coordinator chain and execution mode', async () => {

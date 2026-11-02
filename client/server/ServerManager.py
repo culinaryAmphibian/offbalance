@@ -1,5 +1,6 @@
 import requests
 from benchmark.HardwareProfile import HardwareProfile
+from job.Archive import result_archive
 
 _SERVER_URL = "https://localhost:5173"
 
@@ -63,3 +64,31 @@ class ServerManager():
                 json={"message": message[:4096]}, timeout=15,
             )
             response.raise_for_status()
+
+    def deliver_result(self, job_id, output_dir, result_hash, stop_event=None):
+        # Workers have their own session; account credentials stay on the API origin.
+        with result_archive(output_dir, result_hash, stop_event) as (archive, size), requests.Session() as session:
+            session.headers.update(self.session.headers)
+            session.verify = self.session.verify
+            try:
+                response = session.post(
+                    f'{self.base_url}/provider/results/{int(job_id)}',
+                    data=archive, headers={'Content-Type': 'application/x-tar',
+                                          'Content-Length': str(size), 'X-Result-Hash': result_hash.hex()},
+                    timeout=(10, 60), allow_redirects=False,
+                )
+                if not 200 <= response.status_code < 300:
+                    raise requests.RequestException('Result upload was not accepted.')
+                result = response.json()
+                if not isinstance(result, dict) or not isinstance(result.get('results'), list) or not any(
+                    isinstance(item, dict) and item.get('contentVerified') is True and (
+                        item.get('receiptVerified') is True or
+                        (item.get('receiptMode') or result.get('receiptMode')) in ('offchain', 'local')
+                    )
+                    for item in result.get('results', [])
+                ):
+                    raise requests.RequestException('Result delivery is not confirmed.')
+                return result
+            except (requests.RequestException, ValueError):
+                # Exception text from an HTTP library can include URL credentials or headers.
+                raise requests.RequestException('Result upload failed.') from None

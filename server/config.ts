@@ -3,6 +3,7 @@ import path from "node:path";
 
 // Everything comes from the environment; defaults match ../dev.env.
 export const config = {
+	host: process.env.HOST ?? "127.0.0.1",
 	port: Number(process.env.PORT ?? 5000),
 	mongodbUri: process.env.MONGODB_URI ?? "mongodb://127.0.0.1:27017/offbalance",
 

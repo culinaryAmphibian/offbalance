@@ -179,7 +179,7 @@ describe("frontend/server database contracts", { skip: !uri && "set MONGODB_URI 
 		assert.deepEqual(listed.body.jobs.map((entry: { id: number }) => entry.id), [other.body.job.id]);
 		assert.equal((await call("GET", `/jobs/${buyer.body.job.id}/result`, { as: "other" })).status, 403);
 		const ownResults = await call("GET", `/jobs/${other.body.job.id}/result`, { as: "other" });
-		assert.deepEqual(ownResults.body, { status: "PENDING", results: [] });
+		assert.equal(ownResults.status, 404);
 	});
 
 	test("dashboard totals and full job lists remain distinct beyond the 20 recent jobs", async () => {

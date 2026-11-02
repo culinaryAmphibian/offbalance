@@ -62,7 +62,7 @@ export function createApi({
 		},
 		getResult: (id, signal) =>
 			request(`/jobs/${encodeURIComponent(id)}/result`, {
-				signal,
+				signal, binary: true,
 			}),
 		getProvider: async (signal) => {
 			const [data, dashboard] = await Promise.all([
@@ -92,7 +92,7 @@ export function createApi({
 
 	async function request(
 		path,
-		{ body, headers, signal, sessionToken = token, ...options } = {},
+		{ body, headers, signal, binary = false, sessionToken = token, ...options } = {},
 	) {
 		const requestToken = sessionToken;
 		let response;
@@ -103,7 +103,7 @@ export function createApi({
 					? AbortSignal.any([signal, AbortSignal.timeout(20000)])
 					: AbortSignal.timeout(20000),
 				headers: {
-					Accept: "application/json",
+					Accept: binary ? "application/x-tar" : "application/json",
 					...(body ? { "Content-Type": "application/json" } : {}),
 					...(requestToken
 						? { Authorization: `Bearer ${requestToken}` }
@@ -130,6 +130,12 @@ export function createApi({
 			);
 		}
 		if (response.status === 204) return null;
+		if (binary) {
+			const type = response.headers.get("content-type")?.split(";")[0].trim();
+			if (!["application/x-tar", "application/octet-stream"].includes(type))
+				throw new ApiError("The server did not return a result archive.");
+			return response.blob();
+		}
 		if (
 			!response.headers.get("content-type")?.includes("application/json")
 		) {

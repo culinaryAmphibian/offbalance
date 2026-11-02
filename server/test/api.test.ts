@@ -192,7 +192,7 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 			assert.deepEqual(body.job.providers, []);
 		});
 
-		test("contract events move the status; providers deliver results", async () => {
+		test("contract events move the status; metadata-only delivery is rejected", async () => {
 			await event("COMMIT_PHASE_START", { jobId: BigInt(jobId), deadline: 60n });
 			assert.equal((await call("GET", `/jobs/${jobId}`, { as: "p1" })).body.job.status, "COMMIT_PHASE");
 
@@ -201,13 +201,11 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 
 			await event("DELIVERY_PHASE_START", { jobId: BigInt(jobId) });
 			const delivered = await call("POST", `/provider/results/${jobId}`, { as: "p1", body: { hash: "0xab", location: "s3://bucket/1" } });
-			assert.equal(delivered.status, 201);
+			assert.equal(delivered.status, 415);
 			assert.equal((await call("POST", `/provider/results/${jobId}`, { as: "p3", body: { hash: "0xab", location: "s3://x" } })).status, 403);
 
 			const result = await call("GET", `/jobs/${jobId}/result`, { as: "buyer" });
-			assert.equal(result.body.status, "DELIVERY_RECEIPT_VALIDATION");
-			assert.equal(result.body.results.length, 1);
-			assert.equal(result.body.results[0].location, "s3://bucket/1");
+			assert.equal(result.status, 404);
 			assert.equal((await call("GET", `/jobs/${jobId}/result`, { as: "p1" })).status, 403);
 		});
 

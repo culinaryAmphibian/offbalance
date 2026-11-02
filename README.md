@@ -325,7 +325,7 @@ When the client starts calling a new route or reading a new field, add it here f
 - Every provider stakes the same `STAKE`; `stakeFor` is where reputation will scale it.
 - The server's buyer `totalSpent` is booked at the job's `runningPrice`, not from the contract's amounts.
 - The server's job statuses (`PENDING`, `COMMIT_PHASE`, …) differ from the contract's `Status` enum. The event → status mapping is in `server/models/JobStatus.ts`.
-- Results aren't stored by the server: providers upload to object storage themselves and post the `location`.
+- Providers deliver bounded tar archives to the authenticated API. The server verifies their directory hashes, stores them locally or in private R2, and serves retained archives to their buyers. See [R2 setup](server/R2_SETUP.md) for server-only credentials and usage limits.
 - Builds run one at a time with no per-account limit, and a server restart fails builds in progress (they have to be resubmitted). Pushed `build-*` tags are never deleted from the registry.
 
 ## TODO

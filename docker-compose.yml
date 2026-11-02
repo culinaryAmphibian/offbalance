@@ -80,10 +80,16 @@ services:
         condition: service_healthy
       blockchain:
         condition: service_healthy
-    env_file: dev.env          # SERVER_PRIVATE_KEY (the deployer, account #0)
+    env_file:
+      - path: dev.env          # SERVER_PRIVATE_KEY (the deployer, account #0)
+        required: true
+      - path: ./server/.env.r2.local  # optional, server-only R2 credentials
+        required: false
     environment:               # overrides the 127.0.0.1 values from dev.env
       CHAIN: "on"
       PORT: "5000"
+      HOST: "0.0.0.0"
+      R2_USAGE_FILE: /app/server/.local/result-usage/r2-usage.json
       MONGODB_URI: mongodb://mongo:27017/offbalance
       RPC_URL: http://blockchain:8545
       DEPLOYMENT_FILE: /app/blockchain/deployments/localhost.json
@@ -96,6 +102,8 @@ services:
       - ./dev.env:/app/dev.env:ro
       - deployments:/app/blockchain/deployments:ro
       - tls:/app/server/.local/tls
+      - results:/app/server/.local/results
+      - result-usage:/app/server/.local/result-usage
     healthcheck:
       test: ["CMD", "node", "-e", "require('net').connect(5000, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))"]
       interval: 2s
@@ -190,6 +198,8 @@ services:
       - trusted-cert:/certs:ro
 
 volumes:
+  results:        # local result files; retain across server container recreation
+  result-usage:   # R2 cost safeguards must not reset when a container is recreated
   deployments:    # blockchain -> server (and the contract controller on the host)
   tls:            # the server's certificate and key (host)
   trusted-cert:   # the host's certificate as fetched by fetch-cert (clients)

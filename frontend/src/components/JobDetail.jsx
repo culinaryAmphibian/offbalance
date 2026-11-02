@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { dateLabel, jobPhase, resourceSummary, statusLabel, timeLabel, windowMinutes, resultUrl } from '../jobs';
+import { dateLabel, jobPhase, resourceSummary, statusLabel, timeLabel, windowMinutes } from '../jobs';
 import { useResource } from '../useResource';
 import { submitStoredJob } from '../chain';
 
@@ -14,8 +14,7 @@ export function ResourceError({ message, retry }) {
 export default function JobDetail({ api, id, notice }) {
   const load = useCallback(signal => api.getJob(id, signal), [api, id]);
   const { data, error, loading, refresh } = useResource(load, 5000);
-  const [results, setResults] = useState(null);
-  const [loadingResults, setLoadingResults] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [resultError, setResultError] = useState('');
   const [chainPending, setChainPending] = useState(false);
   const [chainError, setChainError] = useState('');
@@ -28,21 +27,27 @@ export default function JobDetail({ api, id, notice }) {
   const job = data?.job;
   const needsChain = job?.executionMode === 'chain' && !job.submittedAt && job.status === 'PENDING';
 
-  async function loadResults() {
+  async function download() {
     resultController.current?.abort();
     const controller = new AbortController();
     resultController.current = controller;
-    setLoadingResults(true);
+    setDownloading(true);
     setResultError('');
     try {
-      const result = await api.getResult(id, controller.signal);
+      const archive = await api.getResult(id, controller.signal);
       if (controller.signal.aborted) return;
-      if (!Array.isArray(result?.results)) throw new Error('The server did not return delivery records.');
-      setResults(result.results);
+      const url = URL.createObjectURL(archive);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = (job.result?.filename || `offbalance-${id}.tar`).replace(/[\\/\x00-\x1f\x7f]/g, '_').slice(0, 180);
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (problem) {
-      if (!controller.signal.aborted) setResultError(problem.status === 403 ? 'Delivery records are available to the job owner.' : problem.message);
+      if (!controller.signal.aborted) setResultError(problem.message);
     } finally {
-      if (!controller.signal.aborted) setLoadingResults(false);
+      if (!controller.signal.aborted) setDownloading(false);
     }
   }
 
@@ -109,22 +114,15 @@ export default function JobDetail({ api, id, notice }) {
         </dl>
         {job.delivery?.error && <p className="notice error" role="alert">{job.delivery.error}</p>}
         {job.payment?.error && <p className="notice error" role="alert">{job.payment.error}</p>}
-        {(job.resultHash || job.consensusResultHash) && <p className="result-hash mono"><span className="muted">Reported result hash </span>{job.resultHash || job.consensusResultHash}</p>}
-        {job.canViewResults !== false ? <>
-          <p className="muted">Delivery records are provider-reported output locations. Receipt verification and payment are separate.</p>
-          <button className="button primary" onClick={loadResults} disabled={loadingResults}>{loadingResults ? 'Loading records…' : results ? 'Refresh delivery records' : 'Load delivery records'}</button>
-          {results?.length === 0 && <p className="muted">No delivery records have been reported.</p>}
-          {results?.map((result, index) => <div className="result-record" key={`${result.provider}-${index}`}>
-            <dl className="detail-grid">
-              <Item label="Provider" mono>{result.provider}</Item>
-              <Item label="Reported hash" mono>{result.hash}</Item>
-              <Item label="Delivered">{timeLabel(result.deliveryTime)}</Item>
-              <Item label="Receipt">{result.receiptVerified ? 'Verified on chain' : 'Not verified'}</Item>
-              <Item label="Output location" mono>{result.location || 'Not reported'}</Item>
-            </dl>
-            {resultUrl(result.location) && <a className="text-link" href={resultUrl(result.location)} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">Open provider output{result.receiptVerified ? '' : ' (unverified receipt)'}</a>}
-          </div>)}
-        </> : <p className="muted">Delivery records are available to the job owner.</p>}
+        {(job.resultHash || job.consensusResultHash) && <p className="result-hash mono"><span className="muted">Result hash </span>{job.resultHash || job.consensusResultHash}</p>}
+        {job.canViewResults !== false ? job.result?.available ? <>
+          <dl className="detail-grid">
+            <Item label="Output content">{job.executionMode === 'demo' ? 'Demo fixture' : 'Hash verified'}</Item>
+            <Item label="Delivery receipt">{job.result.receiptMode === 'offchain' ? 'Verified by coordinator' : job.result.receiptMode === 'local' || job.executionMode === 'local' ? 'Disabled in local mode' : job.result.receiptVerified ? 'Verified on chain' : 'Not yet verified on chain'}</Item>
+          </dl>
+          <button className="button primary" onClick={download} disabled={downloading}>{downloading ? 'Downloading…' : 'Download result'}</button>
+        </> : <p className="muted">The result will appear here when verified output is available.</p>
+          : <p className="muted">Results are available to the job owner.</p>}
         {resultError && <p className="notice error" role="alert">{resultError}</p>}
       </section>
       <p className="muted refresh-note">Updates every 5 seconds.</p>

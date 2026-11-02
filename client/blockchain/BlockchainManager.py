@@ -53,6 +53,17 @@ class BlockchainManager():
         self.next_block_to_scan = end_block + 1
         return res
 
+    def execution_window(self, block_number: int, execution_seconds: int) -> int:
+        # Milestone4 omits the duration from COMMIT_PHASE_START. The assigned
+        # manifest supplies it; the event block anchors the start in chain time.
+        if not isinstance(execution_seconds, int) or isinstance(execution_seconds, bool) or execution_seconds <= 0:
+            raise ValueError('The assigned manifest needs a positive execution timeout.')
+        started = int(self.w3.eth.get_block(block_number)['timestamp'])
+        now = int(self.w3.eth.get_block('latest')['timestamp'])
+        if now < started:
+            raise ValueError('Commit event block is ahead of the current chain time.')
+        return max(0, started + execution_seconds - now)
+
     # one salt per job: revealing it exposes only this job's commitment, never the seed or other jobs
     def job_key(self, job_id: int) -> bytes:
         key = HKDF(

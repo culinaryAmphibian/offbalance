@@ -134,6 +134,19 @@ export class Chain {
 		return this.write("assignProviders", [BigInt(jobId), providers]);
 	}
 
+	// Milestone4 pays winning providers without an on-chain delivery receipt hook.
+	get supportsDeliveryReceipts(): boolean {
+		return this.deployment.abi.some(item => item.type === 'function' && item.name === 'verifyReceipt');
+	}
+
+	async getProviderDeliveryState(jobId: number, provider: string): Promise<{ outputHash: string; revealed: boolean; agreed: boolean; delivered: boolean }> {
+		const [, outputHash, revealed, agreed, delivered] = await this.publicClient.readContract({
+			address: this.deployment.address, abi: this.deployment.abi, functionName: 'getProviderCommitment',
+			args: [BigInt(jobId), getAddress(provider)],
+		}) as readonly [string, string, boolean, boolean, boolean, bigint];
+		return { outputHash, revealed, agreed, delivered };
+	}
+
 	verifyReceipt(jobId: number, provider: string): Promise<void> {
 		return this.write("verifyReceipt", [BigInt(jobId), provider]);
 	}

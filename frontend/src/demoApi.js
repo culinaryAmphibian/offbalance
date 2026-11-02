@@ -81,7 +81,7 @@ export function createDemoApi() {
 				verifiedAt: stamp,
 			},
 			payment: { status: "PAID", settledAt: stamp },
-			results: [{ provider: "demo-provider", hash: "demo-result-hash", location: "https://example.com/offbalance-demo-output", deliveryTime: stamp, receiptVerified: true }],
+			result: { available: true, filename: "offbalance-demo-result.txt", hash: "demo-result-hash", receiptMode: "offchain", receiptVerified: false },
 		},
 	];
 	const submissions = new Map();
@@ -140,7 +140,8 @@ export function createDemoApi() {
 		getResult: async (id) => {
 			const job = jobs.find((item) => item.id === id);
 			if (!job) throw new Error("Job not found.");
-			return { status: job.status, results: structuredClone(job.results ?? []) };
+			if (!job.result?.available) throw new Error("No verified result is available.");
+			return new Blob(["OffBalance demo result\n"], { type: "text/plain" });
 		},
 		getProvider: async () => ({ provider: structuredClone(provider) }),
 		getProviderTutorial: async () => ({
