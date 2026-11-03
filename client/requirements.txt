@@ -1,6 +1,4 @@
-# provider client runtime dependencies (versions the client is tested with)
-web3==8.0.0
-eth-account==0.14.0
-requests==2.34.2
-docker==7.2.0
-pycryptodome==3.24.1
+web3
+requests
+docker
+pycryptodome

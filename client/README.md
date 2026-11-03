@@ -12,42 +12,32 @@ Has the following responsibilities:
 6. Post nonce to blockchain
 7. Run benchmark
 8. Provide benchmark
-9. Hold the provider's credentials (API key + session key) for its lifetime
+9. Save provider's private key
 
 ---
 
-## Credentials
+## Hardware profile
 
-The client asks for the **API key** (frontend → Provider Setup) and the **session key**
-(frontend → Provider Setup → *Authorize provider client*), then keeps them in
-`Credentials` (`Credentials.py`). The session key signs every transaction for your
-wallet; your wallet keeps the earnings and is the only one that can withdraw. See the
-[root README](../README.md#credentials) for how the session key is created.
+On startup `BenchmarkManager` (in [`benchmark/`](benchmark/)) reports the machine to `POST /scores` as specs plus benchmarks in real units. It takes about 6 seconds, plus the GPU benchmark if there is a GPU. It measures what this process can use, so inside a VM or a CPU-pinned container it reports that allocation, not the host's.
 
-## Running in Docker
+| | Detected | Measured |
+|---|---|---|
+| CPU | model, physical cores, vCPUs (logical CPUs this process may use) | zlib compression throughput, MB/s of input, on one thread and on every thread at once (the same kind of workload as the 7-Zip benchmark) |
+| Memory | GB the OS can use (`/proc/meminfo`; a 16 GB machine reports about 15.5) | copy bandwidth in GB/s, read + write, from up to 8 processes over a 1 GiB working set, which is larger than CPU caches |
+| GPU | NVIDIA via `nvidia-smi`, AMD via `rocm-smi`: model, VRAM, driver, CUDA/ROCm version | FP32 matmul TFLOPS and device memory bandwidth, measured in a container (below) |
 
-```bash
-docker build -t offbalance-client client/
-docker run -it --rm --network host \
-  -v /var/run/docker.sock:/var/run/docker.sock --group-add "$(stat -c %g /var/run/docker.sock)" \
-  --user "$(id -u):$(id -g)" \
-  -v "$HOME/.offbalance:$HOME/.offbalance" -e OFFBALANCE_JOBS_DIR="$HOME/.offbalance/jobs" \
-  -e OFFBALANCE_SERVER_URL=https://localhost:5000 -e RPC_URL=http://127.0.0.1:8545 \
-  offbalance-client
-```
+The server shows each measurement as a multiple of a reference machine (1.0× = Intel Core i7-9700K limited to 4 cores, 16 GB dual-channel DDR4, NVIDIA RTX 2070), and suggests an hourly price from the specs. Matching uses the specs: a job asks for vCPUs, GB of memory, and optionally a GPU with a minimum of VRAM, and its container gets exactly that (Docker `--cpus`, `--memory` with no extra swap, and one GPU).
 
-- `-it` lets the client prompt for credentials (or pass `-e OFFBALANCE_API_KEY=… -e OFFBALANCE_SESSION_KEY=…`).
-- Jobs run as sibling containers on the host's Docker daemon, hence the socket mount.
-- The daemon mounts job output by **host** path, so the jobs folder must be at the same path inside the
-  container and on the host (`OFFBALANCE_JOBS_DIR`).
-- `--user` makes the job output files yours instead of root's.
-- For the real HTTPS server, also mount its certificate and set `REQUESTS_CA_BUNDLE` to it.
+### GPU benchmark
 
-## Hardware benchmark scores
+Each detected GPU is benchmarked by [`benchmark/gpu_benchmark.py`](benchmark/gpu_benchmark.py) inside a PyTorch container, given the GPU the same way a GPU job is. A GPU that benchmarks is one jobs can use. The images are pinned by digest in [`benchmark/gpu.py`](benchmark/gpu.py) and pulled once, on the first run (several GB):
 
-`BenchmarkManager` measures resources from inside the provider VM, so results reflect the VM allocation rather than the host's advertised hardware. It returns only three raw throughput scores: CPU SHA-256 operations per second, GPU score, and memory-copy throughput in MiB per second. CPU and memory scores use the median of repeated samples.
+- NVIDIA: `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime`, run with `--gpus device=N`. Needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and a driver that supports CUDA 12.
+- AMD: `rocm/pytorch:rocm6.3_ubuntu22.04_py3.10_pytorch_release_2.4.0`, run with `/dev/kfd`, `/dev/dri`, the `video` group and `HIP_VISIBLE_DEVICES=N`. Needs ROCm on the host. The AMD path has only been tested with mocked tools and Docker, not on AMD hardware.
 
-GPU is reported as unavailable (`null`) until a GPU benchmark backend is implemented; it must not be interpreted as a measured zero. Compare scores only when the benchmark implementation and settings match. Re-run the benchmark after changing the VM's CPU or memory allocation. These client-reported measurements help with provider matching but do not prove hardware identity or guarantee job performance.
+If Docker can't use a GPU, the profile still lists it, with the reason (for example a missing toolkit), and it isn't offered for jobs. `OFFBALANCE_SKIP_GPU_BENCHMARK=1` skips the GPU benchmark; detected GPUs are then reported as not usable.
+
+These are self-reported measurements: they help match jobs and price machines, but don't prove what hardware a provider has. Restart the client after changing the machine's or VM's hardware.
 
 ## Provider availability
 
@@ -68,7 +58,8 @@ python3 main.py --dev --provider 1
 The local launcher sets the URL and certificate trust automatically. `--dev`
 uses the seeded token `dev` for provider 1, and `dev2`–`dev4` for providers 2–4;
 `OFFBALANCE_API_KEY` overrides it. For ordinary sign-in, use the API key shown
-in the frontend's provider setup and a session key authorized for the same wallet.
+in the frontend's provider setup and a session key authorized for the same wallet
+(see [Credentials](../README.md#credentials)).
 Set a positive hourly price in the frontend after the machine's benchmark appears.
 Benchmarks and pricing alone do not establish availability; matching also requires
 a live heartbeat and hardware that meets the job's requirements.
@@ -80,8 +71,14 @@ stops or loses connectivity, availability expires automatically.
 Test availability and execution handling without a running Docker daemon or blockchain node:
 
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m pip install requests docker
 python3 -m unittest discover -s test -v
+```
+
+The GPU benchmark test is skipped unless you ask for it. On a machine with a GPU and Docker GPU support, it runs the real benchmark container for each detected GPU (the first run pulls the image):
+
+```bash
+OFFBALANCE_GPU_TEST=1 python3 -m unittest discover -s test -p test_benchmark.py -k RealGpu -v
 ```
 
 ## Docker output and failures

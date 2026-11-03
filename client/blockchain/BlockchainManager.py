@@ -33,7 +33,7 @@ class BlockchainManager():
         self.address = credentials.session.address
 
         # ...on behalf of the owner wallet: the identity the server assigns and the contract pays.
-        # Events name the owner, so this is what assignments are matched against.
+        # Events name the owner, so assignments are matched against it.
         self.owner = credentials.owner
         
         # i need to look through only the latest block for the events, but only do it once. Hence, I have a last_scanned_block value
@@ -59,6 +59,22 @@ class BlockchainManager():
         # advance next_block_to_scan for the next block that will be published
         self.next_block_to_scan = end_block + 1
         return res
+
+    # seconds of chain time left until `timestamp` (the contract's deadlines are chain time)
+    def seconds_until(self, timestamp: int) -> int:
+        now = int(self.w3.eth.get_block('latest')['timestamp'])
+        return max(0, int(timestamp) - now)
+
+    def execution_window(self, block_number: int, execution_seconds: int) -> int:
+        # Milestone4 omits the duration from COMMIT_PHASE_START. The assigned
+        # manifest supplies it; the event block anchors the start in chain time.
+        if not isinstance(execution_seconds, int) or isinstance(execution_seconds, bool) or execution_seconds <= 0:
+            raise ValueError('The assigned manifest needs a positive execution timeout.')
+        started = int(self.w3.eth.get_block(block_number)['timestamp'])
+        now = int(self.w3.eth.get_block('latest')['timestamp'])
+        if now < started:
+            raise ValueError('Commit event block is ahead of the current chain time.')
+        return max(0, started + execution_seconds - now)
 
     # one salt per job: revealing it exposes only this job's commitment, never the seed or other jobs
     def job_key(self, job_id: int) -> bytes:

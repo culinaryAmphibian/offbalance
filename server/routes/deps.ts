@@ -6,7 +6,9 @@ import type { Builder } from "../services/builder.ts";
 import type { Chain } from "../services/chain.ts";
 import type { Matcher } from "../services/matcher.ts";
 
-export type Deps = { chain: Chain | null; matcher: Matcher; builder: Builder };
+import type { ResultStore } from "../storage/results.ts";
+
+export type Deps = { chain: Chain | null; matcher: Matcher; builder: Builder; results?: ResultStore | null };
 
 // Loads :jobId (the on-chain id) or answers 400/404 and returns null.
 export async function loadJob(req: Request, res: Response): Promise<HydratedDocument<Job> | null> {

@@ -1,16 +1,18 @@
 // /jobs: buyers submit and follow jobs; providers see the jobs they're on.
 import { Router } from "express";
 import { createHash } from "node:crypto";
+import { StorageError, MAX_RESULT_BYTES } from "../storage/results.ts";
 import { config } from "../config.ts";
 import { isValidObjectId } from "mongoose";
 import { requireAuth } from "../middleware/auth.ts";
 import { AccountModel, BuildModel, BuildStatus, JobModel, JobStatus, nextSeq } from "../models/index.ts";
 import { registry } from "../services/registry.ts";
 import { loadJob, type Deps } from "./deps.ts";
-import { serializeJob, serializeResults } from "./serialize.ts";
+import { serializeJob } from "./serialize.ts";
 
 const SETTABLE = [
-	"name", "dockerImageDigest", "command", "env", "inputUrl", "cpuLimit", "memLimitMb",
+	// no cpuLimit/memLimitMb: the job model derives them from requirements
+	"name", "dockerImageDigest", "command", "env", "inputUrl",
 	"maxPrice", "minNodesToRunOn", "minNodesToAgree", "timeWindow", "requirements",
 ] as const;
 
@@ -20,18 +22,24 @@ function canonical(value: unknown): unknown {
 	return value;
 }
 
-export function jobRoutes({ chain, matcher }: Deps): Router {
+export function jobRoutes({ chain, matcher, results }: Deps): Router {
 	const router = Router();
 	const browserJob = (job: Parameters<typeof serializeJob>[0], me: unknown, wallet: string) => ({
 		...serializeJob(job), executionMode: chain ? "chain" : "local",
 		canViewResults: String(job.owner) === String(me),
 		...(String(job.owner) === String(me) ? { submitWallet: wallet } : {}),
 		canSubmit: String(job.owner) === String(me) && Boolean(chain) && !job.submittedAt && job.status === JobStatus.PENDING,
+		canCancel: String(job.owner) === String(me) && cancelable(job),
 	});
+	// Pending with nobody assigned; or canceled here while the buyer's submitJob was still in
+	// flight, so the escrow landed on chain anyway and only the buyer's cancelJob() returns it.
+	const cancelable = (job: Parameters<typeof serializeJob>[0]) =>
+		(job.status === JobStatus.PENDING && job.providers.length === 0) ||
+		(Boolean(chain) && job.status === JobStatus.CANCELED && Boolean(job.submittedAt) && !job.settledAt);
 	router.use("/jobs", requireAuth);
 
 	// Creates the job and reserves its on-chain id. The buyer's wallet then calls
-	// submitJob(id, price, k, quorum, timeWindow, image), escrowing the price;
+	// submitJob(price, k, quorum, timeWindow, image), escrowing the price;
 	// matching starts on JOB_SUBMITTED.
 	//
 	// The image is one of:
@@ -130,9 +138,19 @@ export function jobRoutes({ chain, matcher }: Deps): Router {
 			res.status(409).json({ error: `job is on-chain; call cancelJob(${job.onChainJobId}) from your wallet` });
 			return;
 		}
-		job.status = JobStatus.CANCELED;
-		await job.save();
-		res.json({ job: browserJob(job, res.locals.account._id, res.locals.wallet) });
+		// atomic, so the matcher can't claim the job between the check above and the cancel
+		const canceled = await JobModel.findOneAndUpdate(
+			{ _id: job._id, status: JobStatus.PENDING, providers: { $size: 0 }, ...(chain ? { submittedAt: null } : {}) },
+			{ $set: { status: JobStatus.CANCELED, settledAt: chain ? null : new Date() } },
+			{ returnDocument: "after" },
+		);
+		if (!canceled) {
+			res.status(409).json({ error: "the job changed while canceling; refresh and try again" });
+			return;
+		}
+		await AccountModel.updateOne({ _id: canceled.owner }, { $addToSet: { completedJobs: canceled._id } });
+		matcher.release(canceled.onChainJobId);
+		res.json({ job: browserJob(canceled, res.locals.account._id, res.locals.wallet) });
 	});
 
 	router.get("/jobs/:jobId/result", async (req, res) => {
@@ -142,7 +160,50 @@ export function jobRoutes({ chain, matcher }: Deps): Router {
 			res.status(403).json({ error: "not your job" });
 			return;
 		}
-		res.json({ status: job.status, results: serializeResults(job) });
+		const result = job.results.find(r => r.contentVerified && r.retainedUntil && r.retainedUntil.getTime() > Date.now());
+		if (!result) {
+			res.status(404).json({ error: "no retained verified result is available" });
+			return;
+		}
+		if (!results) {
+			res.status(503).json({ error: "result storage is disabled" });
+			return;
+		}
+		try {
+			const stored = await results.get(result.location);
+			if (stored.size !== result.size) {
+				stored.body.destroy();
+				res.status(502).json({ error: "stored result size does not match the verified artifact" });
+				return;
+			}
+			// Results are capped at 25 MiB. Check the full archive before returning
+			// any bytes so a corrupted object cannot masquerade as verified output.
+			const chunks: Buffer[] = [];
+			let size = 0;
+			for await (const chunk of stored.body) {
+				size += chunk.length;
+				if (size > MAX_RESULT_BYTES || size > stored.size) {
+					stored.body.destroy();
+					throw new StorageError('Invalid stored result size', 502);
+				}
+				chunks.push(Buffer.from(chunk));
+			}
+			const bytes = Buffer.concat(chunks);
+			if (size !== stored.size || createHash('sha256').update(bytes).digest('hex') !== result.archiveHash) {
+				res.status(502).json({ error: 'stored result failed its integrity check' });
+				return;
+			}
+			res.setHeader('Content-Type', 'application/x-tar');
+			res.setHeader('Content-Length', stored.size);
+			res.setHeader('Content-Disposition', `attachment; filename="offbalance-${job.onChainJobId}.tar"`);
+			res.setHeader('Cache-Control', 'private, no-store');
+			res.setHeader('X-Content-Type-Options', 'nosniff');
+			res.setHeader('X-Result-Hash', result.hash);
+			res.end(bytes);
+		} catch (error) {
+			if (res.headersSent) { res.destroy(); return; }
+			res.status(error instanceof StorageError && error.status === 404 ? 404 : 503).json({ error: "result storage is unavailable" });
+		}
 	});
 
 	return router;

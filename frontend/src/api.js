@@ -42,7 +42,11 @@ export function createApi({
 				jobs: Array.isArray(data.jobs) ? data.jobs.map(normalizeJob) : data.jobs,
 				summary: {
 					...summary,
-					...(view === "provider" ? { currentStake: dashboard.account?.currentStake } : {}),
+					...(view === "provider" ? {
+						currentStake: dashboard.account?.currentStake,
+						// the chain address the provider client earns with; credits accrue there
+						providerAddress: dashboard.provider?.hardware?.address ?? null,
+					} : {}),
 				},
 			};
 		},
@@ -60,9 +64,13 @@ export function createApi({
 			});
 			return { ...data, job: normalizeJob(data.job) };
 		},
+		cancelJob: async (id) => {
+			const data = await request(`/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+			return { ...data, job: normalizeJob(data.job) };
+		},
 		getResult: (id, signal) =>
 			request(`/jobs/${encodeURIComponent(id)}/result`, {
-				signal,
+				signal, binary: true,
 			}),
 		getProvider: async (signal) => {
 			const [data, dashboard] = await Promise.all([
@@ -92,7 +100,7 @@ export function createApi({
 
 	async function request(
 		path,
-		{ body, headers, signal, sessionToken = token, ...options } = {},
+		{ body, headers, signal, binary = false, sessionToken = token, ...options } = {},
 	) {
 		const requestToken = sessionToken;
 		let response;
@@ -103,7 +111,7 @@ export function createApi({
 					? AbortSignal.any([signal, AbortSignal.timeout(20000)])
 					: AbortSignal.timeout(20000),
 				headers: {
-					Accept: "application/json",
+					Accept: binary ? "application/x-tar" : "application/json",
 					...(body ? { "Content-Type": "application/json" } : {}),
 					...(requestToken
 						? { Authorization: `Bearer ${requestToken}` }
@@ -130,6 +138,12 @@ export function createApi({
 			);
 		}
 		if (response.status === 204) return null;
+		if (binary) {
+			const type = response.headers.get("content-type")?.split(";")[0].trim();
+			if (!["application/x-tar", "application/octet-stream"].includes(type))
+				throw new ApiError("The server did not return a result archive.");
+			return response.blob();
+		}
 		if (
 			!response.headers.get("content-type")?.includes("application/json")
 		) {
@@ -159,7 +173,9 @@ function providerProfile({ hardware, suggestedPrice, online, lastSeen }, current
 		lastSeen: lastSeen ?? null,
 		currentStake,
 		pricePerHour: hardware?.price == null ? null : rateText(hardware.price),
-		suggestedPricePerHour: suggestedPrice == null ? null : rateText(suggestedPrice),
+		// { formula: { pricePerHour, items: [{ label, detail, pricePerHour }] }, market: { pricePerHour, similarMachines } | null }
+		suggestedPrice: suggestedPrice ?? null,
+		suggestedPricePerHour: suggestedPrice?.formula?.pricePerHour ?? null,
 		machine: hardware ?? null,
 	};
 }

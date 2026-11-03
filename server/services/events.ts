@@ -11,7 +11,13 @@ async function accountForAddress(address: unknown) {
 	return hw?.userRef ?? (await AccountModel.findOne({ walletIds: String(address).toLowerCase() }))?._id ?? null;
 }
 
-const IGNORED_EVENTS = new Set(["COMMITTED", "REVEALED", "CONSENSUS_REACHED"]);
+const IGNORED_EVENTS = new Set([
+	"COMMITTED", "REVEALED", "CONSENSUS_REACHED", "STAKE_REFUNDED",
+	// staking phase: per-provider deposits and the finalized set; the status follows from the phase events
+	"STAKED", "PROVIDERS_SELECTED",
+	// account-level, not about a job (no jobId): a provider authorizing or revoking its client's key
+	"SESSION_KEY_REGISTERED", "SESSION_KEY_REVOKED",
+]);
 
 export async function handleChainEvent(event: ChainEvent, matcher: Matcher): Promise<void> {
 	if (event.id && await ChainEventModel.exists({ _id: event.id })) return;
@@ -61,9 +67,25 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 					{ _id: account, processedChainEvents: { $ne: `${effectId}:provider` } },
 					{ $inc: { reputation: 1, totalEarned: earned }, $addToSet: { processedChainEvents: `${effectId}:provider` } },
 				);
+				// the job view's payment details; one payout per provider per job
+				await JobModel.updateOne(
+					{ _id: job._id, "payouts.provider": { $ne: account } },
+					{ $push: { payouts: { provider: account, amount: earned } } },
+				);
 			}
-			await AccountModel.updateOne({ _id: job.owner, processedChainEvents: { $ne: `${effectId}:buyer` } }, { $inc: { totalSpent: job.runningPrice }, $addToSet: { processedChainEvents: `${effectId}:buyer` } });
+			// the buyer is charged once per job, on DELIVERED, not once per provider payout
 			return;
+		}
+
+		// The buyer escrowed job.maxPrice in submitJob; settlement spends exactly that escrow.
+		// Keyed by job (not by log) so a replayed or duplicate DELIVERED never charges twice.
+		case "DELIVERED": {
+			const charge = `job:${job._id}:buyer-spent`;
+			await AccountModel.updateOne(
+				{ _id: job.owner, processedChainEvents: { $ne: charge } },
+				{ $inc: { totalSpent: job.maxPrice }, $addToSet: { processedChainEvents: charge } },
+			);
+			break; // then the status update below
 		}
 
 		case "SLASHED": {
@@ -79,6 +101,7 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 		return;
 	}
 	job.status = status;
+	if (TERMINAL_STATUSES.includes(status) && !job.settledAt) job.settledAt = new Date();
 	await job.save();
 
 	if (TERMINAL_STATUSES.includes(status)) {

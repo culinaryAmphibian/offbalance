@@ -60,6 +60,8 @@ if (process.argv.includes("--fixtures")) {
 				submittedAt: new Date(),
 				dockerImageDigest: ALPINE,
 				command: ["sh", "-c", 'echo "result for job 1" > /output/result.txt'],
+				// an update skips the model's validate hook, so the limits are spelled out to match
+				requirements: { minVcpus: 1, minMemoryGb: 0.25 },
 				cpuLimit: 1,
 				memLimitMb: 256,
 				maxPrice: "1",

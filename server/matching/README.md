@@ -22,7 +22,7 @@ The example names external integrations, not built-in implementations. Construct
 
 `getJob(id)` returns a schedulable job or `null` when the job is missing or no longer eligible. The external adapter owns lifecycle eligibility. Records contain string `id`/`owner`, positive integer `k` and `window` in seconds, decimal ETH string `maxPrice`, canonical ISO `createdAt`, and minimum hardware requirements. Requirements remain nonnegative integers. Rehydrating pending job IDs belongs to the external adapter; the manager does not discover jobs by creating or querying its own schema.
 
-`listProviders(job)` returns the provider records permitted for that job. Each has `wallet`, `accountId`, optional provider `id`, `registered`, `pricePerHour`, and `machine: {cpuScore, gpuScore, memoryScore}`. Scores are finite nonnegative numbers no greater than `Number.MAX_SAFE_INTEGER`; fractional throughput is preserved. `gpuScore: null` means unavailable, not measured zero. The repository's job-specific candidate list is enforced even when the shared live cache contains other providers.
+`listProviders(job)` returns the provider records permitted for that job. Each has `wallet`, `accountId`, optional provider `id`, `registered`, `pricePerHour`, and `machine: {vcpus, memoryGb, gpus: [{vendor, vramGb}]}` (`services/hardware.ts` `machineSpecs`). `vcpus` is a positive integer, `memoryGb` a finite nonnegative number, and `gpus` lists only GPUs whose benchmark container ran; a machine without them isn't available. The repository's job-specific candidate list is enforced even when the shared live cache contains other providers.
 
 `onMatched(job, providers, quote)` must persist or reliably forward an assignment before resolving. Rejection releases all reservations and keeps the job queued. The callback must be idempotent for a job ID, including after coordinator restarts. It must not await a recursive call to this manager. A successful call does not imply on-chain acceptance, execution, funds, or payment.
 
@@ -40,7 +40,7 @@ The RAM queue and live cache are scheduler internals, not the team's persistent 
 
 ## Selection policy
 
-Scan jobs by `createdAt`, then ID; skip currently unmatchable jobs. Exclude the buyer's own account and providers that are unregistered, unpriced, stale/offline, busy, or below any required benchmark. Unknown GPU qualifies only when its minimum is zero.
+Scan jobs by `createdAt`, then ID; skip currently unmatchable jobs. Exclude the buyer's own account and providers that are unregistered, unpriced, stale/offline, busy, or without the job's resources: at least `minVcpus` vCPUs and `minMemoryGb` GB, and for `gpu` other than `none` a GPU of that vendor (`any` takes either) with at least `minGpuVramGb` GB of VRAM. Headroom is how many times over its tightest requirement a machine is.
 
 Rank eligible providers by lower hourly rate, greater bottleneck hardware headroom, older last-assignment timestamp, and case-insensitive lexical wallet. Headroom is the smallest measured/minimum ratio across nonzero requirements, or zero if none are required.
 

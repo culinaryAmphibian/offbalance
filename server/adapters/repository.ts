@@ -2,7 +2,8 @@ import { isValidObjectId } from 'mongoose';
 import { decimalString } from '../models/decimal.ts';
 import { AccountModel, HardwareModel, JobModel, JobStatus, TERMINAL_STATUSES, type Hardware, type Job } from '../models/index.ts';
 import { formatEthAmount, parseEthAmount } from '../matching/MatchingEngine.ts';
-import type { MatchRepository, ProviderRecord, SchedulingJob } from '../matching/types.ts';
+import type { GpuRequirement, HardwareRequirements, MatchRepository, ProviderRecord, SchedulingJob } from '../matching/types.ts';
+import { machineSpecs, type HardwareProfile } from '../services/hardware.ts';
 import type { Assignment, AssignmentRepository, JobId } from '../agent-manager/types.ts';
 
 export function numericJobId(id: JobId): number | null {
@@ -21,6 +22,14 @@ export function hourlyPrice(price: number): string {
   return decimal;
 }
 
+export function jobRequirements(job: Job): HardwareRequirements {
+  const { minVcpus = 1, minMemoryGb = 1, gpu = 'none', minGpuVramGb = 0 } = job.requirements ?? {};
+  return { minVcpus, minMemoryGb, gpu: gpu as GpuRequirement, minGpuVramGb };
+}
+
+// records from before hardware profiles have no cpu/memory: never matched
+export const hardwareSpecs = (hw: Hardware) => hw.cpu && hw.memory ? machineSpecs(hw as unknown as HardwareProfile) : null;
+
 export function schedulingJob(job: Job): SchedulingJob {
   const rate = parseEthAmount(decimalString(job.maxPrice ?? '0'));
   // DB API: each provider's hourly ceiling. Manager: total execution budget.
@@ -29,7 +38,7 @@ export function schedulingJob(job: Job): SchedulingJob {
   return {
     id: String(job.onChainJobId), owner: String(job.owner), k: job.minNodesToRunOn,
     quorum: job.minNodesToAgree, window: job.timeWindow, maxPrice: formatEthAmount(budget),
-    createdAt: job.createdAt.toISOString(), requirements: { minCpuScore: job.requirements?.minCpuScore ?? 0, minGpuScore: job.requirements?.minGpuScore ?? 0, minMemoryScore: job.requirements?.minMemoryScore ?? 0 },
+    createdAt: job.createdAt.toISOString(), requirements: jobRequirements(job),
     hourlyCeiling: decimalString(job.maxPrice ?? '0'),
   };
 }
@@ -38,7 +47,7 @@ function providerRecord(hw: Hardware, busyJobId: string | null): ProviderRecord 
   return {
     id: String(hw.userRef), accountId: String(hw.userRef), wallet: hw.address, registered: true,
     ...(hw.price == null ? {} : { pricePerHour: hourlyPrice(hw.price) }),
-    machine: { cpuScore: hw.cpuScore, gpuScore: hw.gpuScore, memoryScore: hw.memoryScore },
+    machine: hardwareSpecs(hw),
     busyJobId,
   };
 }
@@ -77,7 +86,7 @@ export class MongoRepository implements MatchRepository, AssignmentRepository {
     if (number === null || !isValidObjectId(providerId)) return null;
     const job = await JobModel.findOne({ onChainJobId: number, providers: providerId });
     return job ? { id: String(job.onChainJobId), dockerImage: job.dockerImageDigest,
-      requirements: { minCpuScore: job.requirements?.minCpuScore ?? 0, minGpuScore: job.requirements?.minGpuScore ?? 0, minMemoryScore: job.requirements?.minMemoryScore ?? 0 }, window: job.timeWindow } : null;
+      requirements: jobRequirements(job), window: job.timeWindow } : null;
   }
 
   async getActiveAssignment(providerId: string): Promise<Assignment | null> {

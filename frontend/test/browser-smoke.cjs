@@ -24,7 +24,7 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       assert.equal(await page.getByRole('link',{name:'Submit job',exact:true}).count(),0);
       await page.getByRole('button',{name:'Buyer',exact:true}).click();
     });
-    await check('validation, hardware disclosure and successful job creation', async () => {
+    await check('validation, resources per provider and successful job creation', async () => {
       await page.getByRole('link',{name:'Submit job',exact:true}).click();
       await page.getByRole('button',{name:'Save job',exact:true}).click();
       await page.getByText('Enter a job name.',{exact:true}).waitFor();
@@ -38,24 +38,27 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       await page.getByRole('button',{name:'Save job',exact:true}).click();
       await page.getByText('Agreement cannot exceed the provider count.',{exact:true}).waitFor();
       await page.getByLabel('Required matching results',{exact:true}).fill('2');
-      await page.getByText('Minimum hardware scores',{exact:true}).click();
-      await page.getByLabel('CPU score',{exact:true}).fill('100');
+      await page.getByLabel('vCPUs (CPU threads)',{exact:true}).fill('2');
+      assert.equal(await page.getByLabel('Minimum GPU memory (GB)',{exact:true}).count(),0);
+      await page.getByLabel('GPU',{exact:true}).selectOption('nvidia');
+      await page.getByLabel('Minimum GPU memory (GB)',{exact:true}).fill('8');
       await page.screenshot({path:`${root}/submit-desktop.png`,fullPage:true});
       await page.getByRole('button',{name:'Save job',exact:true}).click();
       await page.getByRole('heading',{name:'Browser workload',exact:true}).waitFor();
       await page.getByText('Job saved.',{exact:true}).waitFor();
       await page.getByText('10 minutes',{exact:true}).waitFor();
+      await page.getByText('2 vCPUs · 1 GB memory · NVIDIA GPU with 8 GB+ VRAM',{exact:true}).waitFor();
       assert.equal(await page.getByRole('button',{name:'Download result'}).count(),0);
       await page.getByRole('link',{name:'← Overview',exact:true}).click();
       await page.getByRole('link',{name:'Browser workload',exact:true}).waitFor();
     });
-    await check('provider delivery metadata and browser history', async () => {
+    await check('demo result download and browser history', async () => {
       await page.getByRole('link',{name:'Matrix computation',exact:true}).click();
-      await page.getByRole('button',{name:'Load delivery records',exact:true}).click();
-      await page.getByRole('link',{name:'Open provider output',exact:true}).waitFor();
-      await page.getByText('Verified on chain',{exact:true}).waitFor();
-      assert.equal(await page.getByRole('link',{name:'Open provider output',exact:true}).getAttribute('href'),'https://example.com/offbalance-demo-output');
-      assert.equal(await page.getByRole('button',{name:'Download result',exact:true}).count(),0);
+      await page.getByText('Verified by coordinator',{exact:true}).waitFor();
+      const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button',{name:'Download result',exact:true}).click()]);
+      assert.equal(download.suggestedFilename(), 'offbalance-demo-result.txt');
+      assert.equal(await fs.readFile(await download.path(), 'utf8'), 'OffBalance demo result\n');
+      assert.equal(await page.getByRole('link',{name:/Open provider output/}).count(),0);
       await page.screenshot({path:`${root}/details-desktop.png`,fullPage:true});
       await page.goBack();
       await page.getByRole('heading',{name:'Overview',exact:true}).waitFor();

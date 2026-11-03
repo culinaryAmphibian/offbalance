@@ -1,7 +1,20 @@
 import requests
-from benchmark.Scores import Scores
+from benchmark.HardwareProfile import HardwareProfile
+from job.Archive import result_archive
 
 _SERVER_URL = "https://localhost:5173"
+
+class DeliveryError(requests.RequestException):
+    """A result upload the server refused. `reason` is the server's own error text (no credentials)."""
+    def __init__(self, status: int | None, reason: str):
+        super().__init__(f"HTTP {status}: {reason}" if status else reason)
+        self.status = status
+        self.reason = reason
+
+    @property
+    def retryable(self) -> bool:
+        # 409: the server hasn't seen DELIVERY_PHASE_START yet (or a concurrent write); 5xx/None: transient
+        return self.status is None or self.status in (409, 429) or self.status >= 500
 
 class ServerManager():
     # identity (who am i to the server?)
@@ -30,18 +43,12 @@ class ServerManager():
         return response
 
     # throws if post failed
-    def post_benchmark(self, scores: Scores) -> None:
-        # post scores
-
-        data = {
-            "cpu": scores.cpu,
-            "gpu": scores.gpu,
-            "mem": scores.memory
-        }
+    def post_benchmark(self, profile: HardwareProfile) -> None:
         try:
-            self.request("POST", "/scores", data=data)        
+            self.request("POST", "/scores", json=profile.to_json())
         except requests.HTTPError as e:
-            raise requests.HTTPError(f"Failed to post benchmark: {e}")
+            detail = e.response.text[:500] if e.response is not None else ""
+            raise requests.HTTPError(f"Failed to post benchmark: {e} {detail}".strip(), response=e.response)
 
     # cleanup :D
     def close(self) -> None:
@@ -65,13 +72,6 @@ class ServerManager():
         hardware = res.json().get('hardware') or {}
         return hardware.get('address')
 
-    # address, chain id and ABI of the deployed OffBalance contract
-    def get_contract(self) -> dict:
-        data = self.request('GET', '/contract_address').json()
-        if not data.get('address') or not isinstance(data.get('abi'), list) or not data['abi']:
-            raise ValueError("the server didn't return the contract address and ABI")
-        return data
-
     def getDockerManifest(self, jobId):
         res = self.request("GET", f"/jobManifest/{jobId}")
         
@@ -88,3 +88,37 @@ class ServerManager():
                 json={"message": message[:4096]}, timeout=15,
             )
             response.raise_for_status()
+
+    def deliver_result(self, job_id, output_dir, result_hash, stop_event=None):
+        # Workers have their own session; account credentials stay on the API origin.
+        with result_archive(output_dir, result_hash, stop_event) as (archive, size), requests.Session() as session:
+            session.headers.update(self.session.headers)
+            session.verify = self.session.verify
+            try:
+                response = session.post(
+                    f'{self.base_url}/provider/results/{int(job_id)}',
+                    data=archive, headers={'Content-Type': 'application/x-tar',
+                                          'Content-Length': str(size), 'X-Result-Hash': result_hash.hex()},
+                    timeout=(10, 60), allow_redirects=False,
+                )
+                if not 200 <= response.status_code < 300:
+                    try:
+                        reason = str(response.json().get('error') or 'upload was not accepted')
+                    except Exception:  # non-JSON body
+                        reason = 'upload was not accepted'
+                    raise DeliveryError(response.status_code, reason[:300])
+                result = response.json()
+                if not isinstance(result, dict) or not isinstance(result.get('results'), list) or not any(
+                    isinstance(item, dict) and item.get('contentVerified') is True and (
+                        item.get('receiptVerified') is True or
+                        (item.get('receiptMode') or result.get('receiptMode')) in ('offchain', 'local')
+                    )
+                    for item in result.get('results', [])
+                ):
+                    raise DeliveryError(response.status_code, 'result delivery is not confirmed')
+                return result
+            except DeliveryError:
+                raise
+            except (requests.RequestException, ValueError):
+                # Exception text from an HTTP library can include URL credentials or headers.
+                raise DeliveryError(None, 'result upload failed (network or bad response)') from None

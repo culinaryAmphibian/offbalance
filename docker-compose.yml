@@ -1,0 +1,210 @@
+# OffBalance across machines. One machine is the HOST; any number of others are CLIENTS.
+# Every machine sets HOST_ADDRESS (the host's LAN IP) in a repo-root .env (see .env.example).
+#
+#   host mode:    docker compose --profile host up --build
+#                   server  https://HOST_ADDRESS:5000   (all interfaces; other machines use it)
+#                   chain   http://HOST_ADDRESS:8545    (all interfaces; chain id 31337)
+#                   mongo   internal only
+#                   UI      http://localhost:5173       (this machine only)
+#
+#   client mode:  docker compose --profile client up --build -d
+#                   UI      http://localhost:5173, talking to the host's server
+#                 then sign in, copy the API key, "Authorize provider client", copy the session key, and:
+#                 docker compose --profile client run --rm client
+#                   the provider client asks for the API key and session key, then talks to the
+#                   host's server and chain. Each machine signs in with its own wallet.
+#
+# A provider on the host itself:  docker compose --profile host run --rm host-client
+# Contract controller shell:      docker compose --profile host run --rm --no-deps --entrypoint python host-client dev/contract_controller.py
+# Stop:                           docker compose --profile host down   (or --profile client)
+#
+# Host-mode containers reach the server and chain by service name, never through
+# HOST_ADDRESS: a host firewall (e.g. ufw) can block containers from calling back
+# into the host's own LAN IP, while other machines are unaffected.
+#
+# Every host start is a fresh chain and a fresh in-memory database, so restart the
+# clients after restarting the host. The dev keys and API keys are public: LAN only.
+
+name: offbalance
+
+# ---------------------------------------------------------------- shared settings
+x-frontend: &frontend
+  build: ./frontend
+  environment: &frontend-env
+    VITE_API_MODE: api
+    VITE_API_BASE_URL: /api
+    API_CA_FILE: /certs/cert.pem
+  ports:
+    - "127.0.0.1:5173:5173"   # each machine runs its own UI
+
+x-client: &client
+  build: ./client
+  # prompts for the API key and session key; start it with `run --rm` (not `up`) so it can ask
+  entrypoint: ["python", "-u", "main.py"]
+  command: []
+  environment: &client-env
+    # optional, for unattended runs: set these in .env instead of typing them
+    OFFBALANCE_API_KEY: ${OFFBALANCE_API_KEY:-}
+    OFFBALANCE_SESSION_KEY: ${OFFBALANCE_SESSION_KEY:-}
+    REQUESTS_CA_BUNDLE: /certs/cert.pem
+    # job output is bind-mounted into job containers by the HOST daemon, so
+    # the client must see it at the same path as the host does
+    HOME: ${HOME}
+  stdin_open: true
+  tty: true
+
+services:
+  # ---------------------------------------------------------------- host mode
+  mongo:
+    image: mongo:8.2   # 8.0 refuses to start on Linux >= 6.19 (SERVER-121912)
+    profiles: ["host"]
+    # in-memory, like startup.py's fresh database per run; no published port
+    tmpfs:
+      - /data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  blockchain:
+    build: ./blockchain
+    profiles: ["host"]
+    ports:
+      - "8545:8545"
+    volumes:
+      - deployments:/app/blockchain/deployments
+    # healthcheck (in the Dockerfile) passes once the contract is deployed
+
+  server:
+    build: ./server
+    profiles: ["host"]
+    depends_on:
+      mongo:
+        condition: service_healthy
+      blockchain:
+        condition: service_healthy
+    env_file:
+      - path: dev.env          # SERVER_PRIVATE_KEY (the deployer, account #0)
+        required: true
+      - path: ./server/.env.r2.local  # optional, server-only R2 credentials
+        required: false
+    environment:               # overrides the 127.0.0.1 values from dev.env
+      CHAIN: "on"
+      PORT: "5000"
+      HOST: "0.0.0.0"
+      R2_USAGE_FILE: /app/server/.local/result-usage/r2-usage.json
+      MONGODB_URI: mongodb://mongo:27017/offbalance
+      RPC_URL: http://blockchain:8545
+      DEPLOYMENT_FILE: /app/blockchain/deployments/localhost.json
+      # the certificate names the service (host-mode containers) and the LAN address (other machines)
+      TLS_DEV_HOSTS: server,${HOST_ADDRESS:?set HOST_ADDRESS (the host machine's LAN IP) in .env}
+      SEED: "1"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./dev.env:/app/dev.env:ro
+      - deployments:/app/blockchain/deployments:ro
+      - tls:/app/server/.local/tls
+      - results:/app/server/.local/results
+      - result-usage:/app/server/.local/result-usage
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(5000, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))"]
+      interval: 2s
+      timeout: 3s
+      start_period: 10s
+      retries: 30
+
+  frontend:
+    <<: *frontend
+    profiles: ["host"]
+    # Vite loads the server's certificate at startup, so wait for the server
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      <<: *frontend-env
+      API_PROXY_TARGET: https://server:5000
+    volumes:
+      - tls:/certs:ro
+
+  # optional provider on the host machine: docker compose --profile host run --rm host-client
+  host-client:
+    <<: *client
+    profiles: ["host-provider"]   # `run host-client` enables it; `up` never starts it
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      <<: *client-env
+      OFFBALANCE_SERVER_URL: https://server:5000
+      RPC_URL: http://blockchain:8545
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/.offbalance:${HOME}/.offbalance
+      - ./dev.env:/app/dev.env:ro
+      - tls:/certs:ro
+      - deployments:/app/blockchain/deployments:ro   # for the contract controller shell
+
+  # -------------------------------------------------------------- client mode
+  # Trust-on-first-use: reads the host's certificate from its TLS handshake;
+  # verification stays on for everything afterwards.
+  fetch-cert:
+    build: ./client
+    profiles: ["client"]
+    environment:
+      HOST_ADDRESS: ${HOST_ADDRESS:?set HOST_ADDRESS (the host machine's LAN IP) in .env}
+    entrypoint: ["python", "-c"]
+    command:
+      - |
+        import os, ssl, sys, time
+        host = os.environ['HOST_ADDRESS']
+        for attempt in range(60):
+            try:
+                pem = ssl.get_server_certificate((host, 5000), timeout=3)
+                break
+            except OSError as error:
+                print(f'waiting for https://{host}:5000 ({error})', flush=True)
+                time.sleep(2)
+        else:
+            sys.exit(f'no server at https://{host}:5000; is host mode up and port 5000 open?')
+        open('/certs/cert.pem', 'w').write(pem)
+        print(f'trusting the certificate of https://{host}:5000')
+    volumes:
+      - trusted-cert:/certs
+
+  remote-frontend:
+    <<: *frontend
+    profiles: ["client"]
+    depends_on:
+      fetch-cert:
+        condition: service_completed_successfully
+    environment:
+      <<: *frontend-env
+      API_PROXY_TARGET: https://${HOST_ADDRESS:?set HOST_ADDRESS in .env}:5000
+    volumes:
+      - trusted-cert:/certs:ro
+
+  # docker compose --profile client run --rm client
+  client:
+    <<: *client
+    profiles: ["client-provider"] # `run client` enables it; `up` never starts it
+    depends_on:
+      fetch-cert:
+        condition: service_completed_successfully
+    environment:
+      <<: *client-env
+      OFFBALANCE_SERVER_URL: https://${HOST_ADDRESS:?set HOST_ADDRESS in .env}:5000
+      RPC_URL: http://${HOST_ADDRESS:?set HOST_ADDRESS in .env}:8545
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${HOME}/.offbalance:${HOME}/.offbalance
+      - ./dev.env:/app/dev.env:ro
+      - trusted-cert:/certs:ro
+
+volumes:
+  results:        # local result files; retain across server container recreation
+  result-usage:   # R2 cost safeguards must not reset when a container is recreated
+  deployments:    # blockchain -> server (and the contract controller on the host)
+  tls:            # the server's certificate and key (host)
+  trusted-cert:   # the host's certificate as fetched by fetch-cert (clients)

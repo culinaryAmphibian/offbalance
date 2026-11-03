@@ -32,7 +32,7 @@ To use the deployed contract, remove `CHAIN=off`, start/deploy the local chain u
 The existing Python HTTP endpoints remain available:
 
 - `GET /contract_address`
-- `POST /scores` (form-encoded `cpu`, optional `gpu`, `mem`)
+- `POST /scores` (JSON hardware profile from `client/benchmark/`; validated in `services/hardware.ts`)
 - `GET /jobManifest/:jobId` (assigned providers only)
 
 Authenticate with `Authorization: Bearer <token>`. Wallet sign-in is `GET /auth/nonce?wallet=...` followed by `POST /auth {wallet, signature}`; its token is also the provider API key. Report benchmarks and set a positive rate with `POST /provider/price {"price": 1}`. The Python client sends authenticated `POST /provider/heartbeat` immediately after benchmarking and every **10 seconds** while polling (timeout: 30 seconds). Neither saved benchmarks nor pricing establishes liveness. Stopping the client lets availability expire without releasing unfinished assignments.
@@ -59,7 +59,7 @@ Keep certificate verification enabled. The local certificate must also be truste
 
 `dev:mock` remains an independent HTTP development mock and accepts provider heartbeats after a benchmark upload. The root launcher starts the real HTTPS server with a fresh development database for each fresh local chain. `npm start` always starts the real HTTPS server.
 
-Agent output collection still requires an expected SHA-256 plus a caller-supplied object storage adapter. Providers may post existing output locations through `/provider/results/:jobId`; receipt verification depends on the contract. The Python directory hash and agent byte hash still require an agreed output format for direct output collection.
+Result delivery uses bounded uncompressed tar archives verified against the provider's winning directory hash. Storage defaults to private local files; Cloudflare R2 is an explicit server-only option. Milestone 4 records delivery verification in the coordinator because its contract omits `verifyReceipt`; older contracts exposing that function keep their on-chain acknowledgement. Buyers download through the authenticated API. Metadata-only output-location submissions are rejected. See [R2_SETUP.md](R2_SETUP.md) for local/Docker testing, private credentials, bucket setup and usage safeguards. The separate agent-manager byte collection interface still accepts its own caller-supplied adapter.
 
 The database branch's other job, provider, account and build routes are retained. `POST /jobs` additionally persists names and binds optional idempotency keys to the account and original payload. `GET /config` exposes execution mode and the public contract address/chain ID; job responses provide owner-specific submission/result capabilities. The frontend uses these routes through its verified HTTPS development proxy. See [frontend/README.md](../frontend/README.md) for the connected browser workflow.
 

@@ -2,6 +2,8 @@
 // TS enums, so this is a const object plus a union type.
 export const JobStatus = {
 	PENDING: "PENDING",
+	// providers are assigned and depositing their stakes
+	STAKING: "STAKING",
 	COMMIT_PHASE: "COMMIT_PHASE",
 	REVEAL_PHASE: "REVEAL_PHASE",
 	CONSENSUS_VERIFICATION: "CONSENSUS_VERIFICATION",
@@ -26,6 +28,7 @@ export const ACTIVE_STATUSES: JobStatus[] = JOB_STATUSES.filter(
 
 // Contract event -> the status it moves the job to.
 export const STATUS_FOR_EVENT: Record<string, JobStatus> = {
+	COMMIT_STAKE_PHASE_START: JobStatus.STAKING,
 	COMMIT_PHASE_START: JobStatus.COMMIT_PHASE,
 	REVEAL_PHASE_START: JobStatus.REVEAL_PHASE,
 	CONSENSUS_VERIFICATION_START: JobStatus.CONSENSUS_VERIFICATION,

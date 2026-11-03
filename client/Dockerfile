@@ -1,26 +1,31 @@
-# OffBalance provider client.
-#
-#   docker build -t offbalance-client client/
-#   docker run -it --rm --network host \
-#     -v /var/run/docker.sock:/var/run/docker.sock --group-add "$(stat -c %g /var/run/docker.sock)" \
-#     --user "$(id -u):$(id -g)" \
-#     -v "$HOME/.offbalance:$HOME/.offbalance" -e OFFBALANCE_JOBS_DIR="$HOME/.offbalance/jobs" \
-#     -e OFFBALANCE_SERVER_URL=https://localhost:5000 -e RPC_URL=http://127.0.0.1:8545 \
+# OffBalance provider client. It asks for your API key and session key (both from the UI's
+# Provider Setup page), so run it interactively:
+#   docker build -t offbalance-client client
+#   docker run --rm -it \
+#     -v /var/run/docker.sock:/var/run/docker.sock \
+#     -v "$HOME/.offbalance:$HOME/.offbalance" -e HOME="$HOME" \
+#     -v offbalance-tls:/certs:ro \
 #     offbalance-client
+# (docker compose does all of this: see HOW_TO_RUN_WITH_DOCKER.md)
 #
-# -it: the client prompts for the API key and session key.
-# docker.sock: jobs run as sibling containers on the host's Docker daemon.
-# Same jobs path inside and out: the daemon bind-mounts job output by host path.
-# --user: job output files belong to you, not root.
+# Jobs run as sibling containers on the host's Docker daemon (via the socket).
+# The daemon resolves bind mounts on the host, so the job output dir
+# ($HOME/.offbalance/jobs) must be mounted at the same path inside and outside.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    HOME=/tmp
+    PIP_NO_CACHE_DIR=1
 
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+WORKDIR /app/client
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
+
 COPY . .
 
-ENTRYPOINT ["python", "main.py"]
+# main.py reads ../dev.env and ../blockchain/deployments/localhost.json
+ENV OFFBALANCE_SERVER_URL=https://server:5000 \
+    RPC_URL=http://blockchain:8545 \
+    REQUESTS_CA_BUNDLE=/certs/cert.pem
+
+ENTRYPOINT ["python", "-u", "main.py"]

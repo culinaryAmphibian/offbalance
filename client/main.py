@@ -1,20 +1,22 @@
 # main orchestrator that creates all of the managers
 #
-#   python3 main.py                        # prompts for the API key + session key
-#   python3 main.py --dev --provider 2     # keys from dev.env (the provider wallet acts directly)
+#   python3 main.py                        # prompts for the API key + session key (see Credentials.py)
+#   python3 main.py --dev --provider 2     # keys from dev.env: the provider wallet signs directly
 #
 # Startup:
-#   1. ask for the API key (Provider Setup page) and session key (Authorize provider client)
-#   2. fetch the contract address + ABI from the server with the API key
+#   1. credentials: API key (Provider Setup page) + session key ("Authorize provider client")
+#   2. contract address + ABI from the server, using the API key
 #   3. ask the contract which wallet the session key acts for (the owner)
-#   4. hand the credentials to the managers and run
+#   4. build the managers from the credentials and run
+# the contract address always comes from the server
 from blockchain.BlockchainManager import BlockchainManager
-from benchmark.BenchmarkManager import BenchmarkManager
+from benchmark.BenchmarkManager import BenchmarkManager, gpu_benchmarks_enabled
 from server.ServerManager import ServerManager
 from ProviderClient import ProviderClient
 from Credentials import Credentials, parse_api_key, parse_session_key, prompt_credentials
 from web3 import Web3
 import argparse
+import json
 import os
 import sys
 import time
@@ -28,6 +30,8 @@ DEV_ENV_FILE = REPO_ROOT / 'dev.env'
 # every value can be overridden from the environment (see dev.env)
 BASE_URL = os.environ.get('OFFBALANCE_SERVER_URL', 'http://localhost:5000')
 RPC_URL = os.environ.get('RPC_URL', 'http://127.0.0.1:8545')
+# written by `npm run deploy:local` in blockchain/
+DEPLOYMENT_FILE = REPO_ROOT / os.environ.get('OFFBALANCE_DEPLOYMENT', 'blockchain/deployments/localhost.json')
 
 # warn when the session key is about to stop working, or can't afford a stake plus some gas
 EXPIRY_WARNING_SECONDS = 24 * 60 * 60
@@ -70,8 +74,8 @@ def resolve_owner(contract: ProviderContractWrapper, w3: Web3, creds: Credential
         if not dev:
             sys.exit(
                 f"Session key {session} isn't authorized for any wallet, or it has expired.\n"
-                "Open Provider Setup in the OffBalance frontend, use \"Authorize provider client\", "
-                "and paste the session key it shows."
+                "Open Provider Setup in the OffBalance UI, use \"Authorize provider client\", "
+                "and paste the session key it shows. (A restarted chain forgets every session key.)"
             )
         return owner
 
@@ -86,36 +90,47 @@ def resolve_owner(contract: ProviderContractWrapper, w3: Web3, creds: Credential
               f"{Web3.from_wei(needed, 'ether')} ETH. Authorize a new key with more funding.", file=sys.stderr)
     return owner
 
+def ask_for_contract(s_mgr: ServerManager) -> tuple[str, list]:
+    """Contract address and ABI. The server sends both, so a provider on another machine
+    needs no deployment file; older servers send only the address, so the ABI then comes
+    from DEPLOYMENT_FILE."""
+    data = s_mgr.request('GET', '/contract_address').json()
+    # override: skip the server's address and use this one
+    addr = os.environ.get('OFFBALANCE_ADDRESS') or data['address']
+    abi = data.get('abi') or json.loads(DEPLOYMENT_FILE.read_text())['abi']
+    return addr, abi
+
 def main():
     args = parse_args()
 
-    # 1. credentials, kept in memory for the life of the client
+    # 1. credentials, held in memory for the life of the client
     creds = load_dev_credentials(args.provider) if args.dev else prompt_credentials()
+
+    # OFFBALANCE_SKIP_GPU_BENCHMARK=1 reports GPUs without benchmarking them (they then aren't offered for jobs)
+    be_mgr = BenchmarkManager(gpu_benchmarks=gpu_benchmarks_enabled())
 
     w3 = Web3(Web3.HTTPProvider(RPC_URL))
     if not w3.is_connected():
-        raise ConnectionError(f"Blockchain node is not reachable at {RPC_URL}")
+        raise ConnectionError(f"Hardhat node is not reachable at {RPC_URL}")
 
     # 2. the server identifies us by the API key and tells us which contract to use
     s_mgr = ServerManager(BASE_URL, creds.api_key)
     try:
-        deployment = s_mgr.get_contract()
-        contract_addr = Web3.to_checksum_address(os.environ.get('OFFBALANCE_ADDRESS') or deployment['address'])
-        if deployment.get('chainId') is not None and deployment['chainId'] != w3.eth.chain_id:
-            raise ValueError(f"the server's contract is on chain {deployment['chainId']}, but {RPC_URL} is chain {w3.eth.chain_id}")
+        addr_str, contract_abi = ask_for_contract(s_mgr)
+        contract_addr = Web3.to_checksum_address(addr_str)
         if not w3.eth.get_code(contract_addr):
-            raise ValueError(f"No contract deployed at {contract_addr}")
-        contract = ProviderContractWrapper(w3.eth.contract(address=contract_addr, abi=deployment['abi']))
+            raise ValueError(f"No contract deployed at {addr_str}")
+        contract = ProviderContractWrapper(w3.eth.contract(address=contract_addr, abi=contract_abi))
 
         # 3. which wallet are we working for?
         creds = creds.with_owner(resolve_owner(contract, w3, creds, args.dev))
 
         # 4. managers built from the credentials
         bc_mgr = BlockchainManager(w3, contract, creds)
-        print(f"Provider {creds.owner} (session key {creds.session_address}) listening to {contract_addr}")
+        print(f"Provider {creds.owner} (signing with {creds.session_address}) listening to {contract_addr}")
 
-        mediator = ProviderClient(BenchmarkManager(), bc_mgr, s_mgr, RunManager(), credentials=creds)
         print("Client started...")
+        mediator = ProviderClient(be_mgr, bc_mgr, s_mgr, RunManager(), credentials=creds)
         mediator.run()
     finally:
         s_mgr.close()

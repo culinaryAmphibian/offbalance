@@ -11,6 +11,7 @@ import {
   hashToken, nextSeq,
 } from '../models/index.ts';
 import { Matcher } from '../services/matcher.ts';
+import { hardwareFields } from './helpers/hardware.ts';
 
 const mongodbUri = process.env.MONGODB_URI;
 const execute = promisify(execFile);
@@ -63,7 +64,7 @@ describe('development seed', { skip: !mongodbUri && 'set MONGODB_URI to run' }, 
     const provider = await AccountModel.findById(token.account).orFail();
     const hardware = await HardwareModel.create({
       userRef: provider._id, address: token.wallet,
-      cpuScore: 500000, memoryScore: 8192, gpuScore: null, price: 0.01,
+      ...hardwareFields({ threads: 16, totalGb: 31.2 }), price: 0.01,
     });
     provider.hardware = hardware._id;
     await provider.save();
@@ -71,7 +72,7 @@ describe('development seed', { skip: !mongodbUri && 'set MONGODB_URI to run' }, 
       owner: buyer.account, onChainJobId: await nextSeq('jobId'), submittedAt: new Date(),
       dockerImageDigest: `example/compute@sha256:${'a'.repeat(64)}`,
       maxPrice: '0.02', minNodesToRunOn: 1, minNodesToAgree: 1, timeWindow: 60,
-      requirements: { minCpuScore: 400000, minMemoryScore: 4096 },
+      requirements: { minVcpus: 8, minMemoryGb: 16 },
     });
     const matcher = new Matcher(null);
     await matcher.ping();

@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { dateLabel, jobPhase, statusLabel, timeLabel, windowMinutes, resultUrl } from '../jobs';
+import { dateLabel, jobPhase, resourceSummary, statusLabel, timeLabel, windowMinutes } from '../jobs';
+import { formatEth } from '../eth';
 import { useResource } from '../useResource';
-import { submitStoredJob } from '../chain';
+import { cancelStoredJob, collectFunds, submitStoredJob } from '../chain';
+import { walletError } from '../wallet';
 
 export function Status({ value }) {
   return <span className={`status ${jobPhase(value)[0]}`}>{statusLabel(value)}</span>;
@@ -14,8 +16,7 @@ export function ResourceError({ message, retry }) {
 export default function JobDetail({ api, id, notice }) {
   const load = useCallback(signal => api.getJob(id, signal), [api, id]);
   const { data, error, loading, refresh } = useResource(load, 5000);
-  const [results, setResults] = useState(null);
-  const [loadingResults, setLoadingResults] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [resultError, setResultError] = useState('');
   const [chainPending, setChainPending] = useState(false);
   const [chainError, setChainError] = useState('');
@@ -27,22 +28,69 @@ export default function JobDetail({ api, id, notice }) {
   useEffect(() => { active.current = true; return () => { active.current = false; resultController.current?.abort(); chainController.current?.abort(); }; }, []);
   const job = data?.job;
   const needsChain = job?.executionMode === 'chain' && !job.submittedAt && job.status === 'PENDING';
+  const [cancelPending, setCancelPending] = useState(false);
+  const [cancelError, setCancelError] = useState('');
+  const [refundPending, setRefundPending] = useState(false);
+  const [refundNotice, setRefundNotice] = useState('');
+  const onChain = job?.executionMode === 'chain' && !!job.submittedAt;
+  // hidden while this page's own submitJob is in flight: the server hasn't seen the escrow yet
+  const showCancel = !!job?.canCancel && !transaction && !chainPending;
+  // a canceled or unmatched on-chain job: the contract credited the escrow back to the buyer
+  const showRefund = onChain && !job.canCancel && job.canViewResults !== false && ['CANCELED', 'NO_QUORUM'].includes(job.status);
 
-  async function loadResults() {
+  async function cancel() {
+    if (cancelPending || !window.confirm(onChain
+      ? 'Cancel this job? Your wallet will ask you to confirm the cancellation; the escrowed price is returned to you.'
+      : 'Cancel this job? It has not been sent to the blockchain, so nothing is charged.')) return;
+    setCancelPending(true);
+    setCancelError('');
+    try {
+      if (onChain) await cancelStoredJob(job, await api.getConfig(), window.ethereum);
+      else await api.cancelJob(id);
+      if (active.current) refresh();
+    } catch (problem) {
+      if (active.current) setCancelError(onChain ? walletError(problem) : problem.message || 'Could not cancel the job.');
+    } finally {
+      if (active.current) setCancelPending(false);
+    }
+  }
+
+  async function collectRefund() {
+    if (refundPending) return;
+    setRefundPending(true);
+    setCancelError('');
+    setRefundNotice('');
+    try {
+      const { wei } = await collectFunds(await api.getConfig(), window.ethereum);
+      if (active.current) setRefundNotice(`Collected ${formatEth(wei, 3, { wei: true })} ETH to your wallet.`);
+    } catch (problem) {
+      if (active.current) setCancelError(walletError(problem));
+    } finally {
+      if (active.current) setRefundPending(false);
+    }
+  }
+
+  async function download() {
     resultController.current?.abort();
     const controller = new AbortController();
     resultController.current = controller;
-    setLoadingResults(true);
+    setDownloading(true);
     setResultError('');
     try {
-      const result = await api.getResult(id, controller.signal);
+      const archive = await api.getResult(id, controller.signal);
       if (controller.signal.aborted) return;
-      if (!Array.isArray(result?.results)) throw new Error('The server did not return delivery records.');
-      setResults(result.results);
+      const url = URL.createObjectURL(archive);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = (job.result?.filename || `offbalance-${id}.tar`).replace(/[\\/\x00-\x1f\x7f]/g, '_').slice(0, 180);
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (problem) {
-      if (!controller.signal.aborted) setResultError(problem.status === 403 ? 'Delivery records are available to the job owner.' : problem.message);
+      if (!controller.signal.aborted) setResultError(problem.message);
     } finally {
-      if (!controller.signal.aborted) setLoadingResults(false);
+      if (!controller.signal.aborted) setDownloading(false);
     }
   }
 
@@ -79,6 +127,20 @@ export default function JobDetail({ api, id, notice }) {
       {transaction && <p className="notice" role="status">Transaction sent: <span className="mono">{transaction}</span>. Waiting for the coordinator to observe the submission. Keep this page open while it is pending.</p>}
       {chainError && <p className="notice error" role="alert">{chainError}</p>}
     </section>}
+    {(showCancel || showRefund || cancelError) && <section className="panel" aria-label="Cancel job">
+      {showCancel && <>
+        <p>{job.status === 'CANCELED'
+          ? 'This job was canceled, but its blockchain submission went through, so the price is still in escrow. Cancel it on chain to get it back.'
+          : 'No providers have been assigned yet, so you can still cancel this job.'}</p>
+        <button className="button" onClick={cancel} disabled={cancelPending}>{cancelPending ? (onChain ? 'Check your wallet…' : 'Canceling…') : onChain ? 'Cancel job and refund escrow' : 'Cancel job'}</button>
+      </>}
+      {showRefund && <>
+        <p>The escrowed price was returned to your OffBalance balance. Collect it to your wallet.</p>
+        <button className="button" onClick={collectRefund} disabled={refundPending}>{refundPending ? 'Check your wallet…' : 'Collect refund'}</button>
+      </>}
+      {refundNotice && <p className="notice" role="status">{refundNotice}</p>}
+      {cancelError && <p className="notice error" role="alert">{cancelError}</p>}
+    </section>}
     {error && <ResourceError message={error} retry={refresh} />}
     {loading && !job && <p className="muted" role="status">Loading job…</p>}
     {data && !job && !error && <p className="notice error" role="alert">The server did not return a job.</p>}
@@ -91,8 +153,8 @@ export default function JobDetail({ api, id, notice }) {
           <Item label="Container image" mono>{job.dockerImage || '—'}</Item><Item label="Hourly cap per provider">{job.maxPrice ?? '—'} ETH / hour</Item>
           <Item label="Providers assigned">{job.providerCount ?? '—'} / {job.k ?? '—'}</Item><Item label="Matching results">{job.consensus?.agreeing ?? '—'} / {job.consensus?.required ?? job.quorum ?? '—'}</Item>
           <Item label="Runtime">{job.runtimeSeconds == null ? '—' : `${job.runtimeSeconds} seconds`}</Item><Item label="Execution window">{job.window == null ? '—' : `${windowMinutes(job.window)} ${job.window === 60 ? 'minute' : 'minutes'}`}</Item>
-          <Item label="Minimum scores">CPU {job.requirements?.minCpuScore ?? '—'} · GPU {job.requirements?.minGpuScore ?? '—'} · Memory {job.requirements?.minMemoryScore ?? '—'}</Item>
-          <Item label="Amount spent">{job.spent == null ? '—' : `${job.spent} ETH`}</Item>
+          <Item label="Resources per provider">{resourceSummary(job.requirements)}</Item>
+          <Item label="Amount spent">{job.spent == null ? '—' : `${formatEth(job.spent)} ETH`}</Item>
           {job.onChainJobId != null && <Item label="On-chain job ID" mono>{job.onChainJobId}</Item>}
         </dl>
         {job.error && <p className="notice error" role="alert">{job.error}</p>}
@@ -100,31 +162,25 @@ export default function JobDetail({ api, id, notice }) {
       <section className="panel" aria-labelledby="result-heading">
         <div className="section-heading"><h2 id="result-heading">Result</h2></div>
         <dl className="detail-grid result-metadata">
-          <Item label="Delivery">{job.delivery?.status ? statusLabel(job.delivery.status) : 'Not reported'}</Item>
+          <Item label="Delivery">{job.delivery?.status ? statusLabel(job.delivery.status) : 'Not reported'}{job.delivery?.providersDelivered > 0 && job.providerCount ? ` · ${job.delivery.providersDelivered} of ${job.providerCount} providers` : ''}</Item>
           <Item label="Payment">{job.payment?.status ? statusLabel(job.payment.status) : 'Not reported'}</Item>
           {job.delivery?.receivedAt && <Item label="Output received">{timeLabel(job.delivery.receivedAt)}</Item>}
           {job.delivery?.verifiedAt && <Item label="Receipt verified">{timeLabel(job.delivery.verifiedAt)}</Item>}
-          {job.payment?.settledAt && <Item label="Payment settled">{timeLabel(job.payment.settledAt)}</Item>}
+          {job.payment?.settledAt && <Item label={job.payment.status === 'REFUNDED' ? 'Refunded' : 'Payment settled'}>{timeLabel(job.payment.settledAt)}</Item>}
+          {job.payment?.paidToProviders != null && <Item label="Paid to providers">{formatEth(job.payment.paidToProviders)} ETH</Item>}
           {job.result?.retainedUntil && <Item label="Available until">{timeLabel(job.result.retainedUntil)}</Item>}
         </dl>
         {job.delivery?.error && <p className="notice error" role="alert">{job.delivery.error}</p>}
         {job.payment?.error && <p className="notice error" role="alert">{job.payment.error}</p>}
-        {(job.resultHash || job.consensusResultHash) && <p className="result-hash mono"><span className="muted">Reported result hash </span>{job.resultHash || job.consensusResultHash}</p>}
-        {job.canViewResults !== false ? <>
-          <p className="muted">Delivery records are provider-reported output locations. Receipt verification and payment are separate.</p>
-          <button className="button primary" onClick={loadResults} disabled={loadingResults}>{loadingResults ? 'Loading records…' : results ? 'Refresh delivery records' : 'Load delivery records'}</button>
-          {results?.length === 0 && <p className="muted">No delivery records have been reported.</p>}
-          {results?.map((result, index) => <div className="result-record" key={`${result.provider}-${index}`}>
-            <dl className="detail-grid">
-              <Item label="Provider" mono>{result.provider}</Item>
-              <Item label="Reported hash" mono>{result.hash}</Item>
-              <Item label="Delivered">{timeLabel(result.deliveryTime)}</Item>
-              <Item label="Receipt">{result.receiptVerified ? 'Verified on chain' : 'Not verified'}</Item>
-              <Item label="Output location" mono>{result.location || 'Not reported'}</Item>
-            </dl>
-            {resultUrl(result.location) && <a className="text-link" href={resultUrl(result.location)} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer">Open provider output{result.receiptVerified ? '' : ' (unverified receipt)'}</a>}
-          </div>)}
-        </> : <p className="muted">Delivery records are available to the job owner.</p>}
+        {(job.resultHash || job.consensusResultHash) && <p className="result-hash mono"><span className="muted">Result hash </span>{job.resultHash || job.consensusResultHash}</p>}
+        {job.canViewResults !== false ? job.result?.available ? <>
+          <dl className="detail-grid">
+            <Item label="Output content">{job.executionMode === 'demo' ? 'Demo fixture' : 'Hash verified'}</Item>
+            <Item label="Delivery receipt">{job.result.receiptMode === 'offchain' ? 'Verified by coordinator' : job.result.receiptMode === 'local' || job.executionMode === 'local' ? 'Disabled in local mode' : job.result.receiptVerified ? 'Verified on chain' : 'Not yet verified on chain'}</Item>
+          </dl>
+          <button className="button primary" onClick={download} disabled={downloading}>{downloading ? 'Downloading…' : 'Download result'}</button>
+        </> : <p className="muted">The result will appear here when verified output is available.</p>
+          : <p className="muted">Results are available to the job owner.</p>}
         {resultError && <p className="notice error" role="alert">{resultError}</p>}
       </section>
       <p className="muted refresh-note">Updates every 5 seconds.</p>

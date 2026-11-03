@@ -122,10 +122,11 @@ contract OffBalance {
     // revoked authorization can't be replayed.
     mapping(address => uint256) public sessionKeyNonce;
 
-    // Providers have this long (in seconds) after assignment to deposit their required stake.
-    uint256 public constant PENDING_WINDOW = 60 * 60 * 24;
-    uint256 public constant REVEAL_WINDOW = 120;
-    uint256 public constant DELIVERY_WINDOW = 300;
+    // Demo-length windows, in seconds. Providers have PENDING_WINDOW after assignment to deposit
+    // their stake; the server finalizes early once every assigned provider has staked.
+    uint256 public constant PENDING_WINDOW = 30;
+    uint256 public constant REVEAL_WINDOW = 15;
+    uint256 public constant DELIVERY_WINDOW = 30;
 
     // Base stake. A provider's stake is STAKE * (1 + MAX_EXTRA_STAKE * 2^(-reputation / REPUTATION_HALF_LIFE)),
     // so it starts at 6 * STAKE for a new provider and decays toward STAKE as reputation grows.

@@ -160,6 +160,7 @@ contract OffBalanceTest is Test {
         address[] memory only1 = new address[](1);
         only1[0] = p1;
         _assign(job2, only1);
+        uint256 assignedAt = block.timestamp;
         assertEq(_required(job2, p1), 6 * S);
 
         // p1 then wins job1 and gains reputation, lowering its current stakeFor
@@ -168,6 +169,8 @@ contract OffBalanceTest is Test {
         _settle(job1);
         uint256 lower = ob.stakeFor(p1);
         assertLt(lower, 6 * S);
+        // back inside job2's staking window (job1 took longer than the demo-length window)
+        vm.warp(assignedAt + 1);
 
         // job2 still requires the amount fixed at assignment
         vm.prank(p1);
@@ -504,10 +507,10 @@ contract OffBalanceTest is Test {
     }
 
     function test_ExpiredSessionKeyNoLongerActs() public {
-        _register(p1, SESSION_KEY, uint64(block.timestamp + 1 hours));
+        _register(p1, SESSION_KEY, uint64(block.timestamp + 10));
         JobID_t id = _submit(2, 3);
         _assign(id, _list(p1, p2, p3));
-        vm.warp(block.timestamp + 1 hours);
+        vm.warp(block.timestamp + 10); // expired, but staking is still open
         assertEq(ob.providerOf(session), session);
         vm.prank(session);
         vm.expectRevert("Provider not assigned");

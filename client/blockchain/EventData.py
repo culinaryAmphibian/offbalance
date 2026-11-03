@@ -11,7 +11,7 @@ class Event():
         return f"block number: {self.block_number}, event: {self.type.value}, jobId: {self.jobId}"
 
 class ProviderSelectedEvent(Event):
-    def __init__(self, block_number: int, event: BlockchainEvent, jobId: int, provider: str, stake: int):
+    def __init__(self, block_number: int, event: BlockchainEvent, jobId: int, provider: str, stake: int = 0):
         super().__init__(block_number, event, jobId)
         self.provider_selected = provider
         # wei this provider must deposit with submitStake, fixed at assignment
@@ -21,9 +21,10 @@ class ProviderSelectedEvent(Event):
         return f"{super().__repr__()} provider selected: {self.provider_selected}, stake: {self.stake}"
 
 class CommitPhaseStartEvent(Event):
-    def __init__(self, block_number: int, event: BlockchainEvent, jobId: int, deadline: int):
+    # commit_deadline: chain time (unix seconds) by which commitments must land
+    def __init__(self, block_number: int, event: BlockchainEvent, jobId: int, commit_deadline: int | None = None):
         super().__init__(block_number, event, jobId)
-        self.deadline = deadline
+        self.commit_deadline = commit_deadline
 
 class RevealPhaseStartEvent(Event):
     def __init__(self, block_number: int, event: BlockchainEvent, jobId: int):
@@ -53,10 +54,10 @@ def event_class_factory(e) -> Event:
 
     match e['event']:
         case BlockchainEvent.PROVIDER_SELECTED.value:
-            return ProviderSelectedEvent(block_number, event, jobId, args['provider'], args['stake'])
+            return ProviderSelectedEvent(block_number, event, jobId, args['provider'], args.get('stake', 0))
         
         case BlockchainEvent.COMMIT_PHASE_START.value:
-            return CommitPhaseStartEvent(block_number, event, jobId, args['deadline'])
+            return CommitPhaseStartEvent(block_number, event, jobId, args.get('deadline'))
         
         case BlockchainEvent.REVEAL_PHASE_START.value:
             return RevealPhaseStartEvent(block_number, event, jobId)
@@ -75,4 +76,3 @@ def event_class_factory(e) -> Event:
         
         case _:
             raise ValueError(f"{e} is could not be processed by factory... block_number:{block_number}, event: {event}, args: {args}, jobId: {jobId}")
-    

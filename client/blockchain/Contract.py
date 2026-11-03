@@ -2,7 +2,7 @@ from blockchain.EventData import BlockchainEvent, Event, event_class_factory
 from web3 import contract
 
 # contract wrapper that could be tested for proper ABI alignment
-# every transaction is signed by the session key; the contract maps it to the owner (providerOf)
+# every transaction is signed by the session key; the contract maps it to its owner (providerOf)
 
 class TransactionFailed(RuntimeError):
     pass
@@ -29,6 +29,7 @@ class ProviderContractWrapper():
     def submitStake(self, jobId, amount: int, signer, w3):
         return self._send(self.contract.functions.submitStake(jobId), signer, w3, value=amount, label=f"stake for job {jobId}")
 
+    # the stake was already deposited with submitStake
     def submitCommitment(self, jobId, commitment: bytes, signer, w3):
         return self._send(self.contract.functions.submitCommitment(jobId, commitment), signer, w3, label=f"commitment for job {jobId}")
 

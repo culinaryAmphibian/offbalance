@@ -75,7 +75,7 @@ test('job listings use role and full list, with authoritative dashboard totals',
   assert.equal(buyer.jobs[0].k, 3);
   assert.deepEqual(buyer.summary, { activeJobs: 4, completedJobs: 2, totalSpent: '0.008' });
   const provider = await api.listJobs('provider');
-  assert.deepEqual(provider.summary, { activeJobs: 1, completedJobs: 5, totalEarned: '0.02', currentStake: '0.05' });
+  assert.deepEqual(provider.summary, { activeJobs: 1, completedJobs: 5, totalEarned: '0.02', currentStake: '0.05', providerAddress: null });
   assert.deepEqual(urls, ['/api/jobs?role=buyer', '/api/account/me/dashboard', '/api/jobs?role=provider', '/api/account/me/dashboard']);
 });
 
@@ -96,15 +96,26 @@ test('job detail URL encodes IDs and normalizes persisted job fields', async () 
   assert.equal(job.payment, undefined);
 });
 
-test('results are authenticated JSON metadata rather than an invented archive', async () => {
+test('result downloads use authenticated archive responses and encode the job ID', async () => {
   let requested;
-  const result = { status: 'AWAITING_DELIVERY', results: [{ provider: 'account', hash: '0xhash', location: 'https://storage.test/output', receiptVerified: false }] };
-  const api = createApi({ fetcher: async (url, options) => { requested = { url, options }; return json(result); } });
+  const bytes = new Uint8Array([0, 1, 254, 255]);
+  const api = createApi({ fetcher: async (url, options) => {
+    requested = { url, options };
+    return new Response(bytes, { headers: { 'Content-Type': 'application/x-tar' } });
+  } });
   api.setToken('session');
-  assert.deepEqual(await api.getResult('a/b'), result);
+  const archive = await api.getResult('a/b');
+  assert.deepEqual(new Uint8Array(await archive.arrayBuffer()), bytes);
   assert.equal(requested.url, '/api/jobs/a%2Fb/result');
-  assert.equal(requested.options.headers.Accept, 'application/json');
+  assert.equal(requested.options.headers.Accept, 'application/x-tar');
   assert.equal(requested.options.headers.Authorization, 'Bearer session');
+});
+
+test('result downloads reject metadata or HTML instead of saving it as an archive', async () => {
+  for (const type of ['application/json', 'text/html']) {
+    const api = createApi({ fetcher: async () => new Response('{}', { headers: { 'Content-Type': type } }) });
+    await assert.rejects(api.getResult('1'), /did not return a result archive/);
+  }
 });
 
 test('configuration exposes the coordinator chain and execution mode', async () => {
@@ -114,13 +125,17 @@ test('configuration exposes the coordinator chain and execution mode', async () 
 });
 
 test('provider hardware, runtime liveness and account stake map to the setup view', async () => {
-  const hardware = { id: 'machine', price: 0.002, cpuScore: 100, gpuScore: 50, memoryScore: 200, updatedAt: '2026-10-19T00:00:00Z' };
+  const hardware = { id: 'machine', price: 0.002, cpu: { model: 'CPU', cores: 4, threads: 8, singleThreadMBps: 45, multiThreadMBps: 300 },
+    memory: { totalGb: 15.5, bandwidthGBps: 9.8 }, gpus: [], relative: { cpuSingleThread: 1 }, updatedAt: '2026-10-19T00:00:00Z' };
+  const suggestedPrice = { formula: { pricePerHour: '0.003', items: [{ label: 'CPU', detail: '8 vCPUs', pricePerHour: '0.003' }] },
+    market: { pricePerHour: '0.0025', similarMachines: 2 } };
   const api = createApi({ fetcher: async url => json(url.endsWith('/dashboard') ? dashboard : {
-    hardware, suggestedPrice: 0.003, online: true, lastSeen: '2026-10-19T01:00:00Z',
+    hardware, suggestedPrice, online: true, lastSeen: '2026-10-19T01:00:00Z',
   }) });
   const { provider } = await api.getProvider();
   assert.deepEqual(provider, {
-    registered: true, machine: hardware, pricePerHour: '0.002', suggestedPricePerHour: '0.003', currentStake: '0.05', online: true, lastSeen: '2026-10-19T01:00:00Z',
+    registered: true, machine: hardware, pricePerHour: '0.002', suggestedPrice, suggestedPricePerHour: '0.003',
+    currentStake: '0.05', online: true, lastSeen: '2026-10-19T01:00:00Z',
   });
 });
 

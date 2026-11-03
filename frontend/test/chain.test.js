@@ -11,10 +11,10 @@ const image = 'repo@sha256:' + 'c'.repeat(64);
 const job = () => ({ id: '42', maxPrice: '0.000000000000000123', k: 3, quorum: 2, window: 3600, dockerImage: image, canSubmit: true, submitWallet: wallet, status: 'PENDING', submittedAt: null });
 // The production Solidity signature: five uint256 arguments and the image, payable with the escrowed price.
 const abi = [{ type: 'function', name: 'submitJob', stateMutability: 'payable', inputs: [
-  { name: 'jobId', type: 'uint256' }, { name: 'price', type: 'uint256' },
+  { name: 'price', type: 'uint256' },
   { name: 'k', type: 'uint256' }, { name: 'quorum', type: 'uint256' }, { name: 'executionTime', type: 'uint256' },
-  { name: 'dockerImage', type: 'string' },
-], outputs: [] }];
+  { name: 'dockerName', type: 'string' },
+], outputs: [{ type: 'bool' }] }];
 
 function mockWallet({ accounts = [wallet], chains = ['0x7a69'], transactionHash = hash } = {}) {
   const calls = [];
@@ -44,7 +44,8 @@ test('stored job submission encodes the real contract call and escrows the exact
   assert.equal(BigInt(transaction.value), parseEther(job().maxPrice));
   const decoded = decodeFunctionData({ abi, data: transaction.data });
   assert.equal(decoded.functionName, 'submitJob');
-  assert.deepEqual(decoded.args, [42n, parseEther(job().maxPrice), 3n, 2n, 3600n, image]);
+  // contract k = our quorum, contract quorum = our k
+  assert.deepEqual(decoded.args, [parseEther(job().maxPrice), 2n, 3n, 3600n, image]);
 });
 
 test('wrong wallet network rejects before sending a transaction', async () => {
@@ -151,4 +152,150 @@ test('a job without a Docker image rejects before requesting wallet access', asy
     await assert.rejects(submitStoredJob({ ...job(), dockerImage }, config(), provider), /no Docker image/);
     assert.equal(provider.calls.length, 0);
   }
+});
+
+// Collect funds: credits(address) view + withdraw()
+import { collectFunds, readCredits, readProviderBalances } from '../src/chain.js';
+import { encodeAbiParameters } from 'viem';
+
+function creditWallet({ credits = parseEther('0.0060'), stake = parseEther('0.001'), receipt = { status: '0x1' }, chain = '0x7a69' } = {}) {
+  const calls = [];
+  return {
+    calls,
+    request: async request => {
+      calls.push(request);
+      switch (request.method) {
+        case 'eth_accounts': return [wallet];
+        case 'eth_chainId': return chain;
+        case 'eth_call': {
+          if (decodeFunctionData({ abi: [...viewAbi, ...withdrawAbi], data: request.params[0].data }).functionName === 'withdraw') return '0x';
+          const { functionName } = decodeFunctionData({ abi: viewAbi, data: request.params[0].data });
+          return encodeAbiParameters([{ type: 'uint256' }], [functionName === 'lockedStake' ? stake : credits]);
+        }
+        case 'eth_sendTransaction': return hash;
+        case 'eth_getTransactionReceipt': return receipt;
+        default: throw new Error(`Unexpected wallet request: ${request.method}`);
+      }
+    },
+  };
+}
+const viewAbi = ['credits', 'lockedStake'].map(name => ({ type: 'function', name, stateMutability: 'view', inputs: [{ name: '', type: 'address' }], outputs: [{ type: 'uint256' }] }));
+const withdrawAbi = [{ type: 'function', name: 'withdraw', stateMutability: 'nonpayable', inputs: [], outputs: [] }];
+
+test('readCredits reads the connected wallet\'s balance from the contract', async () => {
+  const provider = creditWallet();
+  assert.deepEqual(await readCredits(config(), provider), { wallet, wei: parseEther('0.006') });
+  const call = provider.calls.find(c => c.method === 'eth_call');
+  assert.equal(call.params[0].to, contract);
+});
+
+test('collectFunds sends withdraw() from the connected wallet with no value and waits for the receipt', async () => {
+  const provider = creditWallet();
+  assert.deepEqual(await collectFunds(config(), provider, { pollMs: 0 }), { hash, wei: parseEther('0.006') });
+  const [tx] = sent(provider).map(c => c.params[0]);
+  assert.equal(tx.from, wallet);
+  assert.equal(tx.to, contract);
+  assert.equal(tx.value, undefined);
+  assert.equal(decodeFunctionData({ abi: withdrawAbi, data: tx.data }).functionName, 'withdraw');
+});
+
+test('collectFunds refuses an empty balance, a wrong chain, and a reverted withdrawal', async () => {
+  const empty = creditWallet({ credits: 0n });
+  await assert.rejects(collectFunds(config(), empty, { pollMs: 0 }), /nothing to collect/);
+  assert.equal(sent(empty).length, 0);
+  await assert.rejects(collectFunds(config(), creditWallet({ chain: '0x1' }), { pollMs: 0 }), /Switch your wallet/);
+  await assert.rejects(collectFunds(config(), creditWallet({ receipt: { status: '0x0' } }), { pollMs: 0 }), /failed on chain/);
+  await assert.rejects(readCredits({ executionMode: 'demo', chain: null }, creditWallet()), /no real contract/);
+});
+
+test('readProviderBalances reads credits and locked stake for the provider address, defaulting to the wallet', async () => {
+  const other = '0x3333333333333333333333333333333333333333';
+  const provider = creditWallet();
+  assert.deepEqual(await readProviderBalances(config(), provider, { account: other }),
+    { wallet, account: other, credits: parseEther('0.006'), stake: parseEther('0.001') });
+  const reads = provider.calls.filter(c => c.method === 'eth_call').map(c => decodeFunctionData({ abi: viewAbi, data: c.params[0].data }));
+  assert.deepEqual(reads.map(r => [r.functionName, r.args[0].toLowerCase()]), [['credits', other], ['lockedStake', other]]);
+  assert.equal((await readProviderBalances(config(), creditWallet())).account, wallet);
+});
+
+test('readProviderBalances still reads credits from a contract without lockedStake', async () => {
+  const provider = creditWallet();
+  const request = provider.request;
+  provider.request = async call => {
+    if (call.method === 'eth_call' && decodeFunctionData({ abi: viewAbi, data: call.params[0].data }).functionName === 'lockedStake') {
+      throw Object.assign(new Error('Internal JSON-RPC error.'), { code: -32603, data: { message: 'function selector was not recognized and there\'s no fallback function' } });
+    }
+    return request(call);
+  };
+  const result = await readProviderBalances(config(), provider);
+  assert.equal(result.credits, parseEther('0.006'));
+  assert.equal(result.stake, null);
+});
+
+test('without lockedStake the stake is summed from getProviderCommitment over the given jobs', async () => {
+  const commitmentAbi = [{ type: 'function', name: 'getProviderCommitment', stateMutability: 'view',
+    inputs: [{ name: 'jobId', type: 'uint256' }, { name: 'provider', type: 'address' }],
+    outputs: ['bytes32', 'bytes32', 'bool', 'bool', 'bool', 'uint256'].map(type => ({ type })) }];
+  const stakes = { 4: parseEther('0.001'), 7: parseEther('0.001'), 9: 0n };
+  const provider = creditWallet();
+  const request = provider.request;
+  provider.request = async call => {
+    if (call.method === 'eth_call') {
+      const all = [...viewAbi, ...commitmentAbi];
+      const { functionName, args } = decodeFunctionData({ abi: all, data: call.params[0].data });
+      if (functionName === 'lockedStake') throw Object.assign(new Error('Internal JSON-RPC error.'), { code: -32603 });
+      if (functionName === 'getProviderCommitment') {
+        return encodeAbiParameters(commitmentAbi[0].outputs, [`0x${'0'.repeat(64)}`, `0x${'0'.repeat(64)}`, false, false, false, stakes[Number(args[0])]]);
+      }
+    }
+    return request(call);
+  };
+  const result = await readProviderBalances(config(), provider, { jobIds: async () => ['4', '7', '9', 'bad'] });
+  assert.equal(result.stake, parseEther('0.002'));
+});
+
+test('cancelStoredJob dry-runs then sends cancelJob(id) and waits for the receipt', async () => {
+  const { cancelStoredJob } = await import('../src/chain.js');
+  const calls = [];
+  const provider = { request: async request => {
+    calls.push(request);
+    if (request.method === 'eth_accounts') return [wallet];
+    if (request.method === 'eth_chainId') return '0x7a69';
+    if (request.method === 'eth_call') return '0x' + '0'.repeat(63) + '1';
+    if (request.method === 'eth_sendTransaction') return hash;
+    if (request.method === 'eth_getTransactionReceipt') return { status: '0x1' };
+    throw new Error(`Unexpected wallet request: ${request.method}`);
+  } };
+  const pending = { ...job(), canCancel: true, submittedAt: '2026-11-02T00:00:00Z' };
+  assert.deepEqual(await cancelStoredJob(pending, config(), provider, { pollMs: 0 }), { hash });
+  const cancelAbi = [{ type: 'function', name: 'cancelJob', inputs: [{ name: 'jobId', type: 'uint256' }], outputs: [{ type: 'bool' }] }];
+  const [dryRun] = calls.filter(c => c.method === 'eth_call');
+  const [tx] = sent({ calls });
+  assert.ok(calls.indexOf(dryRun) < calls.indexOf(tx), 'dry run happens before the wallet prompt');
+  for (const { params: [call] } of [dryRun, tx]) {
+    assert.equal(call.to, contract);
+    assert.equal(call.value, undefined, 'canceling sends no ETH');
+    assert.deepEqual(decodeFunctionData({ abi: cancelAbi, data: call.data }), { functionName: 'cancelJob', args: [42n] });
+  }
+});
+
+test('cancelStoredJob refuses jobs the server marks uncancelable, a reverted dry run, and the wrong wallet', async () => {
+  const { cancelStoredJob } = await import('../src/chain.js');
+  const provider = (overrides = {}) => ({ calls: [], async request(request) {
+    this.calls.push(request);
+    if (overrides[request.method]) return overrides[request.method]();
+    if (request.method === 'eth_accounts') return [wallet];
+    if (request.method === 'eth_chainId') return '0x7a69';
+    if (request.method === 'eth_sendTransaction') return hash;
+    throw new Error(`Unexpected wallet request: ${request.method}`);
+  } });
+  const untouched = provider();
+  await assert.rejects(cancelStoredJob({ ...job(), canCancel: false }, config(), untouched), /can no longer be canceled/);
+  assert.equal(untouched.calls.length, 0);
+  const reverting = provider({ eth_call: () => { throw new Error('execution reverted: Job no longer pending'); } });
+  await assert.rejects(cancelStoredJob({ ...job(), canCancel: true }, config(), reverting), /Job no longer pending/);
+  assert.equal(sent(reverting).length, 0);
+  const other = provider({ eth_accounts: () => ['0x3333333333333333333333333333333333333333'] });
+  await assert.rejects(cancelStoredJob({ ...job(), canCancel: true }, config(), other), /wallet that submitted/);
+  assert.equal(sent(other).length, 0);
 });
