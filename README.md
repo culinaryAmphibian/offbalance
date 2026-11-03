@@ -74,11 +74,10 @@ cp .env.example .env    # then set HOST_ADDRESS to the host's LAN IP (`hostname 
 # on the host
 docker compose --profile host up --build
 
-# on each other machine: the UI first...
-docker compose --profile client up --build -d
-# ...sign in at http://localhost:5173, copy the API key, "Authorize provider client", copy the
-# session key, then start the provider client, which asks for both:
-docker compose --profile client run --rm client
+# on each other machine: starts the UI, then the provider client, which asks for two keys.
+# While it waits, sign in at http://localhost:5173, copy the API key, "Authorize provider client",
+# copy the session key, and paste both:
+docker compose --profile client run --build --rm client
 
 # optional: a provider on the host machine too (same sign-in steps, on the host's UI)
 docker compose --profile host run --rm host-client

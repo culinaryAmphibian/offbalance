@@ -10,7 +10,7 @@ A single machine can also be both. See [Provider on the host](#a-provider-on-the
 | Mode | Command | What it starts |
 |---|---|---|
 | Host | `docker compose --profile host up --build` | Hardhat chain (`:8545`), server (`https://HOST_ADDRESS:5000`), MongoDB (internal only), UI (`http://localhost:5173`) |
-| Client | `docker compose --profile client up --build -d`, then `docker compose --profile client run --rm client` | UI (`http://localhost:5173`), then the provider client, which asks for your API key and session key. Both talk to the host |
+| Client | `docker compose --profile client run --build --rm client` | UI (`http://localhost:5173`) and the provider client, which asks for your API key and session key. Both talk to the host |
 
 ## 1. Prerequisites (every machine)
 
@@ -59,30 +59,29 @@ The host's own UI is at `http://localhost:5173`.
 
 ## 4. Start a client (provider) machine
 
-On each client machine, after the host is up:
+On each client machine, after the host is up, set up MetaMask ([§5](#5-metamask)), then:
 
-**1. Start the UI.**
+**1. Start everything with one command.**
 
 ```bash
-docker compose --profile client up --build -d
+docker compose --profile client run --build --rm client
 ```
 
-A one-off `fetch-cert` container waits for the host's server and trusts its TLS certificate, then the UI starts at `http://localhost:5173`. It proxies API calls to the host.
+In order, this:
+1. Runs a one-off `fetch-cert` container, which waits for the host's server and trusts its TLS certificate.
+2. Starts the UI at `http://localhost:5173`. It proxies API calls to the host.
+3. Starts the provider client, which **waits at a prompt** for your API key.
 
-**2. Get your two keys from the UI.** Set up MetaMask first ([§5](#5-metamask)). Then:
+Leave it waiting and get the keys from the UI.
+
+**2. Get your two keys from the UI:**
 
 1. Sign in at `http://localhost:5173` and open **Provider setup**.
 2. Copy the **Client API key**.
 3. Under **Provider client session key**, click **Authorize provider client**. Keep the default 30 days and 0.05 ETH, or change them, and confirm in MetaMask. That one transaction registers the key on the contract and sends it the ETH it needs for gas and stakes.
 4. Copy the **session key**. It's shown only once; if you lose it, authorize a new one, which replaces the old one.
 
-**3. Start the provider client.**
-
-```bash
-docker compose --profile client run --rm client
-```
-
-It asks for the API key and then the session key; the session key isn't echoed. It checks that the session key is authorized and acts for the same wallet as the API key, then benchmarks the machine, registers with the server and starts watching the chain for jobs. Keep the terminal open; Ctrl+C stops it.
+**3. Paste the keys into the waiting client:** the API key first, then the session key, which isn't echoed. It checks that the session key is authorized and acts for the same wallet as the API key, then benchmarks the machine, registers with the server and starts watching the chain for jobs. Keep the terminal open. Ctrl+C stops the client but leaves the UI running; `docker compose --profile client down` stops both.
 
 To skip the prompts, put `OFFBALANCE_API_KEY=…` and `OFFBALANCE_SESSION_KEY=…` in `.env`.
 
@@ -135,8 +134,7 @@ Which account to import:
 git pull
 docker compose --profile host down
 docker compose --profile host up --build      # host
-docker compose --profile client up --build -d           # each client, after the host
-docker compose --profile client run --rm client   # authorize a new session key first: the new chain forgot the old one
+docker compose --profile client run --build --rm client   # each client, after the host; get new keys: the new chain forgot the old ones
 ```
 
 Stop with `docker compose --profile host down`, or `--profile client down` on clients.
@@ -167,7 +165,7 @@ The server moves each job through these phases by itself. Its logs show `Job N: 
 | Collect funds is disabled with "Earnings are paid to 0x…, the wallet your provider client's session key acts for" | MetaMask is on a different account than the one that authorized the session key | Switch MetaMask to that account |
 | Client: `Session key … isn't authorized for any wallet, or it has expired` | The key was never authorized, it expired, or the host restarted (a fresh chain forgets every key) | Authorize a new key in Provider setup (§4) and paste it |
 | Client: `The API key belongs to wallet X, but the session key acts for Y` | The two keys came from different sign-ins | Sign in with one wallet and copy both keys from it |
-| Client: `No input; run the container with -it…` | The provider was started with `up`, which can't prompt | Start it with `docker compose --profile client run --rm client` |
+| Client: `No input; run the container with -it…` | The provider was started with `up`, which can't prompt | Start it with `docker compose --profile client run --build --rm client` |
 | Client: `WARNING: session key has … ETH` / `Staking failed` | The session key can't cover a stake plus gas | Authorize a new key with more funding |
 | MetaMask says "An error occurred" but the money arrives | MetaMask's transaction preview can't simulate a local chain | Turn off the two settings in §5. MetaMask's balance also updates with a delay. |
 | Client: `result delivery not accepted yet …; retrying` | Normal at the start of delivery: the server hasn't opened the job yet | It retries for about 25 s. Any other message names the real reason. |

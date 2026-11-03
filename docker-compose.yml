@@ -7,12 +7,12 @@
 #                   mongo   internal only
 #                   UI      http://localhost:5173       (this machine only)
 #
-#   client mode:  docker compose --profile client up --build -d
-#                   UI      http://localhost:5173, talking to the host's server
-#                 then sign in, copy the API key, "Authorize provider client", copy the session key, and:
-#                 docker compose --profile client run --rm client
-#                   the provider client asks for the API key and session key, then talks to the
-#                   host's server and chain. Each machine signs in with its own wallet.
+#   client mode:  docker compose --profile client run --build --rm client
+#                   fetches the host's certificate, starts the UI on http://localhost:5173,
+#                   then starts the provider client, which asks for the API key and session key.
+#                   While it waits: sign in to the UI, copy the API key, "Authorize provider
+#                   client", copy the session key, and paste both. Each machine uses its own wallet.
+#                   Ctrl+C stops the client; the UI keeps running until `--profile client down`.
 #
 # A provider on the host itself:  docker compose --profile host run --rm host-client
 # Contract controller shell:      docker compose --profile host run --rm --no-deps --entrypoint python host-client dev/contract_controller.py
@@ -186,12 +186,15 @@ services:
       - trusted-cert:/certs:ro
 
   # docker compose --profile client run --rm client
+  # Starts the UI too (so you can sign in and copy the keys), then prompts for them.
   client:
     <<: *client
     profiles: ["client-provider"] # `run client` enables it; `up` never starts it
     depends_on:
       fetch-cert:
         condition: service_completed_successfully
+      remote-frontend:
+        condition: service_started
     environment:
       <<: *client-env
       OFFBALANCE_SERVER_URL: https://${HOST_ADDRESS:?set HOST_ADDRESS in .env}:5000
