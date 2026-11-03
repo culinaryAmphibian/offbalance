@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { Orchestrator, type PhaseChain } from "../services/orchestrator.ts";
 import type { ChainEvent, Deadlines } from "../services/chain.ts";
 
-type Call = "startRevealPhase" | "endRevealPhase" | "endDeliveryPhase";
+type Call = "finalizeProviderSelection" | "startRevealPhase" | "endRevealPhase" | "endDeliveryPhase";
 
 // Timers that only fire when the test says so.
 function fakeTimers() {
@@ -30,7 +30,7 @@ function fakeTimers() {
 function fakeChain() {
 	const state = {
 		now: 1000n,
-		deadlines: { commitDeadline: 1010n, revealDeadline: 0n, deliveryDeadline: 0n } as Deadlines,
+		deadlines: { pendingDeadline: 0n, commitDeadline: 1010n, revealDeadline: 0n, deliveryDeadline: 0n } as Deadlines,
 		calls: [] as [Call, number][],
 		failures: [] as string[], // reasons the next calls revert with, in order
 	};
@@ -40,6 +40,7 @@ function fakeChain() {
 		if (reason) throw Object.assign(new Error(reason), { shortMessage: `reverted: ${reason}` });
 	};
 	const chain: PhaseChain = {
+		finalizeProviderSelection: call("finalizeProviderSelection"),
 		startRevealPhase: call("startRevealPhase"),
 		endRevealPhase: call("endRevealPhase"),
 		endDeliveryPhase: call("endDeliveryPhase"),
@@ -62,20 +63,46 @@ function setup() {
 test("each phase event schedules its transition one second past the chain-time deadline", async () => {
 	const { orchestrator, state, fire } = setup();
 	const steps: [string, keyof Deadlines, Call][] = [
+		["COMMIT_STAKE_PHASE_START", "pendingDeadline", "finalizeProviderSelection"],
 		["COMMIT_PHASE_START", "commitDeadline", "startRevealPhase"],
 		["REVEAL_PHASE_START", "revealDeadline", "endRevealPhase"],
 		["DELIVERY_PHASE_START", "deliveryDeadline", "endDeliveryPhase"],
 	];
 	for (const [name, deadline, call] of steps) {
-		state.deadlines = { commitDeadline: 0n, revealDeadline: 0n, deliveryDeadline: 0n, [deadline]: state.now + 15n };
+		state.deadlines = { pendingDeadline: 0n, commitDeadline: 0n, revealDeadline: 0n, deliveryDeadline: 0n, [deadline]: state.now + 15n };
 		orchestrator.onEvent(event(name));
 		await orchestrator.idle();
 		assert.equal(fire(), 16_000, name);
 		await orchestrator.idle();
 		assert.deepEqual(state.calls.at(-1), [call, 7]);
 	}
-	assert.equal(state.calls.length, 3);
+	assert.equal(state.calls.length, 4);
 	assert.deepEqual(orchestrator.scheduled, []);
+});
+
+test("STAKED finalizes right away once everyone has staked", async () => {
+	const { orchestrator, state, live } = setup();
+	state.deadlines = { ...state.deadlines, pendingDeadline: state.now + 30n };
+	orchestrator.onEvent(event("COMMIT_STAKE_PHASE_START"));
+	await orchestrator.idle();
+	orchestrator.onEvent(event("STAKED"));
+	await orchestrator.idle();
+	assert.deepEqual(state.calls, [["finalizeProviderSelection", 7]]);
+	assert.equal(live().length, 0); // the window timer was replaced
+	assert.deepEqual(orchestrator.scheduled, []);
+});
+
+test("STAKED before everyone staked falls back to the staking deadline", async () => {
+	const { orchestrator, state, fire } = setup();
+	state.deadlines = { ...state.deadlines, pendingDeadline: state.now + 30n };
+	state.failures.push("Staking window not ended");
+	orchestrator.onEvent(event("STAKED"));
+	await orchestrator.idle();
+	assert.deepEqual(state.calls, [["finalizeProviderSelection", 7]]);
+	assert.equal(fire(), 31_000);
+	await orchestrator.idle();
+	assert.deepEqual(state.calls.at(-1), ["finalizeProviderSelection", 7]);
+	assert.equal(state.calls.length, 2);
 });
 
 test("a deadline already passed in chain time runs right away", async () => {

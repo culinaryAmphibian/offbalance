@@ -12,7 +12,7 @@ test('demo pricing persists only within its own adapter', async () => {
   assert.deepEqual((await second.getProvider()).provider, initial);
   assert.equal(provider.currentStake, initial.currentStake);
   assert.deepEqual(provider.machine, initial.machine);
-  provider.machine.cpuScore = -1;
+  provider.machine.cpu.threads = -1;
   assert.deepEqual((await first.getProvider()).provider.machine, initial.machine);
 });
 
@@ -24,15 +24,15 @@ test('demo lifecycle fixtures explicitly separate receipt validation and paid ou
   assert.equal(checking.delivery.status, 'RECEIVED');
   assert.equal(checking.payment.status, 'PENDING');
   assert.equal(checking.result?.available, undefined);
-  assert.deepEqual((await api.getResult(checking.id)).results, []);
+  await assert.rejects(api.getResult(checking.id), /No verified result/);
   assert.equal(completed.delivery.status, 'VERIFIED');
   assert.equal(completed.payment.status, 'PAID');
   const result = await api.getResult(completed.id);
-  assert.equal(result.status, 'COMPLETED');
-  assert.equal(result.results[0].receiptVerified, true);
-  assert.equal(result.results[0].hash, completed.consensusResultHash);
-  result.results[0].hash = 'mutated';
-  assert.equal((await api.getResult(completed.id)).results[0].hash, completed.consensusResultHash);
+  assert.equal(await result.text(), 'OffBalance demo result\n');
+  assert.equal(completed.result.available, true);
+  assert.equal(completed.result.receiptMode, 'offchain');
+  assert.equal(completed.result.receiptVerified, false);
+  assert.equal(completed.result.hash, completed.consensusResultHash);
 });
 
 test('demo job retries are idempotent and do not alter another adapter', async () => {

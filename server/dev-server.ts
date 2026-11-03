@@ -10,6 +10,7 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { parseProfile, ProfileError, type HardwareProfile } from "./services/hardware.ts";
 
 const DEV_PORT = Number(process.env.PORT ?? 5000);
 // DEPLOYMENT_FILE override lets the contract tests run without a chain
@@ -21,15 +22,13 @@ const DEPLOYMENT_FILE = process.env.DEPLOYMENT_FILE ?? path.join(
 	"localhost.json",
 );
 
-type Scores = { cpu: number; gpu: number | null; mem: number };
 
 // in-memory state, keyed by bearer token (= the client's API key)
-const scoresByToken = new Map<string, Scores>();
+const profileByToken = new Map<string, HardwareProfile>();
 const heartbeatByToken = new Map<string, number>();
 
 const app = express();
 app.use(express.json());
-app.use(express.urlencoded({ extended: false })); // ServerManager.post_benchmark sends form data
 
 // log every request so you can see what the client does
 app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -53,14 +52,12 @@ function requireToken(req: Request, res: Response, next: NextFunction) {
 	next();
 }
 
-// read on every request so a redeploy is picked up without restarting
-function contractAddress(): string {
-	return JSON.parse(readFileSync(DEPLOYMENT_FILE, "utf8")).address;
-}
-
+// the deployment file is read on every request so a redeploy is picked up without restarting
 app.get("/contract_address", requireToken, (_req: Request, res: Response) => {
 	try {
-		res.json({ address: contractAddress() });
+		// abi + chainId, like the real server, so a client needs no deployment file
+		const { address, abi, chainId } = JSON.parse(readFileSync(DEPLOYMENT_FILE, "utf8"));
+		res.json({ address, abi, chainId });
 	} catch (e) {
 		res.status(503).json({
 			error: `can't read ${DEPLOYMENT_FILE}; run \`npm run dev\` in blockchain/`,
@@ -69,24 +66,20 @@ app.get("/contract_address", requireToken, (_req: Request, res: Response) => {
 	}
 });
 
+// same validation as the real server, so the client can't drift from it
 app.post("/scores", requireToken, (req: Request, res: Response) => {
-	const { cpu, gpu, mem } = req.body ?? {};
-	if (cpu === undefined || mem === undefined) {
-		res.status(400).json({ error: "cpu and mem are required" });
+	try {
+		profileByToken.set(res.locals.token, parseProfile(req.body));
+	} catch (e) {
+		if (!(e instanceof ProfileError)) throw e;
+		res.status(400).json({ error: e.message });
 		return;
 	}
-	// form data arrives as strings; gpu is absent when the client sends None
-	const scores: Scores = {
-		cpu: Number(cpu),
-		gpu: gpu === undefined ? null : Number(gpu),
-		mem: Number(mem),
-	};
-	scoresByToken.set(res.locals.token, scores);
-	res.status(201).json({ ok: true, scores });
+	res.status(201).json({ ok: true, hardware: profileByToken.get(res.locals.token) });
 });
 
 app.post("/provider/heartbeat", requireToken, (_req: Request, res: Response) => {
-	if (!scoresByToken.has(res.locals.token)) {
+	if (!profileByToken.has(res.locals.token)) {
 		res.status(409).json({ error: "no machine yet; report /scores first" });
 		return;
 	}
@@ -116,12 +109,13 @@ app.get("/jobManifest/:jobId", requireToken, (req: Request, res: Response) => {
 			timeout_s: 60,
 			cpu_limit: 1,
 			mem_limit_mb: 256,
+			gpu: null,
 		},
 	});
 });
 
 app.get("/dev/state", (_req: Request, res: Response) => {
-	res.json({ scores: Object.fromEntries(scoresByToken), heartbeats: Object.fromEntries(heartbeatByToken) });
+	res.json({ hardware: Object.fromEntries(profileByToken), heartbeats: Object.fromEntries(heartbeatByToken) });
 });
 
 app.use((req: Request, res: Response) => {

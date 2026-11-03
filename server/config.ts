@@ -3,6 +3,7 @@ import path from "node:path";
 
 // Everything comes from the environment; defaults match ../dev.env.
 export const config = {
+	host: process.env.HOST ?? "127.0.0.1",
 	port: Number(process.env.PORT ?? 5000),
 	mongodbUri: process.env.MONGODB_URI ?? "mongodb://127.0.0.1:27017/offbalance",
 
@@ -29,6 +30,14 @@ export const config = {
 		repository: process.env.REGISTRY_REPOSITORY ?? "offbalance-jobs",
 		username: process.env.REGISTRY_USERNAME,
 		token: process.env.REGISTRY_TOKEN, // access token / API key with push rights
+	},
+	// Rates behind a provider's suggested hourly price (services/hardware.ts formulaPrice), in ETH.
+	// Defaults are rough cloud prices at $3,000/ETH: $0.04 per vCPU-hour, $0.005 per GB-hour of
+	// memory, and $0.025 per GPU TFLOPS-hour ($0.25/hour for a 10 TFLOPS card).
+	pricing: {
+		vcpuHourEth: Number(process.env.PRICE_ETH_PER_VCPU_HOUR ?? 0.0000133),
+		gbHourEth: Number(process.env.PRICE_ETH_PER_GB_HOUR ?? 0.00000167),
+		tflopsHourEth: Number(process.env.PRICE_ETH_PER_TFLOPS_HOUR ?? 0.00000833),
 	},
 	// every provider must run the same bytes, so images are pinned for one platform
 	platform: process.env.IMAGE_PLATFORM ?? "linux/amd64",

@@ -3,8 +3,9 @@
 // this test; every phase transition must come from the server's orchestrator alone.
 //
 // Two jobs run side by side through the real (demo-sized) windows, so this takes about a minute:
-//   job A: p1 and p2 agree, p3 disagrees, p1 and p2 deliver -> PAID, p3 slashed
-//   job B: all three disagree                                -> NO_QUORUM, every revealer paid
+//   job A: p1 and p2 agree, p3 disagrees -> PAID, p3's stake slashed to the winners
+//   job B: all three disagree           -> NO_QUORUM, the buyer and every staker refunded
+// Providers stake after assignment; the server finalizes staking as soon as all three have.
 //
 // Needs MONGODB_URI and the blockchain/ project installed; skipped without MONGODB_URI.
 import test from "node:test";
@@ -27,7 +28,7 @@ const PORT = Number(process.env.E2E_CHAIN_PORT ?? 8546);
 const RPC_URL = `http://127.0.0.1:${PORT}`;
 
 // Status enum indices in OffBalance.sol
-const REVEAL = 3, DELIVERING = 5, PAID = 7, NO_QUORUM = 9;
+const COMMIT = 3, REVEAL = 4, DELIVERING = 6, PAID = 8, NO_QUORUM = 10;
 // long enough for both jobs' commitments to land before the commit deadline
 const EXECUTION_TIME = 10;
 
@@ -116,20 +117,30 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 			assert.equal((await rpc.waitForTransactionReceipt({ hash })).status, "success", functionName);
 		};
 		const status = async (jobId: number) => (await read<readonly [number, ...bigint[]]>("getDeadlines", [BigInt(jobId)]))[0];
-		const stake = await read<bigint>("STAKE", []);
+		const requiredStake = async (jobId: number, provider: Address) =>
+			(await read<readonly [Hex, Hex, boolean, boolean, bigint, bigint]>("getProviderCommitment", [BigInt(jobId), provider]))[4];
 
-		// One job: the server records it, the buyer submits it, the server assigns providers, and
-		// providers commit, then reveal once the server opens the reveal phase.
-		async function runJob(jobId: number, price: bigint, outputs: Hex[], deliverers: Address[]) {
+		// The server records the job and the buyer submits it (the contract numbers jobs 1, 2, ...);
+		// k = 2 matching results out of quorum = 3 providers.
+		async function submit(jobId: number, price: bigint) {
 			await JobModel.create({
 				onChainJobId: jobId, owner: owner._id, dockerImageDigest: `example/job@sha256:${"a".repeat(64)}`,
 				maxPrice: "1", runningPrice: "1", minNodesToRunOn: 3, minNodesToAgree: 2, timeWindow: EXECUTION_TIME,
 			});
-			await send(buyer, "submitJob", [BigInt(jobId), price, 3n, 2n, BigInt(EXECUTION_TIME), "example/job"], price);
+			await send(buyer, "submitJob", [price, 2n, 3n, BigInt(EXECUTION_TIME), "example/job"], price);
 			await chain!.assignProviders(jobId, [p1, p2, p3]);
+		}
+
+		// Providers stake what the contract fixed at assignment, commit once the server closes
+		// staking, then reveal once the server opens the reveal phase.
+		async function runJob(jobId: number, outputs: Hex[]) {
+			for (const [i, provider] of providers.entries()) {
+				await send(provider, "submitStake", [BigInt(jobId)], await requiredStake(jobId, [p1, p2, p3][i]));
+			}
+			await until(`job ${jobId} commit phase`, async () => await status(jobId) === COMMIT);
 			const salts = outputs.map((_, i) => toHex(jobId * 10 + i, { size: 32 }));
 			for (const [i, provider] of providers.entries()) {
-				await send(provider, "submitCommitment", [BigInt(jobId), commitment(outputs[i], salts[i])], stake);
+				await send(provider, "submitCommitment", [BigInt(jobId), commitment(outputs[i], salts[i])]);
 			}
 			await until(`job ${jobId} reveal phase`, async () => await status(jobId) === REVEAL);
 			for (const [i, provider] of providers.entries()) {
@@ -139,34 +150,39 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 				const s = await status(jobId);
 				return (s === DELIVERING || s === NO_QUORUM) && s;
 			});
-			if (reached === DELIVERING) {
-				for (const provider of deliverers) await chain!.verifyReceipt(jobId, provider);
-				await until(`job ${jobId} payout`, async () => await status(jobId) === PAID);
-			}
+			if (reached === DELIVERING) await until(`job ${jobId} payout`, async () => await status(jobId) === PAID);
 			return reached;
 		}
 
 		const priceA = parseEther("1");
 		const priceB = parseEther("0.3");
+		// both assigned before either settles, so every stake is a new provider's
+		await submit(1, priceA);
+		await submit(2, priceB);
+		const stake = await requiredStake(1, p1);
+		assert.equal(stake, 6n * await read<bigint>("STAKE", []));
+
 		const same = keccak256(toHex("result"));
 		const [endA, endB] = await Promise.all([
-			runJob(101, priceA, [same, same, keccak256(toHex("other"))], [p1, p2]),
-			runJob(102, priceB, [keccak256(toHex("a")), keccak256(toHex("b")), keccak256(toHex("c"))], []),
+			runJob(1, [same, same, keccak256(toHex("other"))]),
+			runJob(2, [keccak256(toHex("a")), keccak256(toHex("b")), keccak256(toHex("c"))]),
 		]);
 		assert.equal(endA, DELIVERING);
 		assert.equal(endB, NO_QUORUM);
-		assert.equal(await status(102), NO_QUORUM);
+		assert.equal(await status(1), PAID);
+		assert.equal(await status(2), NO_QUORUM);
 
-		// job A: price + p3's slashed stake split between p1 and p2, who also get their stakes back
-		// job B: no quorum, every revealer is paid a third (p1 takes the rounding dust), buyer gets nothing
-		const winA = (priceA + stake) / 2n + stake;
-		const thirdB = priceB / 3n, dustB = priceB - thirdB * 3n;
+		// job A: price + p3's slashed stake split between p1 and p2 (p1 takes the rounding dust),
+		//        who also get their own stakes back
+		// job B: no quorum, so the buyer gets the price back and every provider its stake
+		const pool = priceA + stake, share = pool / 2n, dust = pool - share * 2n;
 		const credits = await Promise.all([buyer.account!.address, p1, p2, p3].map(a => read<bigint>("credits", [a])));
-		assert.deepEqual(credits, [0n, winA + thirdB + dustB + stake, winA + thirdB + stake, thirdB + stake]);
+		assert.deepEqual(credits, [priceB, share + dust + stake + stake, share + stake + stake, stake]);
+		for (const p of [p1, p2, p3]) assert.equal(await read<bigint>("lockedStake", [p]), 0n);
 
 		// the database followed the chain
 		await until("database statuses", async () => {
-			const [a, b] = await Promise.all([101, 102].map(id => JobModel.findOne({ onChainJobId: id }).orFail()));
+			const [a, b] = await Promise.all([1, 2].map(id => JobModel.findOne({ onChainJobId: id }).orFail()));
 			return a.status === JobStatus.PAYOUT && b.status === JobStatus.NO_QUORUM;
 		}, 10_000);
 	} finally {

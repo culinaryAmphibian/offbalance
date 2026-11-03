@@ -35,7 +35,7 @@ export function errorMessage(error: unknown): string {
 }
 
 // Chain-time deadlines (unix seconds) from OffBalance.getDeadlines; 0 until that phase starts.
-export type Deadlines = { commitDeadline: bigint; revealDeadline: bigint; deliveryDeadline: bigint };
+export type Deadlines = { pendingDeadline: bigint; commitDeadline: bigint; revealDeadline: bigint; deliveryDeadline: bigint };
 
 export type ChainEvent = { id?: string; name: string; args: Record<string, unknown>; blockNumber: bigint };
 
@@ -134,11 +134,31 @@ export class Chain {
 		return this.write("assignProviders", [BigInt(jobId), providers]);
 	}
 
+	// Milestone4 pays winning providers without an on-chain delivery receipt hook.
+	get supportsDeliveryReceipts(): boolean {
+		return this.deployment.abi.some(item => item.type === 'function' && item.name === 'verifyReceipt');
+	}
+
+	// getProviderCommitment -> (commitmentHash, outputHash, revealed, winning, requiredStake, stake).
+	// The contract has no on-chain delivery receipt, so `delivered` is always false here.
+	async getProviderDeliveryState(jobId: number, provider: string): Promise<{ outputHash: string; revealed: boolean; agreed: boolean; delivered: boolean }> {
+		const [, outputHash, revealed, agreed] = await this.publicClient.readContract({
+			address: this.deployment.address, abi: this.deployment.abi, functionName: 'getProviderCommitment',
+			args: [BigInt(jobId), getAddress(provider)],
+		}) as readonly [string, string, boolean, boolean, bigint, bigint];
+		return { outputHash, revealed, agreed, delivered: false };
+	}
+
 	verifyReceipt(jobId: number, provider: string): Promise<void> {
 		return this.write("verifyReceipt", [BigInt(jobId), provider]);
 	}
 
 	// Deadline-gated phase transitions. They're public on-chain; the server is just the default caller.
+	// Closes staking: unstaked providers are dropped, then COMMIT starts (or NO_QUORUM refunds everyone).
+	finalizeProviderSelection(jobId: number): Promise<void> {
+		return this.write("finalizeProviderSelection", [BigInt(jobId)]);
+	}
+
 	startRevealPhase(jobId: number): Promise<void> {
 		return this.write("startRevealPhase", [BigInt(jobId)]);
 	}
@@ -152,10 +172,10 @@ export class Chain {
 	}
 
 	async getDeadlines(jobId: number): Promise<Deadlines> {
-		const [, commitDeadline, revealDeadline, deliveryDeadline] = await this.publicClient.readContract({
+		const [, pendingDeadline, commitDeadline, revealDeadline, deliveryDeadline] = await this.publicClient.readContract({
 			address: this.deployment.address, abi: this.deployment.abi, functionName: "getDeadlines", args: [BigInt(jobId)],
-		}) as readonly [number, bigint, bigint, bigint];
-		return { commitDeadline, revealDeadline, deliveryDeadline };
+		}) as readonly [number, bigint, bigint, bigint, bigint];
+		return { pendingDeadline, commitDeadline, revealDeadline, deliveryDeadline };
 	}
 
 	// The latest block's timestamp: the clock the contract checks deadlines against.

@@ -1,2 +1,12 @@
 *.env
 *.log
+.env*
+!.env.example
+!.env.r2.example
+!.env.demo
+
+# local tooling; never commit
+node_modules/
+__pycache__/
+*.pyc
+client/.venv/

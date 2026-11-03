@@ -2,11 +2,13 @@ import { Query, Schema, model, type InferSchemaType } from "mongoose";
 import { money } from "./decimal.ts";
 import { JOB_STATUSES, JobStatus } from "./JobStatus.ts";
 
+// What the job's container gets on the provider; the matcher only picks machines that have it.
 const jobRequirementsSchema = new Schema(
 	{
-		minCpuScore: { type: Number, default: 0, min: 0 },
-		minGpuScore: { type: Number, default: 0, min: 0 },
-		minMemoryScore: { type: Number, default: 0, min: 0 },
+		minVcpus: { type: Number, default: 1, min: 1, max: 1024, validate: Number.isSafeInteger }, // logical CPUs
+		minMemoryGb: { type: Number, default: 1, min: 0.25, max: 4096 }, // GiB
+		gpu: { type: String, enum: ["none", "any", "nvidia", "amd"], default: "none" },
+		minGpuVramGb: { type: Number, default: 0, min: 0, max: 1024 }, // GiB; only with a GPU
 	},
 	{ _id: false },
 );
@@ -20,6 +22,21 @@ const providerResultSchema = new Schema(
 		deliveryTime: { type: Date, required: true },
 		location: { type: String, required: true }, // where the output lives in object storage
 		receiptVerified: { type: Boolean, default: false }, // verifyReceipt() went through on-chain
+		contentVerified: { type: Boolean, default: false },
+		receiptMode: { type: String, enum: ["local", "offchain", "onchain"] },
+		archiveHash: { type: String },
+		size: { type: Number, min: 0 },
+		filename: { type: String },
+		retainedUntil: { type: Date },
+	},
+	{ _id: false },
+);
+
+// One provider's on-chain payout (its share of the price; a returned stake isn't included).
+const payoutSchema = new Schema(
+	{
+		provider: { type: Schema.Types.ObjectId, ref: "Account", required: true },
+		amount: money({ required: true }), // ETH
 	},
 	{ _id: false },
 );
@@ -45,8 +62,9 @@ const jobSchema = new Schema(
 		command: { type: [String], default: [] }, // empty = the image's own CMD
 		env: { type: Map, of: String, default: () => new Map() },
 		inputUrl: { type: String, default: null },
-		cpuLimit: { type: Number, default: 1, min: 0 }, // cores
-		memLimitMb: { type: Number, default: 512, min: 1 },
+		// Docker limits the provider enforces; always derived from requirements (below)
+		cpuLimit: { type: Number, default: 1, min: 0 }, // vCPUs
+		memLimitMb: { type: Number, default: 1024, min: 1 },
 
 		maxPrice: money({ required: true }), // highest per-hour rate the buyer pays each provider
 		runningPrice: money({ default: 0 }), // clearing rate: the priciest assigned provider's rate
@@ -75,9 +93,19 @@ const jobSchema = new Schema(
 		timeWindow: { type: Number, required: true, min: 1, validate: Number.isSafeInteger }, // seconds
 		requirements: { type: jobRequirementsSchema, default: () => ({}) },
 		results: { type: [providerResultSchema], default: [] },
+		// settlement, from the contract's PAID and DELIVERED / NO_QUORUM / CANCELED events
+		payouts: { type: [payoutSchema], default: [] },
+		settledAt: { type: Date, default: null },
 	},
 	{ timestamps: { createdAt: true, updatedAt: false } },
 );
+
+// the container gets exactly what the matcher checked the provider has
+jobSchema.pre("validate", function () {
+	const requirements = this.requirements ?? { minVcpus: 1, minMemoryGb: 1 };
+	this.cpuLimit = requirements.minVcpus ?? 1;
+	this.memLimitMb = Math.round((requirements.minMemoryGb ?? 1) * 1024);
+});
 
 jobSchema.index({ owner: 1, requestKey: 1 }, { unique: true, partialFilterExpression: { requestKey: { $type: "string" } } });
 jobSchema.index({ owner: 1, createdAt: -1 }); // dashboard: my jobs, newest first

@@ -7,6 +7,14 @@ export default defineConfig({
     profiles: {
       default: {
         version: "0.8.34",
+        // OffBalance exceeds the 24 KB code-size limit without the optimizer,
+        // and the local node enforces that limit on deploy.
+        settings: {
+          optimizer: {
+            enabled: true,
+            runs: 200,
+          },
+        },
       },
       production: {
         version: "0.8.34",

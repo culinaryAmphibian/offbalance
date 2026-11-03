@@ -1,7 +1,7 @@
 from blockchain.BlockchainEvent import BlockchainEvent
 from web3 import Web3, contract
 from eth_abi import encode
-from eth_account.signers.local import LocalAccount
+from Credentials import Credentials
 from blockchain.EventData import Event, event_class_factory
 from blockchain.Contract import ProviderContractWrapper
 from Crypto.Protocol.KDF import HKDF
@@ -13,27 +13,34 @@ class BlockchainManager():
                    BlockchainEvent.REVEAL_PHASE_START,
                    BlockchainEvent.DELIVERY_PHASE_START,
                    BlockchainEvent.DELIVERED, # knows that you can take on another job
-                   BlockchainEvent.CANCELED]
+                   BlockchainEvent.CANCELED,
+                   BlockchainEvent.NO_QUORUM]
 
     # init method might need more
-    def __init__(self, w3: Web3, contract : ProviderContractWrapper, signer: LocalAccount, key_seed: bytes):
+    def __init__(self, w3: Web3, contract : ProviderContractWrapper, credentials: Credentials):
         # w3 is the connection to the chain
         self.w3 = w3
 
         # contract is the contract binding using contract address and ABI
         self.contract = contract
 
-        # signer is the session key object that sends directly
-        self.signer = signer
+        if credentials.owner is None:
+            raise ValueError("credentials.owner must be resolved from the chain first")
+        self.credentials = credentials
 
-        # its address is also stored for convenience
-        self.address = signer.address
+        # the session key signs every transaction...
+        self.signer = credentials.session
+        self.address = credentials.session.address
+
+        # ...on behalf of the owner wallet: the identity the server assigns and the contract pays.
+        # Events name the owner, so assignments are matched against it.
+        self.owner = credentials.owner
         
         # i need to look through only the latest block for the events, but only do it once. Hence, I have a last_scanned_block value
         self.next_block_to_scan = w3.eth.block_number
 
-        # secret seed from config. it never goes on-chain: only the per-job salts derived from it are revealed
-        self.key_seed = key_seed
+        # derived from the session key. it never goes on-chain: only the per-job salts derived from it are revealed
+        self.key_seed = credentials.key_seed
 
         # job id -> the result hash this provider committed to, kept for the reveal
         self.committed_jobs: dict[int, bytes] = {}
@@ -52,6 +59,22 @@ class BlockchainManager():
         # advance next_block_to_scan for the next block that will be published
         self.next_block_to_scan = end_block + 1
         return res
+
+    # seconds of chain time left until `timestamp` (the contract's deadlines are chain time)
+    def seconds_until(self, timestamp: int) -> int:
+        now = int(self.w3.eth.get_block('latest')['timestamp'])
+        return max(0, int(timestamp) - now)
+
+    def execution_window(self, block_number: int, execution_seconds: int) -> int:
+        # Milestone4 omits the duration from COMMIT_PHASE_START. The assigned
+        # manifest supplies it; the event block anchors the start in chain time.
+        if not isinstance(execution_seconds, int) or isinstance(execution_seconds, bool) or execution_seconds <= 0:
+            raise ValueError('The assigned manifest needs a positive execution timeout.')
+        started = int(self.w3.eth.get_block(block_number)['timestamp'])
+        now = int(self.w3.eth.get_block('latest')['timestamp'])
+        if now < started:
+            raise ValueError('Commit event block is ahead of the current chain time.')
+        return max(0, started + execution_seconds - now)
 
     # one salt per job: revealing it exposes only this job's commitment, never the seed or other jobs
     def job_key(self, job_id: int) -> bytes:
@@ -72,7 +95,11 @@ class BlockchainManager():
     def commitment(self, job_id: int, result_hash: bytes) -> bytes:
         return Web3.keccak(encode(["bytes32", "bytes32"], [Web3.keccak(result_hash), self.job_key(job_id)]))
 
-    # SUBMIT phase action: commits and posts the stake
+    # staking window action: deposit the stake fixed at assignment
+    def stake(self, jobId: int, amount: int):
+        self.contract.submitStake(jobId, amount, self.signer, self.w3)
+
+    # COMMIT phase action: the stake was already deposited in stake()
     def commit(self, jobId: int, result_hash: bytes):
         self.contract.submitCommitment(jobId, self.commitment(jobId, result_hash), self.signer, self.w3)
         self.committed_jobs[jobId] = result_hash

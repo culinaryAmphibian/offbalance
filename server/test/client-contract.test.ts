@@ -77,12 +77,15 @@ async function startServer(file: string): Promise<string> {
 
 const auth = { Authorization: `Bearer ${API_KEY}`, Accept: "application/json" };
 
-// what python requests sends for data={...}: form-encoded, None values dropped
-function form(fields: Record<string, number | null>): URLSearchParams {
-	const body = new URLSearchParams();
-	for (const [k, v] of Object.entries(fields)) if (v !== null) body.set(k, String(v));
-	return body;
-}
+// what client/benchmark/HardwareProfile.py to_json() produces (python requests json=...)
+const PROFILE = {
+	version: 2,
+	cpu: { model: "AMD Ryzen 7 7700X 8-Core Processor", cores: 8, threads: 16, singleThreadMBps: 61.23, multiThreadMBps: 610.5 },
+	memory: { totalGb: 31.2, bandwidthGBps: 18.46 },
+	gpus: [{ vendor: "nvidia", index: 0, model: "NVIDIA GeForce RTX 2070", vramGb: 8, driver: "550.54.14",
+		runtime: "CUDA 12.4", fp32Tflops: 6.91, memoryBandwidthGBps: 410.3, error: null }],
+};
+const json = (body: unknown) => ({ method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
 before(async () => {
 	if (!baseUrl) baseUrl = await startServer(process.env.SERVER_FILE ?? "dev-server.ts");
@@ -98,35 +101,43 @@ describe("GET /contract_address", () => {
 		assert.equal(res.status, 401);
 	});
 
-	test("returns the contract address as { address }", async () => {
+	test("returns the contract as { address, abi, chainId }", async () => {
 		const res = await fetch(`${baseUrl}/contract_address`, { headers: auth });
 		assert.equal(res.status, 200);
 		const body = await res.json();
 		assert.match(body.address, ADDRESS_RE);
+		assert.ok(Array.isArray(body.abi));
+		assert.equal(body.chainId, 31337);
 	});
 });
 
 describe("POST /scores", () => {
 	test("rejects requests without a bearer token", async () => {
-		const res = await fetch(`${baseUrl}/scores`, { method: "POST", body: form({ cpu: 1, gpu: null, mem: 1 }) });
+		const res = await fetch(`${baseUrl}/scores`, { ...json(PROFILE), headers: { "Content-Type": "application/json" } });
 		assert.equal(res.status, 401);
 	});
 
-	test("accepts form-encoded cpu, gpu and mem", async () => {
-		const res = await fetch(`${baseUrl}/scores`, { method: "POST", headers: auth, body: form({ cpu: 123456.5, gpu: 42, mem: 9876.25 }) });
-		assert.ok(res.ok, `expected 2xx, got ${res.status}`);
+	test("accepts a JSON hardware profile with its GPUs", async () => {
+		const res = await fetch(`${baseUrl}/scores`, json(PROFILE));
+		assert.ok(res.ok, `expected 2xx, got ${res.status}: ${await res.text()}`);
 	});
 
-	test("accepts a missing gpu (the client sends None when there's no GPU backend)", async () => {
-		const res = await fetch(`${baseUrl}/scores`, { method: "POST", headers: auth, body: form({ cpu: 123456.5, gpu: null, mem: 9876.25 }) });
-		assert.ok(res.ok, `expected 2xx, got ${res.status}`);
-	});
-
-	test("rejects scores without cpu or mem", async () => {
-		for (const fields of [{ mem: 1 }, { cpu: 1 }]) {
-			const res = await fetch(`${baseUrl}/scores`, { method: "POST", headers: auth, body: form(fields) });
-			assert.equal(res.status, 400, `body ${JSON.stringify(fields)}`);
+	test("accepts a profile without GPUs, and GPUs whose benchmark failed", async () => {
+		for (const gpus of [[], [{ ...PROFILE.gpus[0], fp32Tflops: null, memoryBandwidthGBps: null, error: "Docker can't use this GPU" }]]) {
+			const res = await fetch(`${baseUrl}/scores`, json({ ...PROFILE, gpus }));
+			assert.ok(res.ok, `expected 2xx, got ${res.status}: ${await res.text()}`);
 		}
+	});
+
+	test("rejects incomplete profiles, and the old form-encoded scores with an update hint", async () => {
+		for (const body of [{ ...PROFILE, cpu: undefined }, { ...PROFILE, memory: { totalGb: 8 } },
+			{ ...PROFILE, cpu: { ...PROFILE.cpu, threads: 0 } }, { ...PROFILE, gpus: [{ ...PROFILE.gpus[0], vendor: "intel" }] }]) {
+			const res = await fetch(`${baseUrl}/scores`, json(body));
+			assert.equal(res.status, 400, `body ${JSON.stringify(body)}`);
+		}
+		const old = await fetch(`${baseUrl}/scores`, { method: "POST", headers: auth, body: new URLSearchParams({ cpu: "1", mem: "1" }) });
+		assert.equal(old.status, 400);
+		assert.match((await old.json()).error, /Update the client/);
 	});
 });
 
@@ -154,6 +165,8 @@ describe("GET /jobManifest/:jobId", () => {
 		for (const key of ["timeout_s", "cpu_limit", "mem_limit_mb"]) {
 			assert.ok(typeof manifest[key] === "number" && manifest[key] > 0, `${key} must be a positive number`);
 		}
+		assert.ok(manifest.gpu === null || (["any", "nvidia", "amd"].includes(manifest.gpu.vendor) &&
+			typeof manifest.gpu.min_vram_gb === "number"), "gpu must be null or { vendor, min_vram_gb }");
 	});
 
 	test("rejects a jobId that isn't a non-negative integer", async () => {

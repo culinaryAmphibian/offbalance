@@ -5,14 +5,18 @@ import { numericJobId } from "../adapters/repository.ts";
 import { requireAuth } from "../middleware/auth.ts";
 import { HardwareModel, JobModel } from "../models/index.ts";
 import { readDeployment } from "../services/chain.ts";
+import { parseProfile, ProfileError } from "../services/hardware.ts";
 import type { Deps } from "./deps.ts";
+import { serializeHardware } from "./serialize.ts";
 
 export function clientRoutes({ matcher }: Deps): Router {
 	const router = Router();
 
 	router.get("/contract_address", requireAuth, (_req, res) => {
 		try {
-			res.json({ address: readDeployment().address });
+			// abi + chainId let a provider on another machine run without the deployment file
+			const { address, abi, chainId } = readDeployment();
+			res.json({ address, abi, chainId });
 		} catch (e) {
 			res.status(503).json({
 				error: "can't read the deployment file; run `npm run dev` in blockchain/",
@@ -21,17 +25,14 @@ export function clientRoutes({ matcher }: Deps): Router {
 		}
 	});
 
-	// machine specs from the client's benchmark; form-encoded, gpu absent when there's no GPU
+	// the machine's hardware profile from the client's benchmark (client/benchmark/), as JSON
 	router.post("/scores", requireAuth, async (req, res) => {
-		const { cpu, gpu, mem } = req.body ?? {};
-		const scores = {
-			cpuScore: Number(cpu),
-			gpuScore: gpu === undefined || gpu === "" ? null : Number(gpu),
-			memoryScore: Number(mem),
-		};
-		if (cpu === undefined || mem === undefined ||
-			![scores.cpuScore, scores.memoryScore, scores.gpuScore ?? 0].every((n) => Number.isFinite(n) && n >= 0)) {
-			res.status(400).json({ error: "cpu and mem are required, gpu is optional; all non-negative numbers" });
+		let profile;
+		try {
+			profile = parseProfile(req.body);
+		} catch (e) {
+			if (!(e instanceof ProfileError)) throw e;
+			res.status(400).json({ error: e.message });
 			return;
 		}
 
@@ -39,7 +40,7 @@ export function clientRoutes({ matcher }: Deps): Router {
 		const hw = await HardwareModel.findOneAndUpdate(
 			{ userRef: account._id },
 			// the client signs with the wallet its API key was issued to
-			{ ...scores, address: res.locals.wallet },
+			{ ...profile, address: res.locals.wallet },
 			{ upsert: true, returnDocument: "after", runValidators: true },
 		);
 		if (!account.hardware?.equals(hw._id)) {
@@ -47,7 +48,7 @@ export function clientRoutes({ matcher }: Deps): Router {
 			await account.save();
 		}
 		void matcher.ping().catch(error => console.error("Matching failed:", error));
-		res.status(201).json({ ok: true, scores: { cpu: hw.cpuScore, gpu: hw.gpuScore, mem: hw.memoryScore } });
+		res.status(201).json({ ok: true, hardware: serializeHardware(hw) });
 	});
 
 	// what to run; only for providers assigned to the job
@@ -76,6 +77,9 @@ export function clientRoutes({ matcher }: Deps): Router {
 				timeout_s: job.timeWindow,
 				cpu_limit: job.cpuLimit,
 				mem_limit_mb: job.memLimitMb,
+				// RunManager hands the container one of the provider's GPUs that fits
+				gpu: !job.requirements?.gpu || job.requirements.gpu === "none" ? null
+					: { vendor: job.requirements.gpu, min_vram_gb: job.requirements.minGpuVramGb ?? 0 },
 			},
 		});
 	});

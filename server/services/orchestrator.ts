@@ -1,5 +1,7 @@
 // Drives each job through the contract's deadline-gated phases. The contract has no timers, so
 // when a phase starts the server waits out its window (in chain time) and calls the transition:
+//   COMMIT_STAKE_PHASE_START -> finalizeProviderSelection after pendingDeadline
+//                               (or as soon as a STAKED event finds every provider staked)
 //   COMMIT_PHASE_START   -> startRevealPhase  after commitDeadline
 //   REVEAL_PHASE_START   -> endRevealPhase    after revealDeadline (consensus; NO_QUORUM ends here)
 //   DELIVERY_PHASE_START -> endDeliveryPhase  after deliveryDeadline (payout)
@@ -9,6 +11,7 @@ import type { ChainEvent, Deadlines } from "./chain.ts";
 import { errorMessage } from "./chain.ts";
 
 export type PhaseChain = {
+	finalizeProviderSelection(jobId: number): Promise<void>;
 	startRevealPhase(jobId: number): Promise<void>;
 	endRevealPhase(jobId: number): Promise<void>;
 	endDeliveryPhase(jobId: number): Promise<void>;
@@ -16,9 +19,15 @@ export type PhaseChain = {
 	chainTime(): Promise<bigint>;
 };
 
-type Step = { call: "startRevealPhase" | "endRevealPhase" | "endDeliveryPhase"; deadline: keyof Deadlines };
+type Step = {
+	call: "finalizeProviderSelection" | "startRevealPhase" | "endRevealPhase" | "endDeliveryPhase";
+	deadline: keyof Deadlines;
+};
+
+const FINALIZE: Step = { call: "finalizeProviderSelection", deadline: "pendingDeadline" };
 
 const STEPS: Record<string, Step> = {
+	COMMIT_STAKE_PHASE_START: FINALIZE,
 	COMMIT_PHASE_START: { call: "startRevealPhase", deadline: "commitDeadline" },
 	REVEAL_PHASE_START: { call: "endRevealPhase", deadline: "revealDeadline" },
 	DELIVERY_PHASE_START: { call: "endDeliveryPhase", deadline: "deliveryDeadline" },
@@ -43,6 +52,8 @@ export class Orchestrator {
 	// one pending step per job; the generation lets a newer event cancel older in-flight work
 	private readonly pending = new Map<number, { generation: number; timer?: unknown }>();
 	private readonly inflight = new Set<Promise<void>>();
+	// jobs with a chain call in flight; a burst of STAKED events must not race two finalize txs
+	private readonly calling = new Set<number>();
 	private generation = 0;
 	private stopped = false;
 
@@ -63,6 +74,12 @@ export class Orchestrator {
 		if (step) {
 			const generation = this.claim(jobId);
 			this.track(this.schedule(jobId, step, generation, 0));
+		} else if (event.name === "STAKED" && !this.calling.has(jobId)) {
+			// Try to close staking now: it succeeds once every provider has staked. Chain.write
+			// simulates first, so an early try costs no gas; "Staking window not ended" falls back
+			// to waiting for pendingDeadline.
+			const generation = this.claim(jobId);
+			this.track(this.run(jobId, FINALIZE, generation, 0));
 		} else if (FINAL_EVENTS.has(event.name)) {
 			this.clear(jobId);
 		}
@@ -132,6 +149,7 @@ export class Orchestrator {
 	}
 
 	private async run(jobId: number, step: Step, generation: number, failures: number): Promise<void> {
+		this.calling.add(jobId);
 		try {
 			await this.chain[step.call](jobId);
 			this.log.log(`Job ${jobId}: ${step.call} done`);
@@ -149,6 +167,8 @@ export class Orchestrator {
 				this.log.warn(`Job ${jobId}: ${step.call} failed (${reason}); retrying`);
 				this.wait(jobId, generation, backoff(failures), () => this.run(jobId, step, generation, failures + 1));
 			}
+		} finally {
+			this.calling.delete(jobId);
 		}
 	}
 }
