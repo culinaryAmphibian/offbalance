@@ -13,7 +13,9 @@ class RunManager():
         self.currentJobId = None
         self.currentManifest = None
         self.client = docker.from_env()
-        self.jobs_dir = Path.home() / '.offbalance' / 'jobs'
+        # in Docker this must be the same path inside the client container and on the host, because
+        # job containers are started on the host's daemon and bind-mount it by host path
+        self.jobs_dir = Path(os.environ.get('OFFBALANCE_JOBS_DIR') or Path.home() / '.offbalance' / 'jobs')
         self.out_dir = None
 
     def prepareJob(self, manifest, jobId):

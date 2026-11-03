@@ -53,6 +53,25 @@ class ServerManager():
         response = self._heartbeat_session.post(f"{self.base_url}/provider/heartbeat", timeout=15)
         response.raise_for_status()
 
+    # the wallet this API key was issued to, as recorded with the benchmark; None if the server
+    # doesn't expose it (e.g. the dev mock)
+    def get_hardware_address(self) -> str | None:
+        try:
+            res = self.request("GET", "/provider/hardware")
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                return None
+            raise
+        hardware = res.json().get('hardware') or {}
+        return hardware.get('address')
+
+    # address, chain id and ABI of the deployed OffBalance contract
+    def get_contract(self) -> dict:
+        data = self.request('GET', '/contract_address').json()
+        if not data.get('address') or not isinstance(data.get('abi'), list) or not data['abi']:
+            raise ValueError("the server didn't return the contract address and ABI")
+        return data
+
     def getDockerManifest(self, jobId):
         res = self.request("GET", f"/jobManifest/{jobId}")
         

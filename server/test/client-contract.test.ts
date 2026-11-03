@@ -98,11 +98,13 @@ describe("GET /contract_address", () => {
 		assert.equal(res.status, 401);
 	});
 
-	test("returns the contract address as { address }", async () => {
+	test("returns the contract as { address, chainId, abi }", async () => {
 		const res = await fetch(`${baseUrl}/contract_address`, { headers: auth });
 		assert.equal(res.status, 200);
 		const body = await res.json();
 		assert.match(body.address, ADDRESS_RE);
+		assert.equal(body.chainId, 31337);
+		assert.ok(Array.isArray(body.abi));
 	});
 });
 

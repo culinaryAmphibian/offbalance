@@ -12,11 +12,18 @@ if TYPE_CHECKING:
     from blockchain.BlockchainManager import BlockchainManager
     from server.ServerManager import ServerManager
     from job.RunManager import RunManager
+    from Credentials import Credentials
 
 HEARTBEAT_INTERVAL_SECONDS = 10
 
+class WalletMismatch(RuntimeError):
+    pass
+
 class ProviderClient():
-    def __init__(self, benchmark: BenchmarkManager, blockchain: BlockchainManager, server: ServerManager, runner: RunManager):
+    def __init__(self, benchmark: BenchmarkManager, blockchain: BlockchainManager, server: ServerManager, runner: RunManager,
+                 credentials: Credentials | None = None):
+        # API key + session key + owner wallet, collected at startup; the managers were built from these
+        self.credentials = credentials
         self.benchmark = benchmark
         self.blockchain = blockchain
         self.server = server
@@ -30,6 +37,7 @@ class ProviderClient():
         scores = self.benchmark.do_benchmark()
         # failures terminate with error
         self.server.post_benchmark(scores)
+        self._check_wallet_matches()
 
         # Advertise immediately, then renew independently of slow chain requests.
         self._heartbeat()
@@ -60,6 +68,18 @@ class ProviderClient():
         if heartbeat_errors:
             raise heartbeat_errors[0]
 
+    # The server assigns jobs to the wallet the API key was issued to; the session key acts for
+    # credentials.owner. If those differ, this machine would never see its own assignments.
+    def _check_wallet_matches(self) -> None:
+        if self.credentials is None or self.credentials.owner is None:
+            return
+        api_wallet = self.server.get_hardware_address()
+        if api_wallet is not None and api_wallet.lower() != self.credentials.owner.lower():
+            raise WalletMismatch(
+                f"The API key belongs to wallet {api_wallet}, but the session key acts for {self.credentials.owner}. "
+                "Sign in to the frontend with the wallet that authorized this session key and copy its API key."
+            )
+
     def _heartbeat(self) -> None:
         try:
             self.server.heartbeat()
@@ -75,8 +95,8 @@ class ProviderClient():
 
         if isinstance(event, ProviderSelectedEvent):  
             print('Handling assignment')  
-            if self.blockchain.address == event.provider_selected:
-                self.handleAssignment(event.jobId)
+            if str(event.provider_selected).lower() == str(self.blockchain.owner).lower():
+                self.handleAssignment(event.jobId, event.stake)
 
         elif isinstance(event, CommitPhaseStartEvent):
             print("Handling commit phase start")
@@ -103,8 +123,14 @@ class ProviderClient():
         
         # here, will need to mux the events and orchestrate client workflow
     
-    def handleAssignment(self, jobId):
-        print(f"Handling assignment for: {jobId}")
+    # stake first: without it the provider is dropped when staking closes, so there's no point preparing
+    def handleAssignment(self, jobId, stake):
+        print(f"Handling assignment for: {jobId} (stake {stake} wei)")
+        try:
+            self.blockchain.stake(jobId, stake)
+        except Exception as error:
+            self._report_error(jobId, f'Staking failed: {error}')
+            return
         try:
             manifest = self.server.getDockerManifest(jobId)
             self.runner.prepareJob(manifest, jobId)

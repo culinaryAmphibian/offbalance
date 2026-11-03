@@ -10,9 +10,11 @@ import type { Deps } from "./deps.ts";
 export function clientRoutes({ matcher }: Deps): Router {
 	const router = Router();
 
+	// the client runs without a repo checkout, so it gets the ABI here too
 	router.get("/contract_address", requireAuth, (_req, res) => {
 		try {
-			res.json({ address: readDeployment().address });
+			const { address, chainId, abi } = readDeployment();
+			res.json({ address, chainId, abi });
 		} catch (e) {
 			res.status(503).json({
 				error: "can't read the deployment file; run `npm run dev` in blockchain/",

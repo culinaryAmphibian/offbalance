@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { timeLabel } from '../jobs';
 import { useResource } from '../useResource';
 import { ResourceError } from './JobDetail';
+import SessionKeyPanel from './SessionKeyPanel';
 
 const publicUrl = value => {
   try { const url = new URL(value); return ['http:', 'https:'].includes(url.protocol) ? url.href : null; } catch { return null; }
 };
 
-export default function ProviderSetup({ api, clientKey }) {
+export default function ProviderSetup({ api, clientKey, wallet }) {
   const loadProvider = useCallback(signal => api.getProvider(signal), [api]);
   const loadTutorial = useCallback(signal => api.getProviderTutorial(signal), [api]);
   const providerResource = useResource(loadProvider);
@@ -119,5 +120,6 @@ export default function ProviderSetup({ api, clientKey }) {
         <div className="form-actions"><button className="button primary" type="submit" disabled={pending || !machine || !provider?.registered}>{pending ? 'Saving…' : 'Save price'}</button></div>
       </form>
     </div>
+    {clientKey && wallet && <SessionKeyPanel api={api} wallet={wallet} />}
   </>;
 }

@@ -12,9 +12,36 @@ Has the following responsibilities:
 6. Post nonce to blockchain
 7. Run benchmark
 8. Provide benchmark
-9. Save provider's private key
+9. Hold the provider's credentials (API key + session key) for its lifetime
 
 ---
+
+## Credentials
+
+The client asks for the **API key** (frontend → Provider Setup) and the **session key**
+(frontend → Provider Setup → *Authorize provider client*), then keeps them in
+`Credentials` (`Credentials.py`). The session key signs every transaction for your
+wallet; your wallet keeps the earnings and is the only one that can withdraw. See the
+[root README](../README.md#credentials) for how the session key is created.
+
+## Running in Docker
+
+```bash
+docker build -t offbalance-client client/
+docker run -it --rm --network host \
+  -v /var/run/docker.sock:/var/run/docker.sock --group-add "$(stat -c %g /var/run/docker.sock)" \
+  --user "$(id -u):$(id -g)" \
+  -v "$HOME/.offbalance:$HOME/.offbalance" -e OFFBALANCE_JOBS_DIR="$HOME/.offbalance/jobs" \
+  -e OFFBALANCE_SERVER_URL=https://localhost:5000 -e RPC_URL=http://127.0.0.1:8545 \
+  offbalance-client
+```
+
+- `-it` lets the client prompt for credentials (or pass `-e OFFBALANCE_API_KEY=… -e OFFBALANCE_SESSION_KEY=…`).
+- Jobs run as sibling containers on the host's Docker daemon, hence the socket mount.
+- The daemon mounts job output by **host** path, so the jobs folder must be at the same path inside the
+  container and on the host (`OFFBALANCE_JOBS_DIR`).
+- `--user` makes the job output files yours instead of root's.
+- For the real HTTPS server, also mount its certificate and set `REQUESTS_CA_BUNDLE` to it.
 
 ## Hardware benchmark scores
 
@@ -41,7 +68,7 @@ python3 main.py --dev --provider 1
 The local launcher sets the URL and certificate trust automatically. `--dev`
 uses the seeded token `dev` for provider 1, and `dev2`–`dev4` for providers 2–4;
 `OFFBALANCE_API_KEY` overrides it. For ordinary sign-in, use the API key shown
-in the frontend's provider setup and its corresponding wallet private key.
+in the frontend's provider setup and a session key authorized for the same wallet.
 Set a positive hourly price in the frontend after the machine's benchmark appears.
 Benchmarks and pricing alone do not establish availability; matching also requires
 a live heartbeat and hardware that meets the job's requirements.
@@ -53,7 +80,7 @@ stops or loses connectivity, availability expires automatically.
 Test availability and execution handling without a running Docker daemon or blockchain node:
 
 ```bash
-python3 -m pip install requests docker
+python3 -m pip install -r requirements.txt
 python3 -m unittest discover -s test -v
 ```
 

@@ -3,7 +3,7 @@
 // (non --dev) flow before the actual server exists.
 //
 //   cd server && npm run dev:mock
-//   cd client && OFFBALANCE_API_KEY=dev PROVIDER_PRIVATE_KEY=<from dev.env> python3 main.py
+//   cd client && OFFBALANCE_API_KEY=dev OFFBALANCE_SESSION_KEY=<from dev.env> python3 main.py
 //
 // GET /dev/state shows everything clients have posted.
 import express from "express";
@@ -54,13 +54,14 @@ function requireToken(req: Request, res: Response, next: NextFunction) {
 }
 
 // read on every request so a redeploy is picked up without restarting
-function contractAddress(): string {
-	return JSON.parse(readFileSync(DEPLOYMENT_FILE, "utf8")).address;
+function deployment(): { address: string; chainId: number; abi: unknown[] } {
+	const { address, chainId, abi } = JSON.parse(readFileSync(DEPLOYMENT_FILE, "utf8"));
+	return { address, chainId, abi };
 }
 
 app.get("/contract_address", requireToken, (_req: Request, res: Response) => {
 	try {
-		res.json({ address: contractAddress() });
+		res.json(deployment());
 	} catch (e) {
 		res.status(503).json({
 			error: `can't read ${DEPLOYMENT_FILE}; run \`npm run dev\` in blockchain/`,

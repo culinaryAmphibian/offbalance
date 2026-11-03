@@ -56,7 +56,7 @@ function App() {
 			</header>
 			<main>
 				{auth.session ? (
-					<Workspace key={auth.session.account.wallet} clientKey={demo ? null : auth.session.token} />
+					<Workspace key={auth.session.account.wallet} clientKey={demo ? null : auth.session.token} wallet={auth.session.account.wallet} />
 				) : (
 					<section
 						className="sign-in"
@@ -93,7 +93,7 @@ function App() {
 	);
 }
 
-function Workspace({ clientKey }) {
+function Workspace({ clientKey, wallet }) {
 	const [hash, setHash] = useState(window.location.hash || "#/");
 	const [view, setView] = useState("buyer");
 	const [createdId, setCreatedId] = useState(null);
@@ -115,7 +115,7 @@ function Workspace({ clientKey }) {
 				}}
 			/>
 		);
-	if (hash === "#/provider") return <ProviderSetup api={api} clientKey={clientKey} />;
+	if (hash === "#/provider") return <ProviderSetup api={api} clientKey={clientKey} wallet={wallet} />;
 	const match = hash.match(/^#\/jobs\/([^/]+)$/);
 	if (match) {
 		let id;

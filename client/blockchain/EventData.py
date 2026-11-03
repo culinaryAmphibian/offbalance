@@ -11,12 +11,14 @@ class Event():
         return f"block number: {self.block_number}, event: {self.type.value}, jobId: {self.jobId}"
 
 class ProviderSelectedEvent(Event):
-    def __init__(self, block_number: int, event: BlockchainEvent, jobId: int, provider: int):
+    def __init__(self, block_number: int, event: BlockchainEvent, jobId: int, provider: str, stake: int):
         super().__init__(block_number, event, jobId)
         self.provider_selected = provider
+        # wei this provider must deposit with submitStake, fixed at assignment
+        self.stake = stake
 
     def __repr__(self):
-        return f"{super().__repr__()} provider selected: {self.provider_selected}"
+        return f"{super().__repr__()} provider selected: {self.provider_selected}, stake: {self.stake}"
 
 class CommitPhaseStartEvent(Event):
     def __init__(self, block_number: int, event: BlockchainEvent, jobId: int, deadline: int):
@@ -51,7 +53,7 @@ def event_class_factory(e) -> Event:
 
     match e['event']:
         case BlockchainEvent.PROVIDER_SELECTED.value:
-            return ProviderSelectedEvent(block_number, event, jobId, args['provider'])
+            return ProviderSelectedEvent(block_number, event, jobId, args['provider'], args['stake'])
         
         case BlockchainEvent.COMMIT_PHASE_START.value:
             return CommitPhaseStartEvent(block_number, event, jobId, args['deadline'])

@@ -105,25 +105,33 @@ python3 main.py --dev                    # provider 1, keys from dev.env
 python3 main.py --dev --provider 2       # run as provider 2 (start several to simulate many providers)
 ```
 
-The client always needs a server: it gets the contract address from `GET /contract_address` and posts its benchmark to `POST /scores`. Locally that's the real server (`npm start`, port 5000) or the route mock (`npm run dev:mock`). The client reads the ABI from `deployments/localhost.json`.
+The client always needs a server: it gets the contract address, chain ID and ABI from `GET /contract_address` and posts its benchmark to `POST /scores`. Locally that's the real server (`npm start`, port 5000) or the route mock (`npm run dev:mock`). To run the client in Docker, see [`client/README.md`](client/README.md#running-in-docker).
+
+### Credentials
+
+On startup the client asks for two things and keeps them in a `Credentials` object (`client/Credentials.py`) for its lifetime:
+- **API key**: shown on the frontend's Provider Setup page after signing in with your wallet. The server uses it to identify that wallet.
+- **Session key**: created with **Authorize provider client** on the same page. The browser generates the key, the key signs its consent, and your wallet sends `OffBalance.registerSessionKey` (along with ETH for the key's gas and stakes). The private key is shown once. The session key signs the client's stake, commit and reveal transactions for your wallet; earnings still go to your wallet, and only your wallet can withdraw. Authorizing a new key replaces the old one, and you can revoke it from the same page.
+
+The client asks the contract which wallet the session key acts for (`providerOf`). It refuses to start if the key isn't registered or has expired, and it stops if the API key belongs to a different wallet. Commitment salts are derived from the session key, so there's no separate seed to enter.
 
 `--dev` only changes where credentials come from:
-- the session key is `PROVIDER_N_PRIVATE_KEY` from `dev.env`;
+- the provider wallet's own key, `PROVIDER_N_PRIVATE_KEY` from `dev.env`, signs directly (the contract lets a wallet act without a session key);
 - the API key is `OFFBALANCE_API_KEY` if set, otherwise `dev` for provider 1 and `dev2`–`dev4` for providers 2–4 (seeded by the real server; the mock accepts any token).
 
-Outside `--dev`, any prompt can be skipped with an env var: `OFFBALANCE_API_KEY`, `PROVIDER_PRIVATE_KEY`, `OFFBALANCE_ADDRESS` (skips the server lookup), `OFFBALANCE_SERVER_URL`, `RPC_URL`.
+Outside `--dev`, the prompts can be skipped with env vars: `OFFBALANCE_API_KEY` and `OFFBALANCE_SESSION_KEY` (`PROVIDER_PRIVATE_KEY` also works). Also: `OFFBALANCE_ADDRESS` (overrides the server's contract address), `OFFBALANCE_SERVER_URL`, `RPC_URL`, `OFFBALANCE_JOBS_DIR`.
 
 The client polls for new blocks every second. It only sees events from blocks mined **after** it starts, so start the client before firing events.
 
 ### Running a job
 
-1. `PROVIDER_SELECTED` for this provider: the client fetches the job manifest from `GET /jobManifest/:jobId` and prepares `~/.offbalance/jobs/<jobId>/output/`.
+1. `PROVIDER_SELECTED` for this provider's wallet: the client deposits the stake named in the event with `submitStake`, then fetches the job manifest from `GET /jobManifest/:jobId` and prepares `~/.offbalance/jobs/<jobId>/output/`.
 2. `COMMIT_PHASE_START`: `RunManager` runs the manifest's `image` + `command` in a container, on a background thread. It pulls the image if it's missing.
    - The host output folder is mounted at **`/output`** inside the container. The job must write its result there; stdout is ignored.
    - The container runs as your uid:gid, so the files it writes are yours.
    - Networking is off unless the manifest has an `input_url`.
    - It's killed if it runs past the deadline (`status="timeout"`).
-3. On success, `RunManager.hash_dir` hashes the output folder (sha256 over sorted relative paths and file contents; symlinks aren't followed). `BlockchainManager.commit` sends `submitCommitment` with `keccak256(abi.encode(keccak256(resultHash), salt))` and the stake (`stakeFor`). The salt is derived per job from the provider's key seed.
+3. On success, `RunManager.hash_dir` hashes the output folder (sha256 over sorted relative paths and file contents; symlinks aren't followed). `BlockchainManager.commit` sends `submitCommitment` with `keccak256(abi.encode(keccak256(resultHash), salt))`. The salt is derived per job from a seed derived from the session key.
 4. `REVEAL_PHASE_START`: `BlockchainManager.reveal` sends `submitReveal(jobId, resultHash, salt)`. Only the 32-byte result hash goes on-chain, never the output.
 
 The mock server returns the same manifest for every job: alpine running `echo "result for job N" > /output/result.txt`. Edit it in `server/dev-server.ts`. `npm run dev:mock` doesn't reload on changes, so restart it after editing (or use `node --watch`).
@@ -269,11 +277,10 @@ When the client starts calling a new route or reading a new field, add it here f
 
 ## Known gaps
 
-- `BlockchainManager.event_types` doesn't subscribe to `JOB_SUBMITTED`, `CONSENSUS_VERIFICATION_START`, `PAID`, `SLASHED` or `NO_QUORUM`. Those events are silently ignored until they're added there and to `event_class_factory`.
+- `BlockchainManager.event_types` doesn't subscribe to `JOB_SUBMITTED`, `CONSENSUS_VERIFICATION_START`, `PAID` or `SLASHED`. Those events are silently ignored until they're added there and to `event_class_factory`.
 - On startup, the client's first poll includes the current block, so it can replay that block's events.
 - `COMMIT_PHASE_START`'s `deadline` is the job's `executionTime` (a duration), not the absolute `commitDeadline` timestamp.
 - The server's phase timers live in memory: after a restart, jobs already in progress aren't driven until someone calls the transition (anyone can, e.g. with the contract controller).
-- Every provider stakes the same `STAKE`; `stakeFor` is where reputation will scale it.
 - The server's buyer `totalSpent` is booked at the job's `runningPrice`, not from the contract's amounts.
 - The server's job statuses (`PENDING`, `COMMIT_PHASE`, …) differ from the contract's `Status` enum. The event → status mapping is in `server/models/JobStatus.ts`.
 - Results aren't stored by the server: providers upload to object storage themselves and post the `location`.
