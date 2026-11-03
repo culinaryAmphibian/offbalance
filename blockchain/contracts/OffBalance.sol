@@ -39,7 +39,6 @@ contract OffBalance {
         address payable creator;
         JobID_t id;
         uint256 price;
-        uint256 stakeAmount;
         uint256 k;
         uint256 quorum;
         uint256 executionTime;
@@ -77,6 +76,7 @@ contract OffBalance {
     event DELIVERED(JobID_t indexed jobId);
     event PAID(JobID_t indexed jobId, address indexed provider, uint256 amount);
     event SLASHED(JobID_t indexed jobId, address indexed provider, uint256 amount);
+    event STAKE_REFUNDED(JobID_t indexed jobId, address indexed provider, uint256 amount);
     event CANCELED(JobID_t indexed jobId);
     event NO_QUORUM(JobID_t indexed jobId);
     event COMMITTED(JobID_t indexed jobId, address indexed provider);
@@ -89,7 +89,9 @@ contract OffBalance {
     mapping(JobID_t => Job) private jobs;
     mapping(address => Provider) private providers;
     mapping(address => uint256) public credits;
-    mapping(bytes32 => uint256) private temp_hashes;
+    // Stake each provider currently has locked in unsettled jobs (returned or slashed at settlement).
+    mapping(address => uint256) public lockedStake;
+	mapping(bytes32 => uint256) private temp_hashes;
 
     // Providers have this long (in seconds) after assignment to deposit their required stake.
     uint256 public constant PENDING_WINDOW = 60 * 60 * 24;
@@ -101,11 +103,27 @@ contract OffBalance {
         _; // Continue executing the protected function after the access check.
     }
 
+    // Stake every provider posts with its commitment; one value for all jobs.
+    uint256 public constant STAKE = 0.001 ether;
+
+    // TODO: make this an inverse function of the provider's reputation once reputation exists.
+    function stakeFor(address) public returns (uint256) {
+        return STAKE * (1 + 5 * 2 ** (-1 * providers[address].reputation/1000));
+    }
+
+    // Stake every provider posts with its commitment; one value for all jobs.
+    uint256 public constant STAKE = 0.001 ether;
+
+    // TODO: make this an inverse function of the provider's reputation once reputation exists.
+    function stakeFor(address) public pure returns (uint256) {
+        return STAKE;
+    }
+
     constructor() {
         server = msg.sender;
     }
 
-    // Buyer escrows the full job price and specifies the stake required from each provider.
+    // Buyer escrows the full job price. The contract assigns the job id.
     function submitJob(
         uint256 price,
         uint256 k,
@@ -123,7 +141,6 @@ contract OffBalance {
         job.id = jobId;
         job.creator = payable(msg.sender);
         job.price = price;
-        job.stakeAmount = 1000000000;
         job.k = k;
         job.quorum = quorum;
         job.executionTime = executionTime;
@@ -170,10 +187,14 @@ contract OffBalance {
         require(block.timestamp <= job.commitDeadline, "Commit deadline passed");
         require(job.isAssigned[msg.sender], "Provider not assigned");
         require(commitmentHash != bytes32(0), "Empty commitment");
+        require(msg.value == stakeFor(msg.sender), "Incorrect stake");
+
         Commitment_t storage c = providers[msg.sender].answers[jobId];
         require(c.stake == job.stakeAmount, "Stake not deposited");
         require(c.commitmentHash == bytes32(0), "Already committed");
         c.commitmentHash = commitmentHash;
+        c.stake = msg.value; // held by the contract until settlement
+        lockedStake[msg.sender] += msg.value;
         emit COMMITTED(jobId, msg.sender);
     }
 
@@ -328,7 +349,7 @@ contract OffBalance {
             emit NO_QUORUM(jobId);
             // No consensus: return the buyer's escrow and all provider stakes as credits.
             credits[job.creator] += job.price;
-            _returnAllStakesToCredits(jobId, job);
+            _refundAllStakes(jobId, job);
         }
     }
 
@@ -374,31 +395,31 @@ contract OffBalance {
                 credits[addr] += amount + c.stake;
                 if (providers[addr].reputation < type(uint16).max) providers[addr].reputation += 1;
                 emit PAID(jobId, addr, amount);
+                lockedStake[addr] -= c.stake;
                 c.stake = 0;
             } else if (c.stake > 0) {
                 uint256 amountSlashed = c.stake;
                 if (providers[addr].reputation > 0) providers[addr].reputation -= 1;
                 // Unsuccessful providers lose their stake; it remains in the contract.
                 emit SLASHED(jobId, addr, amountSlashed);
+                lockedStake[addr] -= c.stake;
                 c.stake = 0;
             }
         }
         job.status = Status.PAID;
     }
 
-    // Return every deposited stake to its provider's pull-payment credit balance.
-    // This is a refund, not a slash: used when a job cannot proceed or reach consensus.
-    // In the provider-selection failure case, the assigned list contains only stakers,
-    // because providers who did not stake were removed before this function is called.
-    function _returnAllStakesToCredits(JobID_t jobId) private {
-		Job job = jobs[jobId];
+    function _refundAllStakes(JobID_t jobId) private {
+		Job job = jobs[jobId]
         for (uint256 i; i < job.assignedProviders.length; ++i) {
             address addr = job.assignedProviders[i];
             Commitment_t storage c = providers[addr].answers[jobId];
             if (c.stake > 0) {
                 uint256 amount = c.stake;
+                lockedStake[addr] -= c.stake;
                 c.stake = 0;
                 credits[addr] += amount;
+                emit STAKE_REFUNDED(jobId, addr, amount);
             }
         }
     }
@@ -414,6 +435,14 @@ contract OffBalance {
 
     function getJobStatus(JobID_t jobId) external view returns (Status) {
         return jobs[jobId].status;
+    }
+
+    // Phase deadlines in chain time (0 until the phase starts). The server's orchestrator
+    // reads these to know when to call startRevealPhase / endRevealPhase / endDeliveryPhase.
+    function getDeadlines(JobID_t jobId)
+        external view returns (Status status, uint256 commitDeadline, uint256 revealDeadline, uint256 deliveryDeadline) {
+        Job storage job = jobs[jobId];
+        return (job.status, job.commitDeadline, job.revealDeadline, job.deliveryDeadline);
     }
 
     function getAssignedProviders(JobID_t jobId) external view returns (address[] memory) {
