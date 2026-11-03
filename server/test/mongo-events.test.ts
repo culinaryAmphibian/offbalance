@@ -26,7 +26,7 @@ async function fixture(selfProvider = false) {
 	});
 	const matcher = new Matcher(null);
 	matcher.manager.pool.register({ wallet: provider.walletIds[0], accountId: String(provider._id),
-		registered: true, pricePerHour: "2.75", machine: { cpuScore: 1, gpuScore: null, memoryScore: 1 },
+		registered: true, pricePerHour: "2.75", machine: { vcpus: 1, memoryGb: 1, gpus: [] },
 		busyJobId: String(job.onChainJobId), lastHeartbeat: Date.now() });
 	const event = (name: string, id = `${job.onChainJobId}:${name}`): ChainEvent & { id: string } => ({
 		id, name, blockNumber: 1n,
@@ -46,21 +46,62 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 	try {
 		await mongoose.syncIndexes();
 
-		await t.test("PAID and SLASHED replay only apply financial and reputation effects once", async () => {
+		await t.test("PAID records one payout per provider and DELIVERED marks the job settled", async () => {
+			const f = await fixture();
+			await handleChainEvent({ ...f.event("PAID"), args: { ...f.event("PAID").args, amount: 5_000_000_000_000_000n } }, f.matcher);
+			await handleChainEvent({ ...f.event("PAID", "replayed-with-new-id"), args: { ...f.event("PAID").args, amount: 5_000_000_000_000_000n } }, f.matcher);
+			await handleChainEvent(f.event("DELIVERED"), f.matcher);
+			const job = await JobModel.findById(f.job._id).orFail();
+			assert.equal(job.status, JobStatus.PAYOUT);
+			assert.deepEqual(job.payouts.map(p => [String(p.provider), p.amount.toString()]), [[String(f.provider._id), "0.005"]]);
+			assert.ok(job.settledAt instanceof Date);
+			const settled = job.settledAt;
+			await handleChainEvent(f.event("DELIVERED", "again"), f.matcher);
+			assert.equal((await JobModel.findById(f.job._id).orFail()).settledAt?.getTime(), settled.getTime());
+		});
+
+		await t.test("PAID replay only applies financial effects once; SLASHED changes nothing", async () => {
 			const f = await fixture();
 			await handleChainEvent(f.event("PAID"), f.matcher);
 			await handleChainEvent(f.event("PAID"), f.matcher);
 			assert.equal((await account(f.provider._id)).earned, "2.75");
-			assert.equal((await account(f.provider._id)).reputation, 1);
-			assert.equal((await account(f.owner._id)).spent, "2.75");
+			// PAID pays the provider; the buyer's charge comes with DELIVERED
+			assert.equal((await account(f.owner._id)).spent, "0");
 			await handleChainEvent(f.event("SLASHED"), f.matcher);
-			await handleChainEvent(f.event("SLASHED"), f.matcher);
-			assert.equal((await account(f.provider._id)).reputation, 0);
+			// reputation comes from REPUTATION_UPDATED only
+			assert.equal((await account(f.provider._id)).reputation, 0.5);
 			assert.equal(await ChainEventModel.countDocuments({ _id: { $in: [f.event("PAID").id, f.event("SLASHED").id] } }), 2);
 		});
 
-		await t.test("a failed buyer update leaves no processed receipt and retry never credits provider twice", async () => {
+		await t.test("REPUTATION_UPDATED copies the contract's trust score, latest first, without a database job", async () => {
 			const f = await fixture();
+			const updated = (id: string, trustBps: bigint, jobId = BigInt(f.job.onChainJobId)) => ({ ...f.event("REPUTATION_UPDATED", id),
+				args: { jobId, provider: f.provider.walletIds[0], earned: 0n, strikes: 0n, trustBps } });
+			await handleChainEvent(updated("rep-1", 6_667n), f.matcher);
+			assert.equal((await account(f.provider._id)).reputation, 0.6667);
+			await handleChainEvent(updated("rep-2", 4_000n, 999_999n), f.matcher); // a job only on chain
+			assert.equal((await account(f.provider._id)).reputation, 0.4);
+			await handleChainEvent(updated("rep-1", 6_667n), f.matcher); // a replay is skipped
+			assert.equal((await account(f.provider._id)).reputation, 0.4);
+		});
+
+		await t.test("the buyer is charged the escrowed price exactly once, however many providers are paid", async () => {
+			const f = await fixture();
+			const second = await AccountModel.create({ walletIds: [wallet()] });
+			const paid = (provider: string, id: string) => ({ ...f.event("PAID", id), args: { jobId: BigInt(f.job.onChainJobId), provider, amount: 1_500_000_000_000_000_000n } });
+			await handleChainEvent(paid(f.provider.walletIds[0], "paid-1"), f.matcher);
+			await handleChainEvent(paid(second.walletIds[0], "paid-2"), f.matcher);
+			assert.equal((await account(f.owner._id)).spent, "0");
+			await handleChainEvent(f.event("DELIVERED"), f.matcher);
+			await handleChainEvent(f.event("DELIVERED", "duplicate-delivered-log"), f.matcher);
+			assert.equal((await account(f.owner._id)).spent, "3"); // maxPrice, the escrow
+			assert.equal((await account(f.provider._id)).earned, "1.5");
+			assert.equal((await account(second._id)).earned, "1.5");
+		});
+
+		await t.test("a failed buyer update leaves no processed receipt and retry never charges the buyer twice", async () => {
+			const f = await fixture();
+			await handleChainEvent(f.event("PAID"), f.matcher);
 			const original = AccountModel.updateOne;
 			let failed = false;
 			AccountModel.updateOne = function (this: typeof AccountModel, ...args: Parameters<typeof AccountModel.updateOne>) {
@@ -72,17 +113,16 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 				return Reflect.apply(original, this, args);
 			} as typeof AccountModel.updateOne;
 			try {
-				await assert.rejects(handleChainEvent(f.event("PAID"), f.matcher), /Injected buyer/);
+				await assert.rejects(handleChainEvent(f.event("DELIVERED"), f.matcher), /Injected buyer/);
 			} finally { AccountModel.updateOne = original; }
 			assert.equal(failed, true);
-			assert.equal((await account(f.provider._id)).earned, "2.75");
 			assert.equal((await account(f.owner._id)).spent, "0");
-			assert.equal(await ChainEventModel.exists({ _id: f.event("PAID").id }), null);
-			await handleChainEvent(f.event("PAID"), f.matcher);
+			assert.equal(await ChainEventModel.exists({ _id: f.event("DELIVERED").id }), null);
+			await handleChainEvent(f.event("DELIVERED"), f.matcher);
+			await handleChainEvent(f.event("DELIVERED"), f.matcher);
 			assert.equal((await account(f.provider._id)).earned, "2.75");
-			assert.equal((await account(f.provider._id)).reputation, 1);
-			assert.equal((await account(f.owner._id)).spent, "2.75");
-			assert.ok(await ChainEventModel.exists({ _id: f.event("PAID").id }));
+			assert.equal((await account(f.owner._id)).spent, "3");
+			assert.ok(await ChainEventModel.exists({ _id: f.event("DELIVERED").id }));
 		});
 
 		await t.test("DELIVERED replay preserves completed jobs and a provider's subsequent reservation", async () => {
@@ -99,14 +139,15 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 			assert.equal(f.matcher.manager.pool.get(f.provider.walletIds[0])?.busyJobId, "next-job");
 		});
 
-		await t.test("one account acting as buyer and provider records both sides of PAID exactly once", async () => {
+		await t.test("one account acting as buyer and provider records both sides of settlement exactly once", async () => {
 			const f = await fixture(true);
 			await handleChainEvent(f.event("PAID"), f.matcher);
 			await handleChainEvent(f.event("PAID"), f.matcher);
+			await handleChainEvent(f.event("DELIVERED"), f.matcher);
+			await handleChainEvent(f.event("DELIVERED"), f.matcher);
 			const result = await account(f.owner._id);
 			assert.equal(result.earned, "2.75");
-			assert.equal(result.spent, "2.75");
-			assert.equal(result.reputation, 1);
+			assert.equal(result.spent, "3");
 		});
 
 		await t.test("actual job events still reject missing and invalid job IDs without recording completion", async () => {
@@ -197,10 +238,10 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 			assert.equal((await monitor.pollOnce()).processed, 3);
 			assert.deepEqual(seen.slice(0, 3), seen.slice(3));
 			assert.deepEqual(await store.load(), { blockNumber: 2, blockHash: hash(3) });
-			// the provider is credited the contract's wei payout, the buyer the running price
+			// the provider is credited the contract's wei payout, the buyer the escrowed price
 			assert.equal((await account(f.provider._id)).earned, "2.5");
-			assert.equal((await account(f.provider._id)).reputation, 0);
-			assert.equal((await account(f.owner._id)).spent, "2.75");
+			assert.equal((await account(f.provider._id)).reputation, 0.5);
+			assert.equal((await account(f.owner._id)).spent, "3");
 			assert.deepEqual((await account(f.owner._id)).completed, [String(f.job._id)]);
 			await monitor.stop();
 		});

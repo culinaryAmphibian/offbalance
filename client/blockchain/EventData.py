@@ -19,7 +19,7 @@ class ProviderSelectedEvent(Event):
         return f"{super().__repr__()} provider selected: {self.provider_selected}"
 
 class CommitPhaseStartEvent(Event):
-    def __init__(self, block_number: int, event: BlockchainEvent, jobId: int, deadline: int):
+    def __init__(self, block_number: int, event: BlockchainEvent, jobId: int, deadline: int | None = None):
         super().__init__(block_number, event, jobId)
         self.deadline = deadline
 
@@ -54,7 +54,7 @@ def event_class_factory(e) -> Event:
             return ProviderSelectedEvent(block_number, event, jobId, args['provider'])
         
         case BlockchainEvent.COMMIT_PHASE_START.value:
-            return CommitPhaseStartEvent(block_number, event, jobId, args['deadline'])
+            return CommitPhaseStartEvent(block_number, event, jobId, args.get('deadline'))
         
         case BlockchainEvent.REVEAL_PHASE_START.value:
             return RevealPhaseStartEvent(block_number, event, jobId)
@@ -73,4 +73,3 @@ def event_class_factory(e) -> Event:
         
         case _:
             raise ValueError(f"{e} is could not be processed by factory... block_number:{block_number}, event: {event}, args: {args}, jobId: {jobId}")
-    

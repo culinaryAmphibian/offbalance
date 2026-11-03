@@ -10,6 +10,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ProviderClient import ProviderClient
+from benchmark.HardwareProfile import GpuInfo
 from job.JobResult import JobResult
 from job.RunManager import RunManager
 from server.ServerManager import ServerManager
@@ -75,6 +76,38 @@ class ExecutionTests(unittest.TestCase):
             self.runner.startJob(7, 60)
         self.assertFalse(self.runner.isActive)
         self.docker.containers.run.assert_not_called()
+
+    def test_cpu_and_memory_limits_are_enforced_without_swap(self):
+        self.runner.prepareJob({'image': 'job@sha256:123', 'command': [], 'cpu_limit': 2, 'mem_limit_mb': 4096}, 7)
+        self.runner.startJob(7, 60)
+        args = self.docker.containers.run.call_args.kwargs
+        self.assertEqual(args['nano_cpus'], 2_000_000_000)
+        self.assertEqual((args['mem_limit'], args['memswap_limit']), ('4096m', '4096m'))
+        self.assertNotIn('device_requests', args)
+
+    def test_gpu_job_gets_the_first_usable_gpu_that_fits(self):
+        self.runner.gpus = [GpuInfo('nvidia', 0, 'RTX 2060', 6.0, fp32_tflops=6.5),
+                            GpuInfo('nvidia', 1, 'RTX 3090', 24.0, fp32_tflops=35.0)]
+        self.runner.prepareJob({'image': 'job@sha256:123', 'command': [], 'gpu': {'vendor': 'any', 'min_vram_gb': 8}}, 7)
+        self.runner.startJob(7, 60)
+        self.assertEqual(self.docker.containers.run.call_args.kwargs['device_requests'][0]['DeviceIDs'], ['1'])
+
+    def test_amd_gpu_job_gets_rocm_devices_and_its_card_in_the_environment(self):
+        self.runner.gpus = [GpuInfo('amd', 0, 'RX 6800', 16.0, fp32_tflops=16.0)]
+        self.runner.prepareJob({'image': 'job@sha256:123', 'command': [], 'env': {'A': '1'},
+                                'gpu': {'vendor': 'amd', 'min_vram_gb': 0}}, 7)
+        self.runner.startJob(7, 60)
+        args = self.docker.containers.run.call_args.kwargs
+        self.assertEqual(args['devices'], ['/dev/kfd', '/dev/dri'])
+        self.assertEqual(args['environment'], {'A': '1', 'HIP_VISIBLE_DEVICES': '0'})
+
+    def test_gpu_job_without_a_matching_gpu_fails_before_starting_a_container(self):
+        self.runner.gpus = [GpuInfo('nvidia', 0, 'RTX 2060', 6.0, fp32_tflops=6.5)]
+        self.runner.prepareJob({'image': 'job@sha256:123', 'command': [], 'gpu': {'vendor': 'amd', 'min_vram_gb': 0}}, 7)
+        with self.assertRaisesRegex(RuntimeError, 'AMD GPU'):
+            self.runner.startJob(7, 60)
+        self.docker.containers.run.assert_not_called()
+        self.assertFalse(self.runner.isActive)
 
 
 class ExecutionReportingTests(unittest.TestCase):

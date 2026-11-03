@@ -6,6 +6,8 @@ from blockchain.EventData import *
 import requests
 import sys
 import threading
+import time
+from server.ServerManager import DeliveryError
 
 if TYPE_CHECKING:
     from benchmark.BenchmarkManager import BenchmarkManager
@@ -23,13 +25,20 @@ class ProviderClient():
         self.runner = runner
         self._job_lock = threading.Lock()
         self._running_jobs = set()
+        self._results = {}
+        self._delivering = set()
+        self._stop_event = None
 
     # mediator methods here...
     def run(self, stop_event: threading.Event | None = None) -> None:
         stop_event = stop_event or threading.Event()
-        scores = self.benchmark.do_benchmark()
+        self._stop_event = stop_event
+        profile = self.benchmark.do_benchmark()
         # failures terminate with error
-        self.server.post_benchmark(scores)
+        self.server.post_benchmark(profile)
+        # GPU jobs get one of the GPUs whose benchmark container ran
+        if self.runner is not None:
+            self.runner.gpus = [gpu for gpu in profile.gpus if gpu.usable]
 
         # Advertise immediately, then renew independently of slow chain requests.
         self._heartbeat()
@@ -80,7 +89,7 @@ class ProviderClient():
 
         elif isinstance(event, CommitPhaseStartEvent):
             print("Handling commit phase start")
-            self.handleCommitPhaseStart(event.jobId, event.deadline)
+            self.handleCommitPhaseStart(event.jobId, event.deadline, event.block_number)
 
         elif isinstance(event, RevealPhaseStartEvent):
             print("Handling reveal phase start")
@@ -88,6 +97,7 @@ class ProviderClient():
 
         elif isinstance(event, DeliveryPhaseStartEvent):
             print("Handling delivery phase start")
+            self.handleDeliveryPhaseStart(event.jobId)
 
         elif isinstance(event, DeliveredEvent):
             print("Handling delivered event")
@@ -111,14 +121,60 @@ class ProviderClient():
         except Exception as error:
             self._report_error(jobId, f'Job preparation failed: {error}')
 
-    def handleCommitPhaseStart(self, jobId, deadline):
+    def handleCommitPhaseStart(self, jobId, deadline=None, block_number=None):
         with self._job_lock:
             # Commit-phase events are broadcast to every provider, including
             # machines that were not selected for this job.
             if self.runner.currentJobId != jobId or jobId in self._running_jobs:
                 return
+            if deadline is None:
+                try:
+                    deadline = self.blockchain.execution_window(block_number, self.runner.currentManifest['timeout_s'])
+                except Exception:
+                    self._report_error(jobId, 'Cannot read the commit execution window.')
+                    return
+            if deadline <= 0:
+                self._report_error(jobId, 'The commit execution window has expired; execution was skipped.')
+                return
             self._running_jobs.add(jobId)
         threading.Thread(target=self._runAndCommit, args=(jobId, deadline), daemon=True).start()
+
+    def handleDeliveryPhaseStart(self, job_id):
+        with self._job_lock:
+            result = self._results.get(job_id)
+            if result is None or job_id in self._delivering:
+                return
+            self._delivering.add(job_id)
+        threading.Thread(target=self._deliverResult, args=(job_id, *result), daemon=True).start()
+
+    # The delivery window is 30s on chain; stop retrying a little before it closes.
+    DELIVERY_RETRY_S = 25
+    DELIVERY_RETRY_INTERVAL_S = 2
+
+    def _deliverResult(self, job_id, output_dir, result_hash):
+        give_up_at = time.monotonic() + self.DELIVERY_RETRY_S
+        stop = self._stop_event or threading.Event()
+        try:
+            while True:
+                try:
+                    self.server.deliver_result(job_id, output_dir, result_hash, self._stop_event)
+                    print(f'Job {job_id}: result delivered.')
+                    return
+                except DeliveryError as error:
+                    # The client sees DELIVERY_PHASE_START about when the server does, so the
+                    # first upload can land before the server opens the job for delivery (409).
+                    if not error.retryable or time.monotonic() >= give_up_at or stop.is_set():
+                        print(f'Job {job_id}: result delivery failed: {error}', file=sys.stderr)
+                        return
+                    print(f'Job {job_id}: result delivery not accepted yet ({error}); retrying', file=sys.stderr)
+                    stop.wait(self.DELIVERY_RETRY_INTERVAL_S)
+                except Exception as error:
+                    # Other errors can carry credentials; report only the type.
+                    print(f'Job {job_id}: result delivery failed ({type(error).__name__}).', file=sys.stderr)
+                    return
+        finally:
+            with self._job_lock:
+                self._delivering.discard(job_id)
 
     def _report_error(self, jobId, message):
         print(f'Job {jobId}: {message}', file=sys.stderr)
@@ -132,7 +188,10 @@ class ProviderClient():
             result = self.runner.startJob(jobId, deadline)
             if result.status == 'ok' and result.output_dir:
                 print(f"Result was obtained: {result.output_dir}")
-                self.blockchain.commit(jobId, self.runner.hash_dir(result.output_dir))
+                result_hash = self.runner.hash_dir(result.output_dir)
+                self.blockchain.commit(jobId, result_hash)
+                with self._job_lock:
+                    self._results[jobId] = (result.output_dir, result_hash)
             else:
                 details = getattr(result, 'message', None) or 'No output was produced.'
                 self._report_error(jobId, f'Execution {result.status} (exit code {result.exitCode}): {details}')

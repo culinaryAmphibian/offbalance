@@ -10,8 +10,9 @@ import {
 	type Hex,
 } from "viem";
 
+// Phase rules, job setup and commit/reveal checks. Payouts are in Settlement.ts, stakes and
+// reputation in Reputation.ts.
 const PRICE = parseEther("1");
-const STAKE = parseEther("0.0001");
 const EXECUTION_TIME = 60n;
 const IMAGE = "repo@sha256:abc";
 
@@ -40,83 +41,57 @@ describe("OffBalance", async function () {
 	const [server, buyer, p1, p2, p3, outsider] = await viem.getWalletClients();
 	const providers = [p1, p2, p3];
 
-	// the windows live in the contract; read them so the tests follow any retuning
+	// the reveal window lives in the contract; read it so the tests follow any retuning
 	const windows = await viem.deployContract("OffBalance");
 	const REVEAL_WINDOW = Number(await windows.read.REVEAL_WINDOW());
-	const DELIVERY_WINDOW = Number(await windows.read.DELIVERY_WINDOW());
 
 	async function deploy() {
 		const contract = await viem.deployContract("OffBalance");
 		return { contract };
 	}
 
-	async function submitted(jobId = 1n, k = 3n, quorum = 2n) {
+	// The contract's names: `k` = matching answers needed, `quorum` = providers assigned.
+	async function submitted(k = 2n, quorum = 3n) {
 		const { contract } = await networkHelpers.loadFixture(deploy);
 		await contract.write.submitJob(
-			[jobId, PRICE, k, quorum, EXECUTION_TIME, IMAGE],
+			[PRICE, k, quorum, EXECUTION_TIME, IMAGE],
 			{ account: buyer.account, value: PRICE },
 		);
 		return contract;
 	}
 
-	async function assigned(jobId = 1n, k = 3n, quorum = 2n) {
-		const contract = await submitted(jobId, k, quorum);
+	async function assigned(k = 2n, quorum = 3n) {
+		const contract = await submitted(k, quorum);
 		await contract.write.assignProviders([
-			jobId,
-			providers.slice(0, Number(k)).map((p) => p.account.address),
+			1n,
+			providers.slice(0, Number(quorum)).map((p) => p.account.address),
 		]);
 		return contract;
 	}
 
-	// Commit `outputs[i]` for provider i, move to reveal and reveal everyone that committed.
-	async function revealed(outputs: Hex[], quorum = 2n) {
-		const contract = await assigned(1n, BigInt(outputs.length), quorum);
-		for (const [i, output] of outputs.entries()) {
-			await contract.write.submitCommitment(
-				[1n, commitment(output, salt(i))],
-				{ account: providers[i].account, value: STAKE },
-			);
-		}
-		await networkHelpers.time.increase(Number(EXECUTION_TIME) + 1);
-		await contract.write.startRevealPhase([1n]);
-		for (const [i, output] of outputs.entries()) {
-			await contract.write.submitReveal([1n, output, salt(i)], {
-				account: providers[i].account,
-			});
-		}
-		await networkHelpers.time.increase(REVEAL_WINDOW + 1);
-		return contract;
-	}
-
-	async function credits(contract: Awaited<ReturnType<typeof submitted>>) {
-		return Promise.all(
-			[buyer, p1, p2, p3].map((w) =>
-				contract.read.credits([w.account.address]),
-			),
-		);
-	}
-
 	describe("submitJob", () => {
-		it("rejects a reused job id", async () => {
+		it("assigns sequential job ids", async () => {
 			const contract = await submitted();
-			await viem.assertions.revertWith(
+			await viem.assertions.emitWithArgs(
 				contract.write.submitJob(
-					[1n, PRICE, 3n, 2n, EXECUTION_TIME, IMAGE],
+					[PRICE, 2n, 3n, EXECUTION_TIME, IMAGE],
 					{ account: buyer.account, value: PRICE },
 				),
-				"Job id already used",
+				contract,
+				"JOB_SUBMITTED",
+				[2n],
 			);
 		});
 
-		it("rejects quorum above k, zero quorum, and a wrong escrow", async () => {
+		it("rejects k above the quorum, zero k, and a wrong escrow", async () => {
 			const { contract } = await networkHelpers.loadFixture(deploy);
-			const submit = (quorum: bigint, value = PRICE) =>
+			const submit = (k: bigint, value = PRICE) =>
 				contract.write.submitJob(
-					[1n, PRICE, 2n, quorum, EXECUTION_TIME, IMAGE],
+					[PRICE, k, 3n, EXECUTION_TIME, IMAGE],
 					{ account: buyer.account, value },
 				);
 			await viem.assertions.revertWith(
-				submit(3n),
+				submit(4n),
 				"Invalid consensus threshold",
 			);
 			await viem.assertions.revertWith(
@@ -144,14 +119,14 @@ describe("OffBalance", async function () {
 	});
 
 	describe("assignProviders", () => {
-		it("requires exactly k providers, from the server", async () => {
+		it("requires exactly the quorum of providers, from the server", async () => {
 			const contract = await submitted();
 			await viem.assertions.revertWith(
 				contract.write.assignProviders([
 					1n,
 					[p1.account.address, p2.account.address],
 				]),
-				"Must assign exactly k providers",
+				"Must assign exact quorum",
 			);
 			await viem.assertions.revertWith(
 				contract.write.assignProviders(
@@ -193,6 +168,7 @@ describe("OffBalance", async function () {
 	describe("commit and reveal", () => {
 		it("only accepts one correctly staked commitment from assigned providers", async () => {
 			const contract = await assigned();
+			const STAKE = await contract.read.stakeFor([1n, p1.account.address]);
 			const c = commitment("0xaa", salt(0));
 			await viem.assertions.revertWith(
 				contract.write.submitCommitment([1n, c], {
@@ -223,6 +199,7 @@ describe("OffBalance", async function () {
 
 		it("rejects reveals that don't match, repeat, or have no commitment", async () => {
 			const contract = await assigned();
+			const STAKE = await contract.read.stakeFor([1n, p1.account.address]);
 			await contract.write.submitCommitment(
 				[1n, commitment("0xaa", salt(0))],
 				{ account: p1.account, value: STAKE },
@@ -254,120 +231,6 @@ describe("OffBalance", async function () {
 					account: p2.account,
 				}),
 				"No commitment",
-			);
-		});
-	});
-
-	describe("settlement", () => {
-		async function deliver(
-			contract: Awaited<ReturnType<typeof submitted>>,
-			who: typeof providers,
-		) {
-			await contract.write.endRevealPhase([1n]);
-			assert.equal(
-				await contract.read.getJobStatus([1n]),
-				Status.DELIVERING,
-			);
-			for (const p of who)
-				await contract.write.verifyReceipt([1n, p.account.address]);
-			await networkHelpers.time.increase(DELIVERY_WINDOW + 1);
-			await contract.write.endDeliveryPhase([1n]);
-		}
-
-		it("splits the price among providers that agreed and delivered", async () => {
-			const contract = await revealed(["0xaa", "0xaa", "0xaa"]);
-			await deliver(contract, providers);
-			const share = PRICE / 3n;
-			const dust = PRICE - share * 3n;
-			assert.deepEqual(await credits(contract), [
-				0n,
-				share + dust + STAKE,
-				share + STAKE,
-				share + STAKE,
-			]);
-			assert.equal(await contract.read.getJobStatus([1n]), Status.PAID);
-		});
-
-		it("slashes a disagreeing provider and gives its stake to the winners", async () => {
-			const contract = await revealed(["0xaa", "0xaa", "0xbb"]);
-			await viem.assertions.revertWith(
-				(async () => {
-					await contract.write.endRevealPhase([1n]);
-					return contract.write.verifyReceipt([
-						1n,
-						p3.account.address,
-					]);
-				})(),
-				"Provider did not agree with consensus",
-			);
-			for (const p of [p1, p2])
-				await contract.write.verifyReceipt([1n, p.account.address]);
-			await networkHelpers.time.increase(DELIVERY_WINDOW + 1);
-			await viem.assertions.emitWithArgs(
-				contract.write.endDeliveryPhase([1n]),
-				contract,
-				"SLASHED",
-				[1n, p3.account.address, STAKE],
-			);
-			const share = (PRICE + STAKE) / 2n;
-			assert.deepEqual(await credits(contract), [
-				0n,
-				share + STAKE,
-				share + STAKE,
-				0n,
-			]);
-		});
-
-		it("treats an agreeing provider that didn't deliver as a loser", async () => {
-			const contract = await revealed(["0xaa", "0xaa", "0xaa"]);
-			await deliver(contract, [p1, p2]);
-			const share = (PRICE + STAKE) / 2n;
-			assert.deepEqual(await credits(contract), [
-				0n,
-				share + STAKE,
-				share + STAKE,
-				0n,
-			]);
-		});
-
-		it("refunds the buyer when nobody delivered", async () => {
-			const contract = await revealed(["0xaa", "0xaa", "0xaa"]);
-			await deliver(contract, []);
-			assert.deepEqual(await credits(contract), [PRICE, 0n, 0n, 0n]);
-		});
-
-		it("without a quorum pays the providers that revealed and gives the buyer nothing", async () => {
-			const contract = await revealed(["0xaa", "0xbb", "0xcc"], 2n);
-			await viem.assertions.emit(
-				contract.write.endRevealPhase([1n]),
-				contract,
-				"NO_QUORUM",
-			);
-			assert.equal(
-				await contract.read.getJobStatus([1n]),
-				Status.NO_QUORUM,
-			);
-			const share = PRICE / 3n;
-			const dust = PRICE - share * 3n;
-			assert.deepEqual(await credits(contract), [
-				0n,
-				share + dust + STAKE,
-				share + STAKE,
-				share + STAKE,
-			]);
-		});
-
-		it("pays out credits through withdraw", async () => {
-			const contract = await revealed(["0xaa", "0xaa", "0xaa"]);
-			await deliver(contract, providers);
-			const owed = await contract.read.credits([p2.account.address]);
-			await viem.assertions.balancesHaveChanged(
-				contract.write.withdraw({ account: p2.account }),
-				[{ address: p2.account.address, amount: owed }],
-			);
-			await viem.assertions.revertWith(
-				contract.write.withdraw({ account: p2.account }),
-				"No credit",
 			);
 		});
 	});

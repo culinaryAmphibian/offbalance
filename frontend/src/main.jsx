@@ -8,6 +8,9 @@ import { useResource } from "./useResource";
 import JobForm from "./components/JobForm";
 import JobDetail, { ResourceError, Status } from "./components/JobDetail";
 import ProviderSetup from "./components/ProviderSetup";
+import CollectFunds from "./components/CollectFunds";
+import { describeReputation, formatEth } from "./eth";
+import { useProviderBalances } from "./useProviderBalances";
 import "./stylesheets/app.css";
 
 const demo = import.meta.env.VITE_API_MODE === "demo";
@@ -143,16 +146,26 @@ function Overview({ view, setView }) {
 	const isBuyer = view === "buyer";
 	const jobs = data?.jobs;
 	const summary = data?.summary;
+	const chain = useProviderBalances(api, summary?.providerAddress, { enabled: !isBuyer });
 	const stats = [
 		["Active jobs", summary?.activeJobs],
 		["Completed jobs", summary?.completedJobs],
 		[
 			isBuyer ? "Total spent" : "Total earned",
-			isBuyer ? summary?.totalSpent : summary?.totalEarned,
+			formatEth(isBuyer ? summary?.totalSpent : summary?.totalEarned),
 			"ETH",
 		],
 	];
-	if (!isBuyer) stats.push(["Current stake", summary?.currentStake, "ETH"]);
+		// read from the contract: stake locked in this provider's unsettled jobs
+	if (!isBuyer) stats.push([
+		"Current stake",
+		chain.available
+			? formatEth(chain.balances?.stake, 3, { wei: true })
+			: formatEth(summary?.currentStake),
+		"ETH",
+	]);
+	// the contract's trust score, which scales this provider's stakes (see Provider setup)
+	if (!isBuyer && chain.available) stats.push(["Reputation", describeReputation(chain.balances?.reputation)?.trust]);
 	return (
 		<>
 			<div className="page-heading">
@@ -184,6 +197,9 @@ function Overview({ view, setView }) {
 					</div>
 				))}
 			</section>
+			{!isBuyer && (
+				<CollectFunds chain={chain} onCollected={refresh} />
+			)}
 			{error && <ResourceError message={error} retry={refresh} />}
 			<section className="jobs" aria-labelledby="jobs-heading">
 				<div className="section-heading">
@@ -254,9 +270,9 @@ function Overview({ view, setView }) {
 												{dateLabel(job.createdAt)}
 											</td>
 											<td className="numeric mono">
-												{(isBuyer
-													? job.maxPrice
-													: job.earnings) ?? "—"}
+												{isBuyer
+													? (job.maxPrice ?? "—")
+													: formatEth(job.earnings)}
 												<span className="currency">
 													{" "}
 													{isBuyer ? "ETH / h" : "ETH"}

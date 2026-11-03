@@ -1,0 +1,7 @@
+node_modules
+.local
+coverage
+.env
+.env*
+!.env.example
+!.env.r2.example

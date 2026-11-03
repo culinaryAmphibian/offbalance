@@ -24,7 +24,9 @@ const accountSchema = new Schema(
 		takenJobs: { type: [{ type: Schema.Types.ObjectId, ref: "Job" }], default: [] },
 		totalEarned: money({ default: 0 }),
 		currentStake: money({ default: 0 }),
-		reputation: { type: Number, default: 0 },
+		// trust score from the contract (OffBalance.trustBps / 10000), 0 to 1; a new provider is at 0.5.
+		// Older databases may still hold the previous +1/-1 counter until the next REPUTATION_UPDATED.
+		reputation: { type: Number, default: 0.5 },
 		hardware: { type: Schema.Types.ObjectId, ref: "Hardware", default: null },
 	},
 	{ timestamps: true },

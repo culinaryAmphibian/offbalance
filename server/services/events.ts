@@ -11,7 +11,8 @@ async function accountForAddress(address: unknown) {
 	return hw?.userRef ?? (await AccountModel.findOne({ walletIds: String(address).toLowerCase() }))?._id ?? null;
 }
 
-const IGNORED_EVENTS = new Set(["COMMITTED", "REVEALED", "CONSENSUS_REACHED"]);
+// SLASHED moves no money the database tracks; REPUTATION_UPDATED carries its reputation effect.
+const IGNORED_EVENTS = new Set(["COMMITTED", "REVEALED", "CONSENSUS_REACHED", "STAKE_REFUNDED", "SLASHED"]);
 
 export async function handleChainEvent(event: ChainEvent, matcher: Matcher): Promise<void> {
 	if (event.id && await ChainEventModel.exists({ _id: event.id })) return;
@@ -22,6 +23,13 @@ export async function handleChainEvent(event: ChainEvent, matcher: Matcher): Pro
 async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher): Promise<void> {
 	// Per-provider protocol steps; nothing in the database tracks them.
 	if (IGNORED_EVENTS.has(name)) return;
+	// The contract keeps the reputation (it sets stakes); the database copies the trust score, as a
+	// fraction. Events arrive in chain order, so the latest wins. Needs no job in the database.
+	if (name === "REPUTATION_UPDATED") {
+		const account = await accountForAddress(args.provider);
+		if (account) await AccountModel.updateOne({ _id: account }, { reputation: Number(args.trustBps) / 10_000 });
+		return;
+	}
 	const jobId = Number(args.jobId);
 	if (!Number.isSafeInteger(jobId) || jobId < 0) throw new TypeError("Invalid event jobId.");
 	const effectId = id ?? `${jobId}:${name}:${String(args.provider ?? "").toLowerCase()}`;
@@ -59,17 +67,27 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 				const earned = typeof args.amount === "bigint" ? Types.Decimal128.fromString(formatEther(args.amount)) : job.runningPrice;
 				await AccountModel.updateOne(
 					{ _id: account, processedChainEvents: { $ne: `${effectId}:provider` } },
-					{ $inc: { reputation: 1, totalEarned: earned }, $addToSet: { processedChainEvents: `${effectId}:provider` } },
+					{ $inc: { totalEarned: earned }, $addToSet: { processedChainEvents: `${effectId}:provider` } },
+				);
+				// the job view's payment details; one payout per provider per job
+				await JobModel.updateOne(
+					{ _id: job._id, "payouts.provider": { $ne: account } },
+					{ $push: { payouts: { provider: account, amount: earned } } },
 				);
 			}
-			await AccountModel.updateOne({ _id: job.owner, processedChainEvents: { $ne: `${effectId}:buyer` } }, { $inc: { totalSpent: job.runningPrice }, $addToSet: { processedChainEvents: `${effectId}:buyer` } });
+			// the buyer is charged once per job, on DELIVERED, not once per provider payout
 			return;
 		}
 
-		case "SLASHED": {
-			const account = await accountForAddress(args.provider);
-			if (account) await AccountModel.updateOne({ _id: account, processedChainEvents: { $ne: effectId } }, { $inc: { reputation: -1 }, $addToSet: { processedChainEvents: effectId } });
-			return;
+		// The buyer escrowed job.maxPrice in submitJob; settlement spends exactly that escrow.
+		// Keyed by job (not by log) so a replayed or duplicate DELIVERED never charges twice.
+		case "DELIVERED": {
+			const charge = `job:${job._id}:buyer-spent`;
+			await AccountModel.updateOne(
+				{ _id: job.owner, processedChainEvents: { $ne: charge } },
+				{ $inc: { totalSpent: job.maxPrice }, $addToSet: { processedChainEvents: charge } },
+			);
+			break; // then the status update below
 		}
 	}
 
@@ -79,6 +97,7 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 		return;
 	}
 	job.status = status;
+	if (TERMINAL_STATUSES.includes(status) && !job.settledAt) job.settledAt = new Date();
 	await job.save();
 
 	if (TERMINAL_STATUSES.includes(status)) {

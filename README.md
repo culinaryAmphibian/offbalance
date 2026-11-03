@@ -57,10 +57,59 @@ cd client && python3 main.py --dev
 
 # 4. Call contract functions as any account
 cd client && python3 dev/contract_controller.py
-offbalance> submitJob 1 100 3 2 60 img --value 100     # as buyer: escrows the price
+offbalance> submitJob 100 2 3 60 img --value 100     # as buyer: price k quorum executionTime image; escrows the price
 ```
 
 `server/dev-server.ts` (`npm run dev:mock`) is still there for client development without MongoDB: it answers the three routes the client calls and hands out the deployed `OffBalance` address, but it doesn't match providers or drive phases.
+
+## Multiple machines (`docker compose`)
+
+One machine is the **host** (server, chain, MongoDB, a UI); any number of others are **clients** (a UI and a provider client, both pointing at the host). Each machine needs Docker, a checkout of this repo, and a `.env` in the repo root:
+
+```bash
+cp .env.example .env    # then set HOST_ADDRESS to the host's LAN IP (`hostname -I` on the host)
+```
+
+```bash
+# on the host
+docker compose --profile host up --build
+
+# on each other machine, with a different dev provider (1-4) per machine
+PROVIDER=2 docker compose --profile client up --build
+
+# optional: a provider on the host machine too
+PROVIDER=1 docker compose --profile host run --rm host-client
+```
+
+- The host publishes the server on `https://HOST_ADDRESS:5000` and the chain on `http://HOST_ADDRESS:8545`; open both ports on its firewall. MongoDB is not published. Every UI is local: `http://localhost:5173`.
+- Clients trust the host's self-signed certificate on first use: `fetch-cert` reads it from the TLS handshake, then all HTTPS is verified against it. The host's certificate names `HOST_ADDRESS`, so it must match the `.env` on every machine.
+- The provider client gets the contract address and ABI from the server; client machines need no blockchain checkout or deployment file.
+- In MetaMask on every machine, add the network `http://HOST_ADDRESS:8545`, chain ID 31337, and import the dev key you sign in with. The UI shows a provider's benchmark only when you're signed in as that provider's wallet.
+- Each host start is a fresh chain and a fresh in-memory database: restart the clients after restarting the host.
+- The dev keys and API keys in `dev.env` are public. Keep this on a trusted LAN.
+
+Everyday commands (add `-d` to `up` to run in the background):
+
+```bash
+docker compose --profile host logs -f server             # follow one service (host)
+docker compose --profile client logs -f client           # follow the provider (client)
+docker compose --profile host down                       # stop (or --profile client)
+docker compose --profile host run --rm --no-deps \
+  --entrypoint python host-client dev/contract_controller.py   # contract controller shell, on the host
+```
+
+Rebuild after code changes with `up --build`. A contract change also needs a host restart, since the chain is redeployed on every start.
+
+Troubleshooting:
+
+| Symptom | Cause |
+|---|---|
+| `required variable HOST_ADDRESS is missing a value` | no `.env` with `HOST_ADDRESS` in the repo root |
+| `set PROVIDER=1..4` and the client exits | run client mode as `PROVIDER=N docker compose --profile client up` |
+| `fetch-cert` keeps `waiting for https://HOST_ADDRESS:5000` | host mode isn't up yet, the IP is wrong, or the host firewall blocks port 5000 |
+| client fails TLS verification | the host's certificate changed (e.g. renewed after 30 days): restart client mode (`down`, then `up`), which fetches it again |
+| `address already in use` on 5000/8545/5173 | something else (e.g. `startup.py`) is using the port |
+| provider page shows no benchmark | you're signed in to the UI with a different wallet than the client's `PROVIDER` |
 
 ## Local chain (`blockchain/`)
 
@@ -97,6 +146,20 @@ The deploy writes `blockchain/deployments/localhost.json`, which is gitignored a
 
 This is the source of truth for the local address and ABI. The servers read the address from it, and the client reads the ABI from it, so both stay correct even when the address has shifted.
 
+### Reputation and stakes
+
+Each provider stakes ETH with its commitment, and the contract sets how much from the job's price and the provider's on-chain reputation. The reputation lives in the contract, because the stake is enforced there.
+
+- **Base stake:** 10% of the provider's share of the price, `price / quorum / 10`.
+- **Record:** two totals per provider, in wei of job value (`reputation(address)`).
+  - `earned` grows by the payout each time the provider's answer is part of the consensus.
+  - A failure adds a strike to `strikes` and takes the same amount off `earned`. Strikes are weighted by the provider's share of the price: 3× for a revealed answer the consensus rejected, 2× for committing without revealing, 1× for never committing. With no quorum, providers that revealed aren't struck, since the contract can't tell who was right.
+- **Trust:** `(earned + prior) / (earned + strikes + 2·prior)`, with `REPUTATION_PRIOR` = 0.01 ETH. A new provider is at 50%.
+- **Stake multiplier:** from 0.5× (full trust) to 3× (no trust); a new provider is at 1×. The discount only counts in proportion to `earned / price`, so trust built on cheap jobs doesn't discount an expensive one.
+- `assignProviders` fixes each provider's stake for the job. `stakeFor(jobId, provider)` returns it, and `submitCommitment` must send exactly that.
+- `stakeQuote(provider, price, quorum)` gives the stake for a hypothetical job. `reputationOf(provider)` gives the totals, trust and best-case multiplier, which the provider page shows. Each settled job emits `REPUTATION_UPDATED`, and the server copies its trust score into `Account.reputation` (0 to 1).
+- A provider can start over with a fresh wallet, which puts it back at 1×. So the system mainly rewards providers who stay: leaving costs the discount they earned, plus any slashed stake.
+
 ## Provider client (`client/`)
 
 ```bash
@@ -105,7 +168,7 @@ python3 main.py --dev                    # provider 1, keys from dev.env
 python3 main.py --dev --provider 2       # run as provider 2 (start several to simulate many providers)
 ```
 
-The client always needs a server: it gets the contract address from `GET /contract_address` and posts its benchmark to `POST /scores`. Locally that's the real server (`npm start`, port 5000) or the route mock (`npm run dev:mock`). The client reads the ABI from `deployments/localhost.json`.
+The client always needs a server: it gets the contract address from `GET /contract_address` and posts its hardware profile (specs plus benchmarks, see [client/README.md](client/README.md#hardware-profile)) to `POST /scores`. Locally that's the real server (`npm start`, port 5000) or the route mock (`npm run dev:mock`). The client reads the ABI from `deployments/localhost.json`.
 
 `--dev` only changes where credentials come from:
 - the session key is `PROVIDER_N_PRIVATE_KEY` from `dev.env`;
@@ -149,7 +212,8 @@ Type the function name and its arguments in contract order:
 offbalance> functions                      # every function, its arguments, and its default sender
 offbalance> submitJob 1 100 3 2 60 img --value 100   # jobId price k quorum executionTime image, escrowing 100 wei
 offbalance> assignProviders 1 p1,p2,p3               # exactly k providers
-offbalance> submitCommitment 1 0xabc… --as p2 --value 100000000000000   # with STAKE
+offbalance> stakeFor 1 p2                            # the stake p2 must send for job 1
+offbalance> submitCommitment 1 0xabc… --as p2 --value 3   # with exactly that stake
 offbalance> REVEAL_WINDOW                            # views/constants are read, not sent
 ```
 
@@ -193,14 +257,14 @@ SERVER_PRIVATE_KEY=<SERVER_PRIVATE_KEY from dev.env> npm start   # port 5000
 
 Seeded API keys: `dev`, `dev2`, `dev3`, `dev4` are providers 1–4 (matching `python3 main.py --dev --provider N`), `dev-buyer` is the buyer.
 
-**Job flow.** `POST /jobs` saves the job and reserves its on-chain id → the buyer's wallet calls `submitJob(id, …)` → on `JOB_SUBMITTED` the matcher picks the cheapest `k` idle providers that meet the requirements and are priced at or under `maxPrice`, saves them, and calls `assignProviders` → phase events (`COMMIT_PHASE_START`, …, `DELIVERED`) update the job's status, and the server drives each phase transition (below) → in the delivery phase providers `POST /provider/results/:jobId` and the server calls `verifyReceipt`. A provider is only matched once it has posted `/scores` (the client does) **and** set a price (`POST /provider/price {"price": 1}`). The matcher also reruns when a provider scores or prices, and when a job finishes.
+**Job flow.** `POST /jobs` saves the job and reserves its on-chain id → the buyer's wallet calls `submitJob(id, …)` → on `JOB_SUBMITTED` the matcher picks the cheapest `k` idle providers that have the job's resources (vCPUs, memory in GB, optionally a GPU with enough VRAM) and are priced at or under `maxPrice`, saves them, and calls `assignProviders` → phase events (`COMMIT_PHASE_START`, …, `DELIVERED`) update the job's status, and the server drives each phase transition (below) → in the delivery phase providers `POST /provider/results/:jobId` and the server calls `verifyReceipt`. A provider is only matched once it has posted `/scores` (the client does) **and** set a price (`POST /provider/price {"price": 1}`). The matcher also reruns when a provider scores or prices, and when a job finishes.
 
 | Routes | |
 |---|---|
 | `GET /auth/nonce?wallet=`, `POST /auth {wallet, signature}`, `POST /auth/logout` | Sign in with a wallet (a new wallet signs up). The token is the web session **and** the client's API key |
 | `GET /contract_address`, `POST /scores`, `GET /jobManifest/:jobId` | Provider client (manifest: assigned providers only) |
 | `POST /jobs`, `GET /jobs[?role=provider]`, `GET /jobs/:jobId`, `POST /jobs/:jobId/cancel`, `GET /jobs/:jobId/result` | Buyers; `:jobId` is the on-chain id |
-| `GET /provider/tutorial`, `GET /provider/hardware` (with a suggested price), `POST /provider/price`, `POST /provider/results/:jobId` | Providers |
+| `GET /provider/tutorial`, `GET /provider/hardware` (profile, scores relative to the reference machine, and a suggested price), `POST /provider/price`, `POST /provider/results/:jobId` | Providers |
 | `GET /account/:id/dashboard`, `POST /account/:id/wallets`, `DELETE /account/:id/wallets/:wallet`, `DELETE /account/:id` | Own account only; `:id` may be `me` |
 | `POST /images/resolve`, `POST /builds`, `GET /builds`, `GET /builds/:buildId` | Job images (below) |
 
@@ -260,8 +324,8 @@ SERVER_URL=https://localhost:5000 NODE_EXTRA_CA_CERTS="$PWD/.local/tls/cert.pem"
 |---|---|
 | all three | `401` without `Authorization: Bearer <key>` |
 | `GET /contract_address` | `200 { "address": "0x…" }` (40 hex chars) |
-| `POST /scores` | Form-encoded `cpu`, `gpu`, `mem` (not JSON; that's what python `requests` sends). `gpu` may be missing, because `requests` drops `None`. 2xx on success, `400` if `cpu` or `mem` is missing |
-| `GET /jobManifest/:jobId` | `200 { "manifest": { jobId, image, command: string[], env: {string: string} \| null, input_url: string \| null, timeout_s, cpu_limit, mem_limit_mb } }` with positive numbers. `400` for a jobId that isn't a non-negative integer |
+| `POST /scores` | JSON hardware profile `{ version: 2, cpu: { model, cores, threads, singleThreadMBps, multiThreadMBps }, memory: { totalGb, bandwidthGBps }, gpus: [{ vendor, index, model, vramGb, driver, runtime, fp32Tflops, memoryBandwidthGBps, error }] }`; `gpus` may be empty, and a GPU whose benchmark failed has null measurements and an `error`. 2xx on success, `400` for an incomplete profile, and `400` with an "update the client" message for the old form-encoded `cpu`/`mem` scores |
+| `GET /jobManifest/:jobId` | `200 { "manifest": { jobId, image, command: string[], env: {string: string} \| null, input_url: string \| null, timeout_s, cpu_limit, mem_limit_mb, gpu } }` with positive numbers. `400` for a jobId that isn't a non-negative integer. `gpu` is `null` or `{ vendor: "any" \| "nvidia" \| "amd", min_vram_gb }` |
 
 The suite starts the server file itself on a free port, so **the server must listen on `process.env.PORT`**. It also sets `DEPLOYMENT_FILE` to a fake deployment, so the dev server doesn't need a running chain. For the real server, `TEST_API_KEY` sets a valid API key (default `dev`) and `TEST_JOB_ID` sets a job that exists (default `1`).
 
@@ -273,10 +337,9 @@ When the client starts calling a new route or reading a new field, add it here f
 - On startup, the client's first poll includes the current block, so it can replay that block's events.
 - `COMMIT_PHASE_START`'s `deadline` is the job's `executionTime` (a duration), not the absolute `commitDeadline` timestamp.
 - The server's phase timers live in memory: after a restart, jobs already in progress aren't driven until someone calls the transition (anyone can, e.g. with the contract controller).
-- Every provider stakes the same `STAKE`; `stakeFor` is where reputation will scale it.
 - The server's buyer `totalSpent` is booked at the job's `runningPrice`, not from the contract's amounts.
 - The server's job statuses (`PENDING`, `COMMIT_PHASE`, …) differ from the contract's `Status` enum. The event → status mapping is in `server/models/JobStatus.ts`.
-- Results aren't stored by the server: providers upload to object storage themselves and post the `location`.
+- Providers deliver bounded tar archives to the authenticated API. The server verifies their directory hashes, stores them locally or in private R2, and serves retained archives to their buyers. See [R2 setup](server/R2_SETUP.md) for server-only credentials and usage limits.
 - Builds run one at a time with no per-account limit, and a server restart fails builds in progress (they have to be resubmitted). Pushed `build-*` tags are never deleted from the registry.
 
 ## TODO

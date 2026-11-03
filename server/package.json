@@ -4,33 +4,39 @@
   "description": "",
   "main": "index.ts",
   "scripts": {
-    "start": "node --env-file-if-exists=.env server.ts",
+    "start": "node --env-file-if-exists=.env --env-file-if-exists=.env.r2.local server.ts",
     "seed": "node --env-file-if-exists=.env seed.ts",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && npm run test:managers && npm run test:unit && npm run test:dev && npm run test:db && npm run test:https && npm run test:e2e",
+    "test": "npm run typecheck && npm run test:managers && npm run test:unit && npm run test:storage && npm run test:dev && npm run test:db && npm run test:https && npm run test:e2e",
     "test:managers": "node --test test/matching.test.js test/match-manager.test.js test/agent-manager.test.js test/blockchain-manager.test.js test/managers.test.js",
-    "test:unit": "node --test test/models.test.ts test/registry.test.ts test/https.test.ts test/orchestrator.test.ts",
+    "test:unit": "node --test test/models.test.ts test/hardware.test.ts test/registry.test.ts test/https.test.ts test/orchestrator.test.ts test/job-state.test.ts",
     "test:db": "node --test test/api.test.ts test/mongo-*.test.ts test/checkpoints.test.ts test/frontend-contract.test.ts test/seed.test.ts",
     "test:e2e": "node --test test/e2e-chain.test.ts",
     "test:dev": "SERVER_FILE=dev-server.ts node --test test/client-contract.test.ts",
     "test:real": "MONGODB_URI=${MONGODB_URI:-mongodb://127.0.0.1:27017} node --test test/https-client.test.ts",
     "dev:mock": "node dev-server.ts",
     "cert:dev": "node scripts/dev-cert.ts",
-    "test:https": "node --test test/https-client.test.ts"
+    "test:https": "node --test test/https-client.test.ts",
+    "storage:configure": "python3 scripts/configure-r2.py",
+    "storage:check": "node --env-file-if-exists=.env --env-file-if-exists=.env.r2.local scripts/check-storage.ts",
+    "test:storage": "node --test test/result-store.test.ts test/result-archive.test.ts test/result-routes.test.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1161.0",
     "ethers": "^6.17.0",
     "express": "^5.3.0",
     "mongoose": "^9.11.2",
+    "tar-stream": "^3.2.2",
     "viem": "^2.57.7"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.5",
+    "@types/tar-stream": "^3.1.5",
     "typescript": "^7.0.2"
   },
   "engines": {

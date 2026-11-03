@@ -3,8 +3,8 @@
 // this test; every phase transition must come from the server's orchestrator alone.
 //
 // Two jobs run side by side through the real (demo-sized) windows, so this takes about a minute:
-//   job A: p1 and p2 agree, p3 disagrees, p1 and p2 deliver -> PAID, p3 slashed
-//   job B: all three disagree                                -> NO_QUORUM, every revealer paid
+//   job A: p1 and p2 agree, p3 disagrees -> PAID, p3 slashed and struck
+//   job B: all three disagree           -> NO_QUORUM, buyer and every stake refunded
 //
 // Needs MONGODB_URI and the blockchain/ project installed; skipped without MONGODB_URI.
 import test from "node:test";
@@ -116,20 +116,27 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 			assert.equal((await rpc.waitForTransactionReceipt({ hash })).status, "success", functionName);
 		};
 		const status = async (jobId: number) => (await read<readonly [number, ...bigint[]]>("getDeadlines", [BigInt(jobId)]))[0];
-		const stake = await read<bigint>("STAKE", []);
+		const stakes = new Map<string, bigint>();
 
-		// One job: the server records it, the buyer submits it, the server assigns providers, and
-		// providers commit, then reveal once the server opens the reveal phase.
-		async function runJob(jobId: number, price: bigint, outputs: Hex[], deliverers: Address[]) {
+		// The server records the job, the buyer submits it (the contract numbers jobs 1, 2, ...)
+		// and the server assigns providers, each staking what the contract asks of it.
+		async function submit(jobId: number, price: bigint) {
 			await JobModel.create({
 				onChainJobId: jobId, owner: owner._id, dockerImageDigest: `example/job@sha256:${"a".repeat(64)}`,
 				maxPrice: "1", runningPrice: "1", minNodesToRunOn: 3, minNodesToAgree: 2, timeWindow: EXECUTION_TIME,
 			});
-			await send(buyer, "submitJob", [BigInt(jobId), price, 3n, 2n, BigInt(EXECUTION_TIME), "example/job"], price);
+			// the contract's k (matching answers) is 2 and its quorum (providers assigned) is 3
+			await send(buyer, "submitJob", [price, 2n, 3n, BigInt(EXECUTION_TIME), "example/job"], price);
 			await chain!.assignProviders(jobId, [p1, p2, p3]);
+			for (const p of [p1, p2, p3]) stakes.set(`${jobId}:${p}`, await read<bigint>("stakeFor", [BigInt(jobId), p]));
+		}
+
+		// Providers commit, then reveal once the server opens the reveal phase.
+		async function runJob(jobId: number, outputs: Hex[]) {
 			const salts = outputs.map((_, i) => toHex(jobId * 10 + i, { size: 32 }));
 			for (const [i, provider] of providers.entries()) {
-				await send(provider, "submitCommitment", [BigInt(jobId), commitment(outputs[i], salts[i])], stake);
+				const value = stakes.get(`${jobId}:${provider.account!.address}`)!;
+				await send(provider, "submitCommitment", [BigInt(jobId), commitment(outputs[i], salts[i])], value);
 			}
 			await until(`job ${jobId} reveal phase`, async () => await status(jobId) === REVEAL);
 			for (const [i, provider] of providers.entries()) {
@@ -139,35 +146,45 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 				const s = await status(jobId);
 				return (s === DELIVERING || s === NO_QUORUM) && s;
 			});
-			if (reached === DELIVERING) {
-				for (const provider of deliverers) await chain!.verifyReceipt(jobId, provider);
-				await until(`job ${jobId} payout`, async () => await status(jobId) === PAID);
-			}
+			if (reached === DELIVERING) await until(`job ${jobId} payout`, async () => await status(jobId) === PAID);
 			return reached;
 		}
 
 		const priceA = parseEther("1");
 		const priceB = parseEther("0.3");
 		const same = keccak256(toHex("result"));
+		await submit(1, priceA);
+		await submit(2, priceB);
+		// new providers: everyone stakes the base, 10% of a third of the price
+		for (const p of [p1, p2, p3]) assert.equal(stakes.get(`1:${p}`), priceA / 30n);
 		const [endA, endB] = await Promise.all([
-			runJob(101, priceA, [same, same, keccak256(toHex("other"))], [p1, p2]),
-			runJob(102, priceB, [keccak256(toHex("a")), keccak256(toHex("b")), keccak256(toHex("c"))], []),
+			runJob(1, [same, same, keccak256(toHex("other"))]),
+			runJob(2, [keccak256(toHex("a")), keccak256(toHex("b")), keccak256(toHex("c"))]),
 		]);
 		assert.equal(endA, DELIVERING);
 		assert.equal(endB, NO_QUORUM);
-		assert.equal(await status(102), NO_QUORUM);
+		assert.equal(await status(2), NO_QUORUM);
 
-		// job A: price + p3's slashed stake split between p1 and p2, who also get their stakes back
-		// job B: no quorum, every revealer is paid a third (p1 takes the rounding dust), buyer gets nothing
-		const winA = (priceA + stake) / 2n + stake;
-		const thirdB = priceB / 3n, dustB = priceB - thirdB * 3n;
+		// job A: p1 and p2 split the price and get their stakes back; p3's stake stays in the contract
+		// job B: no quorum, the buyer and every provider get their money back
+		const stakeA = priceA / 30n, stakeB = priceB / 30n;
 		const credits = await Promise.all([buyer.account!.address, p1, p2, p3].map(a => read<bigint>("credits", [a])));
-		assert.deepEqual(credits, [0n, winA + thirdB + dustB + stake, winA + thirdB + stake, thirdB + stake]);
+		assert.deepEqual(credits, [priceB, priceA / 2n + stakeA + stakeB, priceA / 2n + stakeA + stakeB, stakeB]);
+
+		// reputation: p1 and p2 earned their payouts; p3's rejected answer is a strike of 3x its share
+		const record = (p: Address) => read<readonly [bigint, bigint]>("reputation", [p]);
+		assert.deepEqual(await record(p1), [priceA / 2n, 0n]);
+		assert.deepEqual(await record(p3), [0n, priceA]);
+		const [, , trustP1] = await read<readonly bigint[]>("reputationOf", [p1]);
 
 		// the database followed the chain
 		await until("database statuses", async () => {
-			const [a, b] = await Promise.all([101, 102].map(id => JobModel.findOne({ onChainJobId: id }).orFail()));
+			const [a, b] = await Promise.all([1, 2].map(id => JobModel.findOne({ onChainJobId: id }).orFail()));
 			return a.status === JobStatus.PAYOUT && b.status === JobStatus.NO_QUORUM;
+		}, 10_000);
+		await until("database reputation", async () => {
+			const p = await AccountModel.findOne({ walletIds: p1.toLowerCase() }).orFail();
+			return p.reputation === Number(trustP1) / 10_000;
 		}, 10_000);
 	} finally {
 		await stopServer().catch(() => {});
