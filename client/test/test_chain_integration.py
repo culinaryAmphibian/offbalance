@@ -241,5 +241,43 @@ class ClientAgainstRealChainTests(unittest.TestCase):
         self.assertIsInstance(BlockchainEvent.PROVIDER_SELECTED, BlockchainEvent)
 
 
+    # A client that restarts after committing has lost the result hash it committed to (it's
+    # only kept in memory, in BlockchainManager.committed_jobs), so when the reveal phase starts
+    # the new process sends nothing and the provider is slashed for a job it did. Keeping the
+    # committed hash on disk (it's not secret: the salt is) would make this pass.
+    @unittest.expectedFailure
+    def test_a_client_restarted_after_committing_still_reveals(self):
+        m1 = self.manager(self.p1.key.hex(), self.p1.address)
+        m2 = self.manager(self.p2.key.hex(), self.p2.address)
+        job_id = self.submitted_and_assigned([self.p1, self.p2], k=1)
+        with contextlib.redirect_stdout(io.StringIO()):
+            for manager, provider in ((m1, self.p1), (m2, self.p2)):
+                manager.stake(job_id, self.contract.functions.getProviderCommitment(job_id, provider.address).call()[4])
+            self.send(self.server, self.contract.functions.finalizeProviderSelection(job_id))
+            m1.commit(job_id, RESULT)
+            m2.commit(job_id, RESULT)
+        restarted = self.manager(self.p1.key.hex(), self.p1.address)  # same key, new process
+        self.advance(11)
+        self.send(self.server, self.contract.functions.startRevealPhase(job_id))
+        with contextlib.redirect_stdout(io.StringIO()):
+            restarted.reveal(job_id)
+        revealed = self.contract.functions.getProviderCommitment(job_id, self.p1.address).call()[2]
+        self.assertTrue(revealed, 'the restarted client revealed its commitment')
+
+    # A client that restarts after it was assigned (and staked) starts watching the chain from
+    # the current block, so it never sees its PROVIDER_SELECTED again, never fetches the manifest,
+    # ignores the commit phase and is slashed. The server already exposes the assignment
+    # (GET /provider/assignment); reading it at startup would make this pass.
+    @unittest.expectedFailure
+    def test_a_client_restarted_after_staking_still_sees_its_assignment(self):
+        m1 = self.manager(self.p1.key.hex(), self.p1.address)
+        job_id = self.submitted_and_assigned([self.p1, self.p2])
+        with contextlib.redirect_stdout(io.StringIO()):
+            m1.stake(job_id, self.contract.functions.getProviderCommitment(job_id, self.p1.address).call()[4])
+        self.advance(1)
+        restarted = self.manager(self.p1.key.hex(), self.p1.address)
+        selected = [e for e in self.events(restarted, ProviderSelectedEvent) if e.provider_selected == self.p1.address]
+        self.assertEqual([e.jobId for e in selected], [job_id], 'the restarted client knows it is on the job')
+
 if __name__ == '__main__':
     unittest.main()

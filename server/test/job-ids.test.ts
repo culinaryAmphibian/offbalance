@@ -62,7 +62,7 @@ describe("contract events and database jobs", { skip: !uri && "set MONGODB_URI t
 		await Promise.all([JobModel.deleteMany({}), CounterModel.deleteMany({}), ChainEventModel.deleteMany({})]);
 	});
 	after(async () => {
-		await new Promise(resolve => server?.close(resolve));
+		if (server) await new Promise(resolve => server.close(resolve));
 		if (mongoose.connection.readyState === 1) {
 			await mongoose.connection.dropDatabase();
 			await disconnectDB();

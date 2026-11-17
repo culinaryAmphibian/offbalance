@@ -8,6 +8,7 @@
     "dev:demo": "vite --mode demo --host 127.0.0.1",
     "build": "vite build",
     "test": "node --test test/*.test.js",
+    "test:components": "vitest run",
     "test:browser": "node test/browser-smoke.cjs",
     "preview": "vite preview --host 127.0.0.1",
     "test:integration": "node test/server-browser.cjs"

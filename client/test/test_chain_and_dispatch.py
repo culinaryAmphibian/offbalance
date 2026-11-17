@@ -374,5 +374,25 @@ class ServerManagerTests(unittest.TestCase):
         self.assertFalse(DeliveryError(422, 'wrong hash').retryable)
 
 
+
+class DevCredentialsTests(unittest.TestCase):
+    # docker-compose.yml passes OFFBALANCE_API_KEY: ${OFFBALANCE_API_KEY:-}, so inside the container
+    # it's set but empty when nobody configured a key. --dev then uses "" instead of the dev key and
+    # stops with "the API key is empty", which breaks `docker compose run host-client --dev`.
+    @unittest.expectedFailure
+    def test_dev_mode_ignores_an_empty_api_key_variable(self):
+        import main
+        with patch.dict('os.environ', {'OFFBALANCE_API_KEY': ''}):
+            creds = main.load_dev_credentials(2)
+        self.assertEqual(creds.api_key, 'dev2')
+
+    def test_dev_mode_uses_a_set_api_key_and_otherwise_the_dev_key(self):
+        import main
+        with patch.dict('os.environ', {'OFFBALANCE_API_KEY': 'custom-key'}):
+            self.assertEqual(main.load_dev_credentials(2).api_key, 'custom-key')
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertEqual(main.load_dev_credentials(1).api_key, 'dev')
+            self.assertEqual(main.load_dev_credentials(3).api_key, 'dev3')
+
 if __name__ == '__main__':
     unittest.main()

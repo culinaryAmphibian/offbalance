@@ -64,7 +64,7 @@ describe("buyer and matcher races", { skip: !uri && "set MONGODB_URI to run" }, 
 		await matcher.idle();
 	});
 	after(async () => {
-		await new Promise(resolve => server?.close(resolve));
+		if (server) await new Promise(resolve => server.close(resolve));
 		await matcher?.idle().catch(() => {});
 		if (mongoose.connection.readyState === 1) {
 			await mongoose.connection.dropDatabase();
