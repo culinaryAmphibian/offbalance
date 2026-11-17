@@ -51,6 +51,9 @@ jobs:
       - name: Check contract
         working-directory: blockchain
         run: npx hardhat test
+      # needs blockchain/ installed, so it can't run with the other client tests above
+      - name: Check provider client against a real chain
+        run: python -m unittest discover -s ../client/test -p test_chain_integration.py -v
       - run: npm test
       - run: npm run build
       # includes test:e2e, which runs the server's orchestrator against a real Hardhat node
