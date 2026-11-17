@@ -45,6 +45,20 @@ describe('JobDetail', () => {
     expect(chain.submitStoredJob).toHaveBeenCalledWith(j, config, window.ethereum, expect.objectContaining({ signal: expect.any(AbortSignal) }));
   });
 
+  // B16: after this page submits the job, it hides "Cancel" while the transaction is in flight,
+  // but never shows it again once the server reports the job submitted; the user has to reload.
+  test.fails('after submitting, the cancel button comes back once the server has seen the submission', async () => {
+    chain.submitStoredJob.mockResolvedValue({ hash: '0xfeed' });
+    const pending = job();
+    const client = api(pending);
+    render(<JobDetail api={client} id="5" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Submit to blockchain' }));
+    await screen.findByText(/Transaction sent:/);
+    client.getJob.mockResolvedValue({ job: { ...pending, submittedAt: '2026-11-17T00:00:00Z' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByRole('button', { name: 'Cancel job and refund escrow' }, { timeout: 2000 })).toBeTruthy();
+  });
+
   test('cancelling a job that is on chain goes through the wallet; one that is not goes to the server', async () => {
     const onChain = job({ submittedAt: '2026-11-17T00:00:00Z' });
     render(<JobDetail api={api(onChain)} id="5" />);

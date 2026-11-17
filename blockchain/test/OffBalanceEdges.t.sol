@@ -312,6 +312,20 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
         assertEq(ob.providerOf(session), session);
     }
 
+    // Some signers produce v as 0/1 instead of 27/28; registration accepts both forms.
+    function test_SessionKeySignatureWithVAsZeroOrOneIsAccepted() public {
+        address owner = provs[0];
+        uint256 sessionKey = 0xF00D;
+        address session = vm.addr(sessionKey);
+        uint64 expiresAt = uint64(block.timestamp + 1 days);
+        bytes32 digest = ob.sessionKeyDigest(owner, session, expiresAt);
+        (uint8 v, bytes32 r, bytes32 s) =
+            vm.sign(sessionKey, keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", digest)));
+        vm.prank(owner);
+        ob.registerSessionKey(session, expiresAt, abi.encodePacked(r, s, v - 27));
+        assertEq(ob.providerOf(session), owner);
+    }
+
     // ───────────── cancellation ─────────────
 
     function test_OnlyTheBuyerCancelsAndOnlyBeforeTheProviderSetIsFinal() public {

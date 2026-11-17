@@ -15,133 +15,40 @@
 //   MONGODB_URI=mongodb://127.0.0.1:27017 TEST_PYTHON=../client/.venv/bin/python npm run test:system
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { createWriteStream, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import path from "node:path";
-import { createPublicClient, createWalletClient, http, nonceManager, parseEther, type Abi, type Address, type Hex } from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { devEnv, ScriptedProvider, Stack, Status, until } from "./system/driver.ts";
+import { parseEther, type Address } from "viem";
+import { ScriptedProvider, Stack, Status, until } from "./system/driver.ts";
+import { missingRequirements, startLocalStack, type LocalStack } from "./system/local-stack.ts";
 
-const ROOT = path.join(import.meta.dirname, "..", "..");
-const SERVER = path.join(ROOT, "server");
-const BLOCKCHAIN = path.join(ROOT, "blockchain");
-const CLIENT = path.join(ROOT, "client");
-const PYTHON = process.env.TEST_PYTHON ?? "python3";
-const uri = process.env.MONGODB_URI;
 const PRICE = "0.01"; // ETH escrowed per job
 const WINDOW = 30;    // seconds each provider gets to run the job
 const JOB_TIMEOUT = 300_000;
 
-function missing(): string | false {
-	if (!uri) return "set MONGODB_URI";
-	if (spawnSync("docker", ["info"], { stdio: "ignore" }).status !== 0) return "needs a Docker daemon";
-	if (!existsSync(path.join(BLOCKCHAIN, "node_modules"))) return "needs npm ci in blockchain/";
-	if (spawnSync(PYTHON, ["-c", "import web3, docker, requests"], { stdio: "ignore" }).status !== 0) return `needs TEST_PYTHON (${PYTHON}) with the client's requirements`;
-	return false;
-}
-
-const freePort = () => new Promise<number>((resolve, reject) => {
-	const probe = createServer().listen(0, "127.0.0.1", () => {
-		const { port } = probe.address() as { port: number };
-		probe.close(() => resolve(port));
-	}).on("error", reject);
-});
-
-describe("full stack with real provider clients and Docker", { skip: missing(), timeout: 900_000 }, () => {
-	const env = devEnv(ROOT);
-	const logs = mkdtempSync(path.join(tmpdir(), "offbalance-system-"));
-	const processes: { name: string; child: ChildProcess }[] = [];
+describe("full stack with real provider clients and Docker", { skip: missingRequirements(), timeout: 900_000 }, () => {
+	let local: LocalStack;
 	let stack: Stack;
 	let scripted: ScriptedProvider;
-	let database = "";
-	const real = [1, 2, 3].map(n => ({ token: n === 1 ? "dev" : `dev${n}`, address: env[`PROVIDER_${n}_ADDRESS`] as Address }));
+	let real: { token: string; address: Address }[];
 
-	function launch(name: string, command: string, args: string[], options: { cwd: string; env?: Record<string, string> }) {
-		const log = createWriteStream(path.join(logs, `${name}.log`));
-		const child = spawn(command, args, { cwd: options.cwd, env: { ...process.env, ...options.env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
-		child.stdout!.pipe(log);
-		child.stderr!.pipe(log);
-		processes.push({ name, child });
-		return child;
-	}
-
-	// On failure, the end of every component's log says what happened.
-	function logTails(): string {
-		return processes.map(({ name }) => {
-			const text = existsSync(path.join(logs, `${name}.log`)) ? readFileSync(path.join(logs, `${name}.log`), "utf8") : "";
-			return `----- ${name} (last 25 lines) -----\n${text.split("\n").slice(-25).join("\n")}`;
-		}).join("\n");
-	}
+	// on failure, the end of every component's log says what happened
 	async function scenario(fn: () => Promise<void>) {
 		try { await fn(); }
 		catch (error) {
-			console.error(logTails());
+			console.error(local?.logTails());
 			throw error;
 		}
 	}
 
 	before(async () => {
-		// chain + contract
-		execFileSync("npx", ["hardhat", "compile", "--quiet"], { cwd: BLOCKCHAIN, stdio: "ignore" });
-		const rpcPort = await freePort();
-		const rpcUrl = `http://127.0.0.1:${rpcPort}`;
-		launch("chain", "npx", ["hardhat", "node", "--port", String(rpcPort)], { cwd: BLOCKCHAIN });
-		const rpc = createPublicClient({ transport: http(rpcUrl) });
-		await until("hardhat node", () => rpc.getChainId().then(() => true), 60_000);
-		const artifact = JSON.parse(readFileSync(path.join(BLOCKCHAIN, "artifacts/contracts/OffBalance.sol/OffBalance.json"), "utf8"));
-		const deployer = createWalletClient({ account: privateKeyToAccount(env.SERVER_PRIVATE_KEY as Hex, { nonceManager }), transport: http(rpcUrl), chain: null });
-		const deployed = await deployer.deployContract({ abi: artifact.abi as Abi, bytecode: artifact.bytecode as Hex, account: deployer.account!, chain: null });
-		const address = (await rpc.waitForTransactionReceipt({ hash: deployed })).contractAddress!;
-		const deploymentFile = path.join(logs, "localhost.json");
-		writeFileSync(deploymentFile, JSON.stringify({ chainId: 31337, address, abi: artifact.abi }));
-
-		// server: dev certificate, fresh seeded database, then server.ts
-		execFileSync(process.execPath, ["scripts/dev-cert.ts"], { cwd: SERVER, stdio: "ignore" });
-		const caFile = path.join(SERVER, ".local", "tls", "cert.pem");
-		database = `offbalance_system_${randomUUID().replaceAll("-", "")}`;
-		const mongodbUri = new URL(uri!);
-		mongodbUri.pathname = `/${database}`;
-		execFileSync(process.execPath, ["seed.ts"], { cwd: SERVER, env: { ...process.env, MONGODB_URI: mongodbUri.toString() }, stdio: "ignore" });
-		const apiPort = await freePort();
-		launch("server", process.execPath, ["server.ts"], { cwd: SERVER, env: {
-			MONGODB_URI: mongodbUri.toString(), CHAIN: "on", RPC_URL: rpcUrl, DEPLOYMENT_FILE: deploymentFile,
-			SERVER_PRIVATE_KEY: env.SERVER_PRIVATE_KEY, PORT: String(apiPort), HOST: "127.0.0.1",
-			CHAIN_POLL_MS: "250", CHAIN_CONFIRMATIONS: "0",
-			TLS_KEY_FILE: path.join(SERVER, ".local", "tls", "key.pem"), TLS_CERT_FILE: caFile,
-		} });
-		const apiUrl = `https://localhost:${apiPort}`;
-		stack = await until("the server", () => Stack.connect({ apiUrl, rpcUrl, caFile, env }), 60_000);
-
-		// three real provider clients, each with its own home (its job folders) on the same Docker
-		for (let i = 0; i < real.length; i++) {
-			launch(`client-${i + 1}`, PYTHON, ["-u", "main.py", "--dev", "--provider", String(i + 1)], { cwd: CLIENT, env: {
-				OFFBALANCE_SERVER_URL: apiUrl, RPC_URL: rpcUrl, REQUESTS_CA_BUNDLE: caFile,
-				HOME: mkdtempSync(path.join(tmpdir(), `offbalance-provider-${i + 1}-`)), OFFBALANCE_SKIP_GPU_BENCHMARK: "1",
-			} });
-		}
-		// benchmarks run first, so give them time; then price them (matching needs a price)
-		for (const provider of real) {
-			await scenario(() => stack.waitForOnline(provider.token, 240_000).then(() => {}));
-			await stack.setPrice(provider.token, 0.001);
-		}
+		local = await startLocalStack({ providers: 3 });
+		stack = local.stack;
+		real = local.providers;
 		scripted = new ScriptedProvider(stack);
 	});
 
 	after(async () => {
 		scripted?.stop();
-		for (const { child } of processes.reverse()) {
-			try { process.kill(-child.pid!, "SIGTERM"); } catch { /* already gone */ }
-		}
-		if (database) {
-			const { default: mongoose } = await import("mongoose");
-			const connection = await mongoose.createConnection(uri!, { dbName: database }).asPromise();
-			await connection.dropDatabase().catch(() => {});
-			await connection.close();
-		}
-		console.log(`system test logs: ${logs}`);
+		await local?.stop();
+		if (local) console.log(`system test logs: ${local.logs}`);
 	});
 
 	const balances = (addresses: Address[]) => Promise.all(addresses.map(a => stack.credits(a)));

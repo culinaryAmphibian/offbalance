@@ -1,4 +1,6 @@
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+// BROWSER=firefox|webkit runs the same checks in another engine (default chromium)
+const engine = require(process.env.PLAYWRIGHT_MODULE || 'playwright')[process.env.BROWSER || 'chromium'];
+const sandboxArgs = (process.env.BROWSER || 'chromium') === 'chromium' ? ['--no-sandbox'] : [];
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const root = process.env.BROWSER_ARTIFACTS || require('node:path').join(require('node:os').tmpdir(), 'offbalance-browser');
@@ -7,7 +9,7 @@ const errors = [];
 async function check(name, fn) { await fn(); done.push(name); console.log('PASS', name); }
 (async () => {
   await fs.mkdir(root, {recursive:true});
-  const browser = await chromium.launch({ ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), headless:true, args:['--no-sandbox'] });
+  const browser = await engine.launch({ ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}), headless:true, args:sandboxArgs });
   try {
     const context = await browser.newContext({ viewport:{width:1280,height:960}, acceptDownloads:true });
     const page = await context.newPage();

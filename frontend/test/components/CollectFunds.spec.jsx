@@ -1,5 +1,6 @@
 // "Collect funds": what it shows and allows for each balance, and what a collection does.
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import { StrictMode } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { parseEther } from 'viem';
 
@@ -26,6 +27,18 @@ describe('CollectFunds', () => {
     expect(collectFunds).toHaveBeenCalledWith(config, window.ethereum);
     expect(state.refresh).toHaveBeenCalled();
     expect(onCollected).toHaveBeenCalled();
+  });
+
+  // B17: the app renders inside <StrictMode> (src/main.jsx), which mounts components twice in
+  // development (the Vite dev server, which the demo and the Docker frontend use). CollectFunds
+  // only ever sets its `active` ref to false, so after the double mount every update is dropped:
+  // the money is withdrawn, but the button stays on "Check your wallet…" and nothing confirms it.
+  test.fails('under StrictMode, a collection is confirmed and the button comes back', async () => {
+    collectFunds.mockResolvedValue({ hash: '0xabc', wei: parseEther('0.0065') });
+    const state = chain({ wallet: WALLET, account: WALLET, credits: parseEther('0.0065'), stake: 0n });
+    render(<StrictMode><CollectFunds chain={state} /></StrictMode>);
+    fireEvent.click(screen.getByRole('button', { name: 'Collect funds' }));
+    expect(await screen.findByText('Collected 0.007 ETH to your wallet.', {}, { timeout: 1000 })).toBeTruthy();
   });
 
   test('nothing to collect: the button is disabled', () => {

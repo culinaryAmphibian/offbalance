@@ -59,7 +59,7 @@ jobs:
       - run: npm run build
       # includes test:e2e, which runs the server's orchestrator against a real Hardhat node
       - run: npm --prefix ../server test
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium firefox webkit
       - name: Check demo browser flows
         run: |
           npm run dev:demo -- --port 5173 --strictPort > /tmp/offbalance-demo.log 2>&1 &
@@ -75,8 +75,13 @@ jobs:
           if (!ready) throw new Error('Demo Vite did not start.');
           JS
           npm run test:browser
+          BROWSER=firefox npm run test:browser
+          BROWSER=webkit npm run test:browser
+          npm run test:a11y
       - name: Check browser against HTTPS server and MongoDB
         run: npm run test:integration
+      - name: Check browser wallet flows against a real chain
+        run: npm run test:chain-browser
 
   results:
     # Keep result delivery checks independent of the contract toolchain job.
@@ -183,3 +188,17 @@ jobs:
       - name: Stop
         if: always()
         run: docker compose --profile host --profile host-provider down -v
+
+  static-analysis:
+    # Slither on the contract; fails only on High findings (the current Medium is a reviewed false
+    # positive, see TESTING_PLAN.md)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install slither-analyzer solc-select
+      - run: solc-select install 0.8.34 && solc-select use 0.8.34
+      - name: Slither
+        run: slither blockchain/contracts/OffBalance.sol --compile-force-framework solc --fail-high

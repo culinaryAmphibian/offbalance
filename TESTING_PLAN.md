@@ -30,13 +30,21 @@ Status as of 2026-11-17, on the `test-coverage` branch (from `milestone4` `1b402
 | Unit | Frontend | `frontend/test/*.test.js` | `cd frontend && npm test` | Node |
 | Component | Frontend React components | `frontend/test/components/*.spec.jsx` | `cd frontend && npm run test:components` (Vitest + jsdom) | Node |
 | E2E (browser) | Frontend demo | `frontend/test/browser-smoke.cjs` | `npm run test:browser` | Playwright Chromium, demo Vite |
+| E2E (browser) | Frontend + real server + real chain (wallet transactions) | `frontend/test/chain-browser.cjs` | `npm run test:chain-browser` | Playwright, MongoDB, `blockchain/` installed |
+| Accessibility (browser) | Frontend demo, every page | `frontend/test/a11y-browser.cjs` | `npm run test:a11y` (demo Vite running) | Playwright, `axe-core` |
 | E2E (browser) | Frontend + real server | `frontend/test/server-browser.cjs` | `npm run test:integration` | Playwright, MongoDB |
 | System | Chain + HTTPS server + MongoDB + 3 real provider clients + real Docker | `server/test/system-full-stack.test.ts` | `npm run test:system` (about 8 min) | MongoDB, Docker, `TEST_PYTHON` with the client's requirements |
 | System | `docker compose --profile host` + one provider container | `server/test/system/compose-smoke.ts` | see the file header (CI job `compose-smoke`) | Docker |
 | Measurement | Contract gas per function | — | `cd blockchain && npm run test:gas` | Node |
+| Coverage | Contract | — | `cd blockchain && npm run test:coverage` | Node |
+| Static analysis | Contract | — | `slither blockchain/contracts/OffBalance.sol --compile-force-framework solc` (CI job `static-analysis`) | `pip install slither-analyzer solc-select`, solc 0.8.34 |
+| System | Fault injection: chain RPC and MongoDB outages mid-job | `server/test/e2e-outages.test.ts` | part of `npm run test:e2e` | Docker |
+| System | Soak: continuous jobs for an hour | `server/test/system/soak.ts` | `SOAK_MINUTES=60 npm run test:soak` | same as `test:system` |
 | System | Everything, several machines | — | Manual checklist (Section 8) | Docker, a LAN, MetaMask |
 
-**CI** (`.github/workflows/node.js.yml`) runs all of the automated rows above on every push and PR to `main` and `milestone4`, except the real-GPU benchmark test.
+**CI** (`.github/workflows/node.js.yml`) runs all of the automated rows above on every push and PR to `main` and `milestone4`, except the real-GPU benchmark test and the hour-long soak. The browser tests run in Chromium, Firefox and WebKit there (`BROWSER=firefox|webkit`).
+
+**WebKit locally** needs system libraries that only `sudo` can install, once: `cd frontend && sudo npx playwright install-deps webkit`. Chromium and Firefox need nothing extra.
 
 **Local runs on Windows.** The server's `test:dev` script and the `e2e` test need a POSIX shell, so run the server suites in WSL or Linux. MongoDB: `docker start offbalance-mongo` (port 27018), then `MONGODB_URI=mongodb://127.0.0.1:27018`.
 
@@ -82,6 +90,8 @@ Each has a test marked `todo` (Node), `expectedFailure` (Python) or `test.fails`
 | B13 | **A provider client restarted after it was assigned never runs the job**: it watches the chain from the current block, so it never sees its `PROVIDER_SELECTED` again, and it's slashed. | High | `test_chain_integration.py` (expected failure) | Read `GET /provider/assignment` at startup (the server already provides it). |
 | B14 | **An expired sign-in nonce still works** for up to about a minute: the server relies on MongoDB's TTL cleanup instead of checking the nonce's age. | Low | `auth-hardening.test.ts` (todo) | Check `createdAt` against `NONCE_TTL_S` in `verifyWalletSignature`. |
 | B15 | **`docker compose run host-client --dev` crashes**: `docker-compose.yml` passes `OFFBALANCE_API_KEY` as an empty string when it isn't configured, and `--dev` uses that instead of the dev key ("the API key is empty"). Only the interactive mode works. | Medium | `test_chain_and_dispatch.py` (expected failure); the CI smoke job works around it with `-e OFFBALANCE_API_KEY=dev` | Treat an empty variable as unset in `main.load_dev_credentials` (or drop the default in the compose file). |
+| B16 | **After submitting a job, its page never offers "Cancel"** until it's reloaded: the page hides cancel while its own transaction is in flight and never clears that state. Reloading signs the user out (the session lives only in memory), so they have to sign in again to cancel. | Low | `JobDetail.spec.jsx` (`test.fails`); `chain-browser.cjs` works around it | Clear the transaction state once the job shows `submittedAt`. |
+| B17 | **"Collect funds" never confirms in the dev server (and so in the demo)**: the money is withdrawn, but the button stays on "Check your wallet…". The app runs in `<StrictMode>`, which mounts components twice in development, and `CollectFunds` only ever sets its `active` ref to `false`. | Medium (visible in the demo) | `CollectFunds.spec.jsx` (`test.fails`); `chain-browser.cjs` checks the money instead | One line: `useEffect(() => { active.current = true; return () => { active.current = false; }; }, [])`, as the other components do. |
 | B11 | **The client drops a job if a second assignment arrives before the first one runs** (the second manifest replaces the first), so the provider is slashed for the first. The server sends one job at a time, so this needs a server bug to trigger. | Low | `test_chain_and_dispatch.py` (expected failure) | Keep a manifest per job in `RunManager`. |
 
 **Found by reading code (no test yet):**
@@ -114,8 +124,8 @@ Priorities: **P1** = before the final demo/submission; **P2** = during the testi
 | ✅ P2 | `registerSessionKey` funding to a key that rejects ETH (a contract) reverts the whole registration. | Unit | Half-registered keys |
 | ✅ P2 | Cancel rules: buyer can cancel in `JOB_SUBMITTED` and `PROVIDER_SELECTED` only; non-buyers never; cancel after finalize reverts. | Unit | Cancelling running jobs |
 | ✅ P2 | Gas report per job for 2, 3, 5 and 10 providers (settlement and finalize loops). | Measurement (`hardhat test --gas-stats` or a gas snapshot) | Gas growth; inputs for the gas-cost risk |
-| P3 | Static analysis with Slither; fix or document every finding. | Static analysis | Common Solidity pitfalls |
-| P3 | Contract coverage report (`hardhat test --coverage`), aiming for every branch. | Coverage | Untested branches |
+| ✅ P3 | Static analysis with Slither (Section 5.6; CI job `static-analysis`); fix or document every finding. | Static analysis | Common Solidity pitfalls |
+| ✅ P3 | Contract coverage report (99.5% of lines, Section 5.6; (`hardhat test --coverage`), aiming for every branch. | Coverage | Untested branches |
 
 ### 5.2 Server and database
 
@@ -130,8 +140,8 @@ Priorities: **P1** = before the final demo/submission; **P2** = during the testi
 | ✅ P2 | Heartbeat and liveness under load (`load.test.ts`): 500 providers heartbeating every 10 s; matching latency stays small. | Load | Scheduler slowdowns |
 | ✅ P2 | Auth hardening (`auth-hardening.test.ts`; token expiry still needs a team policy): tokens never expire today (decide on a policy and test it); nonce TTL index removes old nonces; requests with very long or odd headers. | Integration | Session abuse |
 | ✅ P2 | Result archives (already covered by `result-archive.test.ts`): symlink and path-traversal entries, huge file counts, decompression-style bombs inside the 25 MiB limit. Several exist already; add file-count and depth limits. | Unit | Server disk/CPU exhaustion |
-| P3 | Data migration: an old database (±1 reputation counters, records without hardware profiles) still loads and serializes. | Integration | Upgrade failures |
-| P3 | MongoDB unavailable mid-request: routes answer 503 rather than hang or crash, and recover when it returns. | Integration | Outage behaviour |
+| ✅ P3 | Data migration (`data-migration.test.ts`): an old database (±1 reputation counters, records without hardware profiles) still loads and serializes. | Integration | Upgrade failures |
+| ✅ P3 | MongoDB unavailable mid-request (`e2e-outages.test.ts`): routes answer 503 rather than hang or crash, and recover when it returns. | Integration | Outage behaviour |
 
 ### 5.3 Provider client
 
@@ -149,12 +159,12 @@ Priorities: **P1** = before the final demo/submission; **P2** = during the testi
 
 | Pri | Test | Type | What it catches |
 |---|---|---|---|
-| P1 | **Browser test against a real chain:** an injected wallet fixture signing with dev keys runs submit to chain → status updates → cancel on chain → authorize a session key → collect funds. Today's browser tests have no chain. | E2E (Playwright) | Wallet-flow regressions |
+| ✅ P1 | **Browser test against a real chain** (`chain-browser.cjs`; found B16, B17): an injected wallet fixture signing with dev keys runs submit to chain → status updates → cancel on chain → authorize a session key → collect funds. Today's browser tests have no chain. | E2E (Playwright) | Wallet-flow regressions |
 | ✅ P1 | Job status view shows every server status correctly (PENDING through PAYOUT, CANCELED, NO_QUORUM) and refreshes within the 5 s poll. | Component (React Testing Library) or browser | Wrong or stuck status display |
 | ✅ P2 | Component tests (`test/components/*.spec.jsx`, all five components): `JobForm` (validation, USD conversion, GPU fields), `JobDetail`, `ProviderSetup`, `SessionKeyPanel` (key shown once, revoke), `CollectFunds` (wrong account, nothing to collect). | Component | UI logic bugs |
 | ✅ P2 | MetaMask errors (`wallet.test.js` and the component tests): user rejects, wrong network, chain restarted (nonce errors) all show a clear message. | Unit / browser | Unhelpful errors at the demo |
-| P3 | Accessibility check (axe) on every page; keyboard-only navigation. | Automated a11y | Accessibility issues |
-| P3 | Firefox and WebKit runs of the browser tests. | E2E | Browser-specific bugs |
+| ✅ P3 | Accessibility check (axe) on every page; keyboard-only navigation (`a11y-browser.cjs`: no WCAG 2.1 A/AA violations). | Automated a11y | Accessibility issues |
+| ✅ P3 | Firefox and WebKit runs of the browser tests (`BROWSER=firefox|webkit`; all pass in Firefox; WebKit runs in CI). | E2E | Browser-specific bugs |
 
 ### 5.5 Whole system
 
@@ -162,8 +172,25 @@ Priorities: **P1** = before the final demo/submission; **P2** = during the testi
 |---|---|---|---|
 | ✅ P1 | **Full-stack scripted run** (`system-full-stack.test.ts`, all 5 scenarios pass) (`startup.py` or Docker host mode + 3 real provider clients + real Docker): <br>1. Happy path → PAID, result downloadable, credits correct.<br>2. One provider returns a different output → slashed, others paid.<br>3. One provider never stakes → dropped, job continues.<br>4. All disagree → NO_QUORUM refunds.<br>5. Buyer cancels during staking → refunds. | System (automated) | Integration bugs no single suite sees |
 | ✅ P1 | Docker Compose smoke test in CI (`system/compose-smoke.ts`, CI job `compose-smoke`): start `--profile host`, run one `host-client`, run the happy path. | System (CI) | Broken images or compose config |
-| ◐ P2 | Fault injection: stop the server, chain or MongoDB at each phase and restart it; record what happens to the job and the money. Server restart (B5) and client restarts (B12, B13) are covered; chain and MongoDB outages aren't yet. | System | Recovery gaps (see B5) |
-| P3 | Soak test: jobs submitted continuously for an hour with 3–5 providers; watch memory, event lag and stuck jobs. | System | Leaks, slow drift |
+| ✅ P2 | Fault injection (`e2e-outages.test.ts` for chain and MongoDB outages): stop the server, chain or MongoDB at each phase and restart it; record what happens to the job and the money. Server restart (B5) and client restarts (B12, B13) are covered; chain and MongoDB outages aren't yet. | System | Recovery gaps (see B5) |
+| ✅ P3 | Soak test (`soak.ts`, 11/17: 60 min, 51 jobs, 41 paid + 10 no-quorum as designed, 0 stuck, db lag max 0.5 s, server memory 167 → 181 MB, clients flat at 75 MB): jobs submitted continuously for an hour with 3–5 providers; watch memory, event lag and stuck jobs. | System | Leaks, slow drift |
+
+---
+
+## 5.6 Static analysis and coverage results (11/17)
+
+**Contract coverage** (`npm run test:coverage`): 99.5% of lines, 99.3% of statements. The two uncovered lines can't run: the `==` operator for `JobID_t` is never used (dead code), and the settlement loop's "skip providers with no stake" check is unreachable because unstaked providers are removed when staking closes.
+
+**Slither** (`slither-analyzer` 0.11.6, solc 0.8.34): 32 findings, none High.
+
+| Severity | Finding | Count | Assessment |
+|---|---|---|---|
+| Medium | divide-before-multiply in `_payWinnersAndSlashLosers` | 1 | False positive: `share = pool / winners` then `dust = pool - share * winners` computes the remainder on purpose, and the dust goes to a winner. The fuzz tests confirm no wei is lost. |
+| Low | `block.timestamp` comparisons | 13 | By design: every phase is a time window. Validators can shift timestamps by a few seconds, which matters most for the 15 s reveal window; on a real chain the windows should be longer. |
+| Info | naming conventions | 14 | Upper-case event names, mixed-case functions. Cosmetic. |
+| Info | low-level calls | 2 | `withdraw` and the session-key funding transfer; both check the result and update state first. |
+| Info | dead code | 1 | The unused `==` operator (same as the coverage gap). |
+| Info | solc version | 1 | `pragma ^0.8.20` floats; pin it for a real deployment. |
 
 ---
 
