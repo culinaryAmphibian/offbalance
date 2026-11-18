@@ -51,7 +51,7 @@ export function createApp(deps: Deps, { log = true } = {}) {
 	app.use(imageRoutes(deps));
 	app.use(jobRoutes(deps));
 	app.use(providerRoutes(deps));
-	app.use(accountRoutes());
+	app.use(accountRoutes(deps.chain));
 
 	app.use((req: Request, res: Response) => {
 		res.status(404).json({ error: `no route for ${req.method} ${req.path}` });

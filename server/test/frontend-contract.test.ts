@@ -191,6 +191,7 @@ describe("frontend/server database contracts", { skip: !uri && "set MONGODB_URI 
 		assert.equal(dashboard.status, 200);
 		assert.equal(dashboard.body.buyer.activeJobs, total);
 		assert.equal(dashboard.body.buyer.completedJobs, 0);
+		assert.equal(dashboard.body.buyer.currentEscrowed, null);
 		assert.equal(dashboard.body.buyer.jobs.length, 20);
 		const listed = await call("GET", "/jobs?role=buyer", { as: "buyer" });
 		assert.equal(listed.body.jobs.length, total);

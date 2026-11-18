@@ -4,6 +4,7 @@ import { requireAuth, verifyWalletSignature } from "../middleware/auth.ts";
 import {
 	AccountModel, AuthTokenModel, HardwareModel, JobModel, JobStatus, TERMINAL_STATUSES,
 } from "../models/index.ts";
+import type { Chain } from "../services/chain.ts";
 import { serializeAccount, serializeHardware, serializeJob } from "./serialize.ts";
 
 function self(req: Request, res: Response, next: NextFunction) {
@@ -30,14 +31,14 @@ async function marketplaceStats() {
 	return { providers, pricedProviders, openJobs, medianPrice };
 }
 
-export function accountRoutes(): Router {
+export function accountRoutes(chain: Pick<Chain, "getBuyerEscrow"> | null): Router {
 	const router = Router();
 	router.use("/account/:id", requireAuth, self);
 
 	router.get("/account/:id/dashboard", async (_req, res) => {
 		const account = res.locals.account;
 		const active = { $nin: [...TERMINAL_STATUSES] };
-		const [buyerJobs, buyerActive, providerJobs, providerActive, providerDone, hardware, marketplace] = await Promise.all([
+		const [buyerJobs, buyerActive, providerJobs, providerActive, providerDone, hardware, marketplace, currentEscrowed] = await Promise.all([
 			JobModel.find({ owner: account._id }).sort({ createdAt: -1 }).limit(RECENT),
 			JobModel.countDocuments({ owner: account._id, status: active }),
 			JobModel.find({ providers: account._id }).sort({ createdAt: -1 }).limit(RECENT),
@@ -45,6 +46,7 @@ export function accountRoutes(): Router {
 			JobModel.countDocuments({ providers: account._id, status: JobStatus.PAYOUT }),
 			HardwareModel.findOne({ userRef: account._id }),
 			marketplaceStats(),
+			chain?.getBuyerEscrow(account.walletIds) ?? null,
 		]);
 		const a = serializeAccount(account);
 		res.json({
@@ -53,6 +55,7 @@ export function accountRoutes(): Router {
 				activeJobs: buyerActive,
 				completedJobs: account.completedJobs.length,
 				totalSpent: a.totalSpent,
+				currentEscrowed,
 				jobs: buyerJobs.map(serializeJob),
 			},
 			provider: {

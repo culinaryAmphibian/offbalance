@@ -4,6 +4,7 @@ import { Interface, JsonRpcProvider, getAddress, type InterfaceAbi } from "ether
 import {
 	createPublicClient,
 	createWalletClient,
+	formatEther,
 	http,
 	nonceManager,
 	type Abi,
@@ -52,6 +53,8 @@ export function chainEvent(event: MonitorEvent, abi: Interface): ChainEvent {
 
 export class Chain {
 	private readonly publicClient: PublicClient;
+	// Optional dashboard data should return promptly if the RPC is down.
+	private readonly escrowClient = createPublicClient({ transport: http(config.rpcUrl, { timeout: 3_000, retryCount: 0 }) });
 	private readonly walletClient: WalletClient | null;
 	private readonly provider: JsonRpcProvider;
 	private readonly deployment: ContractDeployment;
@@ -137,6 +140,22 @@ export class Chain {
 	// Milestone4 pays winning providers without an on-chain delivery receipt hook.
 	get supportsDeliveryReceipts(): boolean {
 		return this.deployment.abi.some(item => item.type === 'function' && item.name === 'verifyReceipt');
+	}
+
+	async getBuyerEscrow(wallets: readonly string[]): Promise<string | null> {
+		const { address, abi } = this.deployment;
+		if (!abi.some(item => item.type === "function" && item.name === "escrowed")) return null;
+
+		try {
+			const blockNumber = await this.escrowClient.getBlockNumber({ cacheTime: 0 });
+			const addresses = new Set(wallets.map(wallet => getAddress(wallet)));
+			const balances = await Promise.all([...addresses].map(wallet => this.escrowClient.readContract({
+				address, abi, functionName: "escrowed", args: [wallet], blockNumber,
+			}) as Promise<bigint>));
+			return formatEther(balances.reduce((total, balance) => total + balance, 0n));
+		} catch {
+			return null;
+		}
 	}
 
 	// getProviderCommitment -> (commitmentHash, outputHash, revealed, winning, requiredStake, stake).

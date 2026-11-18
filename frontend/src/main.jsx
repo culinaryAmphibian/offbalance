@@ -156,8 +156,8 @@ function Overview({ view, setView }) {
 			"ETH",
 		],
 	];
-		// read from the contract: stake locked in this provider's unsettled jobs
-	if (!isBuyer) stats.push([
+	if (isBuyer) stats.push(["Currently escrowed", formatEth(summary?.currentEscrowed), "ETH"]);
+	else stats.push([
 		"Current stake",
 		chain.available
 			? formatEth(chain.balances?.stake, 3, { wei: true })
@@ -183,7 +183,7 @@ function Overview({ view, setView }) {
 				</div>
 			</div>
 			<section
-				className={`stats${isBuyer ? "" : " stats-provider"}`}
+				className="stats"
 				aria-label={`${view} summary`}>
 				{stats.map(([label, value, unit]) => (
 					<div className="stat" key={label}>

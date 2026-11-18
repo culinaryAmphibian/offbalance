@@ -20,9 +20,12 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       await page.getByRole('button',{name:'Enter demo'}).click();
       await page.getByRole('heading',{name:'Overview',exact:true}).waitFor();
       await page.getByRole('link',{name:'Matrix computation'}).waitFor();
+      await page.getByRole('region',{name:'buyer summary'}).getByText('0.048').waitFor();
+      await page.getByRole('heading',{name:'Currently escrowed'}).waitFor();
       await page.screenshot({path:`${root}/overview.png`,fullPage:true});
       await page.getByRole('button',{name:'Provider',exact:true}).click();
       await page.getByRole('heading',{name:'Assigned jobs'}).waitFor();
+      assert.equal(await page.getByRole('heading',{name:'Currently escrowed'}).count(),0);
       assert.equal(await page.getByRole('link',{name:'Submit job',exact:true}).count(),0);
       await page.getByRole('button',{name:'Buyer',exact:true}).click();
     });
@@ -53,6 +56,7 @@ async function check(name, fn) { await fn(); done.push(name); console.log('PASS'
       assert.equal(await page.getByRole('button',{name:'Download result'}).count(),0);
       await page.getByRole('link',{name:'← Overview',exact:true}).click();
       await page.getByRole('link',{name:'Browser workload',exact:true}).waitFor();
+      await page.getByRole('region',{name:'buyer summary'}).getByText('0.048').waitFor();
     });
     await check('demo result download and browser history', async () => {
       await page.getByRole('link',{name:'Matrix computation',exact:true}).click();
