@@ -328,12 +328,11 @@ describe("server-side builds and image pinning", { skip: !uri && "set MONGODB_UR
 	});
 
 	// docker() writes each call's stdin (the registry password for `login`, nothing for `push` and
-	// `image rm`) with child.stdin.end(), and child.stdin has no error listener. If docker exits
-	// before that write lands (the daemon is down, the image is already gone, ...), the write fails
-	// with EPIPE as an uncaught exception, which takes the whole server down. It runs in its own
-	// process so the crash can't hit this test runner.
+	// `image rm`) with child.stdin.end(). If docker exits before that write lands (the daemon is
+	// down, the image is already gone, ...), the write fails with EPIPE; without an error listener
+	// on child.stdin that's an uncaught exception, which takes the whole server down (B2). It runs
+	// in its own process so a crash can't hit this test runner.
 	test("a docker call that exits before reading its input fails instead of crashing the server",
-		{ todo: "services/builder.ts docker(): add child.stdin.on('error', ...) so EPIPE is reported through the exit code" },
 		() => {
 			const bin = mkdtempSync(path.join(tmpdir(), "offbalance-epipe-"));
 			writeFileSync(path.join(bin, "docker"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });

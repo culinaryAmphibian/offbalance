@@ -11,7 +11,7 @@ Every test in the testing plan is written and has been run, except the real-GPU 
 | Area | Before | Now |
 |---|---|---|
 | Smart contract | 22 | 47, all pass. Includes fuzz tests; 99.5% line coverage |
-| Server | 218 | 299. Line coverage 89.6% → 97.5% |
+| Server | 218 | 300. Line coverage 89.6% → 97.5% |
 | Provider client | 85 | 138 |
 | Frontend unit | 88 | 93 |
 | Frontend components (new) | — | 34 |
@@ -64,7 +64,7 @@ Each bug has a test that's marked as a known failure. When you fix a bug, remove
 | # | Bug | Where |
 |---|---|---|
 | B1 | The server's and the contract's job IDs drift apart after a job is canceled before submission, or after jobs are submitted out of order. Chain events then update the wrong job. | server |
-| B2 | A docker command that exits early crashes the server (`EPIPE`). One-line fix. | server |
+| B2 | A docker command that exits early crashes the server (`EPIPE`). ✅ Fixed on `fix/server-bugs`. | server |
 | B5 | Jobs stall after a server restart, because the phase timers aren't restored. | server |
 | B9 | A job has no process limit, so it can fork-bomb the provider's machine. | client |
 | B12 | A provider restarted after committing can't reveal, so it gets slashed. | client |
@@ -80,14 +80,14 @@ Each bug has a test that's marked as a known failure. When you fix a bug, remove
 | B15 | `docker compose run host-client --dev` crashes; only interactive mode works. | client/compose |
 
 **Low priority:**
-- B3: duplicate wallets on one account.
-- B4: a validator lets "required matches" exceed "providers".
+- B3: duplicate wallets on one account. ✅ Fixed on `fix/server-bugs`.
+- B4: a validator lets "required matches" exceed "providers". ✅ Fixed.
 - B11: a second assignment can overwrite the first.
-- B14: an expired sign-in nonce still works for about a minute.
+- B14: an expired sign-in nonce still works for about a minute. ✅ Fixed.
 - B16: "Cancel" is hidden after submitting until the page is reloaded.
 
 ### 3. Team decisions needed
-- **B6, tied consensus:** a 2–2 split currently picks whichever answer was revealed first, and the other pair is slashed. Should the contract require a majority?
+- **B6, tied consensus:** a 2–2 split currently picks whichever answer was revealed first, and the other pair is slashed. Should the contract require a majority?   
 - **B7, hourly rates:** the UI's "hourly cap" is escrowed as the whole job price and split equally among winners. Is that what we want?
 - **Token expiry:** sign-in tokens never expire. We need to agree on a policy before we can test one.
 

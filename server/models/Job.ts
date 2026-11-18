@@ -41,6 +41,19 @@ const payoutSchema = new Schema(
 	{ _id: false },
 );
 
+// For an update validator: `field`'s value after the update. Taken from the update itself when it
+// sets the field; otherwise the strictest stored value among the jobs the update matches (the
+// smallest k with sort 1, the largest quorum with sort -1), or undefined when it matches none.
+async function otherField(query: Query<unknown, unknown>, field: string, sort: 1 | -1): Promise<number | undefined> {
+	const u = (query.getUpdate() ?? {}) as Record<string, Record<string, number> | number>;
+	const updated = (u.$set as Record<string, number>)?.[field] ??
+		(u.$setOnInsert as Record<string, number>)?.[field] ??
+		(u[field] as number | undefined);
+	if (updated !== undefined) return updated;
+	const stored = await query.model.findOne(query.getFilter()).sort({ [field]: sort }).select(field).lean<Record<string, number>>();
+	return stored?.[field];
+}
+
 const jobSchema = new Schema(
 	{
 		// the id used everywhere else: contract calls, events, the client's /jobManifest/:jobId
@@ -68,24 +81,34 @@ const jobSchema = new Schema(
 
 		maxPrice: money({ required: true }), // highest per-hour rate the buyer pays each provider
 		runningPrice: money({ default: 0 }), // clearing rate: the priciest assigned provider's rate
-		minNodesToRunOn: { type: Number, required: true, min: 1, validate: Number.isSafeInteger }, // k
+		minNodesToRunOn: {
+			type: Number,
+			required: true,
+			min: 1,
+			validate: [
+				{ validator: Number.isSafeInteger },
+				{
+					// on save the quorum's own validator covers this; an update that lowers k alone must
+					// still stay at or above every matched job's stored quorum
+					async validator(this: unknown, v: number) {
+						if (!(this instanceof Query)) return true;
+						const quorum = await otherField(this, "minNodesToAgree", -1);
+						return quorum === undefined || quorum <= v;
+					},
+					message: "minNodesToRunOn can't be lowered below minNodesToAgree",
+				},
+			],
+		}, // k
 		minNodesToAgree: {
 			type: Number,
 			required: true,
 			min: 1,
 			validate: {
 				// `this` is the document on save, the query on update with runValidators
-				validator(this: { minNodesToRunOn?: number } | Query<unknown, unknown>, v: number) {
-					let k: number | undefined;
-					if (this instanceof Query) {
-						const u = (this.getUpdate() ?? {}) as Record<string, Record<string, number> | number>;
-						k = (u.$set as Record<string, number>)?.minNodesToRunOn ??
-							(u.$setOnInsert as Record<string, number>)?.minNodesToRunOn ??
-							(u.minNodesToRunOn as number | undefined);
-					} else {
-						k = this.minNodesToRunOn;
-					}
-					return Number.isSafeInteger(v) && (k === undefined || v <= k);
+				async validator(this: { minNodesToRunOn?: number } | Query<unknown, unknown>, v: number) {
+					if (!Number.isSafeInteger(v)) return false;
+					const k = this instanceof Query ? await otherField(this, "minNodesToRunOn", 1) : this.minNodesToRunOn;
+					return k === undefined || v <= k;
 				},
 				message: "minNodesToAgree can't exceed minNodesToRunOn",
 			},

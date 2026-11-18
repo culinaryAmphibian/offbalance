@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { isAddress, verifyMessage, type Hex } from "viem";
-import { AccountModel, AuthNonceModel, AuthTokenModel, hashToken, loginMessage } from "../models/index.ts";
+import { AccountModel, AuthNonceModel, AuthTokenModel, hashToken, loginMessage, NONCE_TTL_S } from "../models/index.ts";
 
 // Resolves `Authorization: Bearer <token>` to res.locals.account (and the wallet
 // the token was issued to, as res.locals.wallet).
@@ -28,6 +28,8 @@ export async function verifyWalletSignature(wallet: string, signature: unknown):
 	if (!isAddress(wallet) || typeof signature !== "string") return false;
 	const nonce = await AuthNonceModel.findOneAndDelete({ wallet: wallet.toLowerCase() });
 	if (!nonce) return false;
+	// MongoDB's TTL monitor only runs about once a minute, so an expired nonce can still be here
+	if (Date.now() - nonce.createdAt.getTime() > NONCE_TTL_S * 1000) return false;
 	try {
 		return await verifyMessage({
 			address: wallet,

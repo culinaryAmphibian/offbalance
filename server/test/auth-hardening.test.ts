@@ -115,10 +115,9 @@ describe("authentication hardening", { skip: !uri && "set MONGODB_URI to run" },
 		assert.equal(await AccountModel.countDocuments({ walletIds: { $in: [a.address.toLowerCase(), b.address.toLowerCase()] } }), 0);
 	});
 
-	// verifyWalletSignature doesn't check the nonce's age; it relies on MongoDB's TTL monitor,
-	// which only runs about once a minute, so a nonce can still sign in after it has expired.
-	test("a nonce older than its lifetime is refused even before MongoDB removes it",
-		{ todo: "middleware/auth.ts: check createdAt against NONCE_TTL_S in verifyWalletSignature" }, async () => {
+	// MongoDB's TTL monitor only runs about once a minute, so verifyWalletSignature checks the
+	// nonce's age itself (B14).
+	test("a nonce older than its lifetime is refused even before MongoDB removes it", async () => {
 			const wallet = privateKeyToAccount(generatePrivateKey());
 			const message = await nonce(wallet.address);
 			await AuthNonceModel.updateOne({ wallet: wallet.address.toLowerCase() },

@@ -7,10 +7,11 @@ const accountSchema = new Schema(
 	{
 		walletIds: {
 			type: [{ type: String, lowercase: true, match: /^0x[0-9a-f]{40}$/ }],
-			validate: {
-				validator: (v: string[]) => v.length > 0,
-				message: "an account needs at least one wallet",
-			},
+			validate: [
+				{ validator: (v: string[]) => v.length > 0, message: "an account needs at least one wallet" },
+				// the routes check before adding a wallet; this keeps direct writes honest too
+				{ validator: (v: string[]) => new Set(v).size === v.length, message: "an account can't list the same wallet twice" },
+			],
 		},
 
 		processedChainEvents: { type: [String], default: [] },
