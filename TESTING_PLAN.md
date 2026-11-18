@@ -59,7 +59,7 @@ Status as of 2026-11-17, on the `test-coverage` branch (from `milestone4` `1b402
 | Frontend unit | 88 | 93: 92 pass, 1 todo (known bug) |
 | Frontend components | — | 34: 33 pass, 1 expected failure (known bug) |
 | Frontend browser | 5 demo + 6 real-server scenarios | unchanged (CI only) |
-| Server | 218 | 300: 297 pass, 3 todo (B1, B5), 0 fail (after `fix/server-bugs`) |
+| Server | 218 | 300: 297 pass, 3 todo, 0 fail (snapshot after `fix/server-bugs`) |
 | System (full stack, real clients + Docker) | — | 5 scenarios, all pass (about 8 min) |
 | Compose smoke | — | 1 job end to end, passes |
 
@@ -74,31 +74,31 @@ Server line coverage: 89.6% on `milestone4`, 97.5% with the new branch. Coverage
 
 ## 4. Known bugs found by tests
 
-Each has a test marked `todo` (Node), `expectedFailure` (Python) or `test.fails` (Vitest), on `test-coverage`. When a bug is fixed, remove `todo` from its test so it runs as a normal test.
+The table tracks bug status on `milestone5`. When fixing an open bug, remove its known-failure marker (`todo` in Node, `expectedFailure` in Python or `test.fails` in Vitest) so the regression test runs normally.
 
 | # | Bug | Severity | Test | Fix |
 |---|---|---|---|---|
-| B1 | **Database and contract job numbers drift apart.** The server numbers saved jobs itself; the contract numbers only submitted jobs, in submission order. Cancelling a job before submitting it, or submitting jobs out of order, makes the chain's events update the wrong job. | High | `job-ids.test.ts` (2 todo) | Take the contract's job ID from the `submitJob` receipt or `JOB_SUBMITTED` (with the sender and transaction), instead of a server counter. |
+| B1 | ✅ **Fixed in [#40](https://github.com/culinaryAmphibian/offbalance/pull/40).** **Database and contract job numbers drift apart.** The server numbers saved jobs itself; the contract numbers only submitted jobs, in submission order. Cancelling a job before submitting it, or submitting jobs out of order, makes the chain's events update the wrong job. | High | `job-ids.test.ts` (runs normally) | Link the saved quote to the actual contract job ID from the confirmed submission event. |
 | B2 | ✅ **Fixed on `fix/server-bugs`.** **A docker command that exits early crashes the server** (`EPIPE`, no error handler on the child's stdin). Affects `login`, `push` and the `image rm` after every build. | High | `builds.test.ts` (runs normally) | One line in `docker()` in `services/builder.ts`: `child.stdin.on("error", () => {})`. |
 | B3 | ✅ **Fixed on `fix/server-bugs`.** One account can list the same wallet twice. | Low | `mongo-db-audit.test.ts` (runs normally) | Validate unique `walletIds` within an account. |
 | B4 | ✅ **Fixed on `fix/server-bugs`** (also stops an update lowering "providers" below "required matching results"). An update can raise "required matching results" above "providers". | Low | `mongo-db-audit.test.ts` (runs normally) | Fix the `minNodesToAgree` update validator. |
-| B5 | **Jobs stall after a server restart.** Phase timers live in memory and the monitor resumes from its checkpoint, so jobs that were mid-phase are never advanced. | High | `e2e-staking-restart.test.ts` (todo) | On startup, re-schedule open jobs from `getDeadlines`. |
+| B5 | ✅ **Fixed in [#39](https://github.com/culinaryAmphibian/offbalance/pull/39).** **Jobs stall after a server restart.** Phase timers live in memory and the monitor resumes from its checkpoint, so jobs that were mid-phase are never advanced. | High | `e2e-staking-restart.test.ts` (runs normally) | On startup, rebuild phase timers for unfinished jobs from current on-chain deadlines. |
 | B8 | **A paid job looks unfinished in the UI.** The server's final status for a paid job is `PAYOUT`, which the frontend shows as "verifying — Payment is being processed". | Medium | `frontend/test/statuses.test.js` (todo) | Show `PAYOUT` as completed in `jobs.js`. |
 | B9 | **Jobs have no process limit.** A buyer's container can fork-bomb the provider's machine (`pids.max` is `max`). | High | `test_docker_integration.py` (expected failure) | `pids_limit` in `RunManager`'s `containers.run`. |
 | B10 | **Jobs can gain privileges** through setuid binaries in their image (`NoNewPrivs` is 0). | Medium | `test_docker_integration.py` (expected failure) | `security_opt=['no-new-privileges']` in `RunManager`. |
-| B12 | **A provider client restarted after committing can't reveal** (the committed result hash is only kept in memory), so the provider is slashed for a job it did. | High | `test_chain_integration.py` (expected failure) | Persist the committed hash (it isn't secret; the salt is) and reload it at startup. |
-| B13 | **A provider client restarted after it was assigned never runs the job**: it watches the chain from the current block, so it never sees its `PROVIDER_SELECTED` again, and it's slashed. | High | `test_chain_integration.py` (expected failure) | Read `GET /provider/assignment` at startup (the server already provides it). |
+| B12 | ✅ **Fixed in [#39](https://github.com/culinaryAmphibian/offbalance/pull/39).** **A provider client restarted after committing can't reveal** (the committed result hash is only kept in memory), so the provider is slashed for a job it did. | High | `test_chain_integration.py` (runs normally) | Save the result and reveal salt before broadcasting the commitment so it can be revealed after a restart. |
+| B13 | ✅ **Fixed in [#39](https://github.com/culinaryAmphibian/offbalance/pull/39).** **A provider client restarted after it was assigned never runs the job**: it watches the chain from the current block, so it never sees its `PROVIDER_SELECTED` again, and it's slashed. | High | `test_chain_integration.py` (runs normally) | Restore known assignments and resume active work from the provider journal and current chain phase. |
 | B14 | ✅ **Fixed on `fix/server-bugs`.** **An expired sign-in nonce still works** for up to about a minute: the server relies on MongoDB's TTL cleanup instead of checking the nonce's age. | Low | `auth-hardening.test.ts` (runs normally) | Check `createdAt` against `NONCE_TTL_S` in `verifyWalletSignature`. |
 | B15 | **`docker compose run host-client --dev` crashes**: `docker-compose.yml` passes `OFFBALANCE_API_KEY` as an empty string when it isn't configured, and `--dev` uses that instead of the dev key ("the API key is empty"). Only the interactive mode works. | Medium | `test_chain_and_dispatch.py` (expected failure); the CI smoke job works around it with `-e OFFBALANCE_API_KEY=dev` | Treat an empty variable as unset in `main.load_dev_credentials` (or drop the default in the compose file). |
-| B16 | **After submitting a job, its page never offers "Cancel"** until it's reloaded: the page hides cancel while its own transaction is in flight and never clears that state. Reloading signs the user out (the session lives only in memory), so they have to sign in again to cancel. | Low | `JobDetail.spec.jsx` (`test.fails`); `chain-browser.cjs` works around it | Clear the transaction state once the job shows `submittedAt`. |
-| B17 | **"Collect funds" never confirms in the dev server (and so in the demo)**: the money is withdrawn, but the button stays on "Check your wallet…". The app runs in `<StrictMode>`, which mounts components twice in development, and `CollectFunds` only ever sets its `active` ref to `false`. | Medium (visible in the demo) | `CollectFunds.spec.jsx` (`test.fails`); `chain-browser.cjs` checks the money instead | One line: `useEffect(() => { active.current = true; return () => { active.current = false; }; }, [])`, as the other components do. |
+| B16 | ✅ **Fixed in [#36](https://github.com/culinaryAmphibian/offbalance/pull/36).** **After submitting a job, its page never offers "Cancel"** until it's reloaded: the page hides cancel while its own transaction is in flight and never clears that state. Reloading signs the user out (the session lives only in memory), so they have to sign in again to cancel. | Low | `JobDetail.spec.jsx` and `chain-browser.cjs` (run normally) | Restore on-chain cancellation as soon as the coordinator records the submission. |
+| B17 | ✅ **Fixed in [#36](https://github.com/culinaryAmphibian/offbalance/pull/36).** **"Collect funds" never confirms in the dev server (and so in the demo)**: the money is withdrawn, but the button stays on "Check your wallet…". The app runs in `<StrictMode>`, which mounts components twice in development, and `CollectFunds` only ever sets its `active` ref to `false`. | Medium (visible in the demo) | `CollectFunds.spec.jsx` and `chain-browser.cjs` (run normally) | Reset the mounted state on effect setup so the withdrawal confirmation and balance refresh work under React StrictMode. |
 | B11 | **The client drops a job if a second assignment arrives before the first one runs** (the second manifest replaces the first), so the provider is slashed for the first. The server sends one job at a time, so this needs a server bug to trigger. | Low | `test_chain_and_dispatch.py` (expected failure) | Keep a manifest per job in `RunManager`. |
 
-**Found by reading code (no test yet):**
+**Found by reading code:**
 | # | Issue | Severity |
 |---|---|---|
 | B6 | **Tied consensus picks an arbitrary winner.** The contract accepts any split where the top answer has ≥ k matches; it doesn't require a majority. A 4-provider job needing 2 matches can split 2–2, and the first-revealed answer wins while the other pair is slashed. `OffBalanceEdges.t.sol` pins down today's behaviour until the team decides. | Medium (design decision) |
-| B7 | **Escrow and payout don't follow hourly rates.** The UI's "hourly cap per provider" is escrowed as the whole job price and split equally among winners. | Medium (design decision) |
+| B7 | ✅ **Fixed in [#40](https://github.com/culinaryAmphibian/offbalance/pull/40).** **Escrow and payout followed different pricing rules.** The wallet now funds the full booked window for all requested providers. Settlement pays eligible providers at their booked rates and refunds unused escrow. Verified by `OffBalancePricing.t.sol` and `system-full-stack.test.ts`. Requires the updated contract for new quoted jobs. | Medium |
 
 **Load observation (not a bug at demo scale):** one matching pass over 2,000 providers and 500 queued jobs takes about 8 s, because every job re-sorts every provider and recomputes scores inside the sort, on the server's event loop (`load.test.ts`). A burst of 200 heartbeats with 40 waiting jobs settles in about 3 s against MongoDB. Worth fixing only if the marketplace grows: score each provider once per pass.
 
@@ -131,8 +131,8 @@ Priorities: **P1** = before the final demo/submission; **P2** = during the testi
 
 | Pri | Test | Type | What it catches |
 |---|---|---|---|
-| P1 | Merge `test-coverage`; fix B1 and B2 and remove `todo` from their tests. | — | — |
-| ✅ P1 | **Restart recovery (B5):** start a job, stop the server mid-commit and mid-reveal, restart it, and check the orchestrator advances the job from `getDeadlines`. Write it as `todo`, then make it pass. | Integration (e2e harness) | Stalled jobs after a restart |
+| ✅ P1 | B1 and B2 regression tests run normally after their fixes. | Integration | Job ID drift and Docker build crashes |
+| ✅ P1 | **Restart recovery (B5):** restart the coordinator after the commit phase is checkpointed and verify the job advances through payout. | Integration (e2e harness) | Stalled jobs after a restart |
 | ✅ P1 | Chain e2e with the current contract's staking phase: a provider that never stakes is dropped; too few stakers → NO_QUORUM; the server finalizes early once everyone stakes. | E2E (`e2e-chain.test.ts`) | Orchestrator/staking regressions |
 | ✅ P1 | Concurrency: a buyer cancels while the matcher claims the same job; two deliveries while the job moves to PAYOUT; many simultaneous `POST /jobs`. Assert exactly one winner each time. | Integration | Races in the status updates |
 | ✅ P2 | Event monitor (already covered by `blockchain-manager.test.js`): a reorg stops the monitor; `CHAIN_CONFIRMATIONS > 0` holds events back; a gap in blocks after downtime is caught up from the checkpoint. | Integration | Missed or duplicated events |
@@ -159,7 +159,7 @@ Priorities: **P1** = before the final demo/submission; **P2** = during the testi
 
 | Pri | Test | Type | What it catches |
 |---|---|---|---|
-| ✅ P1 | **Browser test against a real chain** (`chain-browser.cjs`; found B16, B17): an injected wallet fixture signing with dev keys runs submit to chain → status updates → cancel on chain → authorize a session key → collect funds. Today's browser tests have no chain. | E2E (Playwright) | Wallet-flow regressions |
+| ✅ P1 | **Browser test against a real chain** (`chain-browser.cjs`): verifies B16 by canceling on-chain without reloading and B17 by checking the withdrawal confirmation and updated balance. | E2E (Playwright) | Wallet-flow regressions |
 | ✅ P1 | Job status view shows every server status correctly (PENDING through PAYOUT, CANCELED, NO_QUORUM) and refreshes within the 5 s poll. | Component (React Testing Library) or browser | Wrong or stuck status display |
 | ✅ P2 | Component tests (`test/components/*.spec.jsx`, all five components): `JobForm` (validation, USD conversion, GPU fields), `JobDetail`, `ProviderSetup`, `SessionKeyPanel` (key shown once, revoke), `CollectFunds` (wrong account, nothing to collect). | Component | UI logic bugs |
 | ✅ P2 | MetaMask errors (`wallet.test.js` and the component tests): user rejects, wrong network, chain restarted (nonce errors) all show a clear message. | Unit / browser | Unhelpful errors at the demo |
@@ -219,7 +219,7 @@ Priorities: **P1** = before the final demo/submission; **P2** = during the testi
 
 **The testing phase is done when:**
 - Every P1 test is written and passing, and every P2 test is written or explicitly deferred.
-- B1, B2 and B5 are fixed, and B6 and B7 have a team decision (fixed, or documented as a limitation).
+- B1, B2, B5 and B7 are fixed. B6 still needs a team decision.
 - No test is skipped in CI except the real-GPU test.
 - The multi-machine checklist (Section 8) passes twice in a row on the demo network.
 
