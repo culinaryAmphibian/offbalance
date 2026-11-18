@@ -11,7 +11,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { createRequire } = require('node:module');
 const { pathToFileURL } = require('node:url');
-const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
+// BROWSER=firefox|webkit runs the same checks in another engine (default chromium)
+const engine = require(process.env.PLAYWRIGHT_MODULE || 'playwright')[process.env.BROWSER || 'chromium'];
+const sandboxArgs = (process.env.BROWSER || 'chromium') === 'chromium' ? ['--no-sandbox'] : [];
 const root = path.resolve(__dirname, '../..');
 const serverRequire = createRequire(path.join(root, 'server/package.json'));
 const mongoose = serverRequire('mongoose');
@@ -105,7 +107,7 @@ async function stop(child) {
     const dev = Object.fromEntries((await fs.readFile(path.join(root, 'dev.env'), 'utf8')).split('\n')
       .filter(line => /^[A-Z_0-9]+=/.test(line)).map(line => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1)]; }));
     const accounts = [dev.BUYER_PRIVATE_KEY, dev.PROVIDER_1_PRIVATE_KEY].map(privateKeyToAccount);
-    browser = await chromium.launch({ headless: true, args: ['--no-sandbox'],
+    browser = await engine.launch({ headless: true, args: sandboxArgs,
       ...(process.env.BROWSER_EXECUTABLE ? { executablePath: process.env.BROWSER_EXECUTABLE } : {}) });
     const context = await browser.newContext({ viewport: { width: 1280, height: 960 } });
     await context.exposeBinding('signWalletMessage', async (_source, index, raw) => accounts[index].signMessage({ message: { raw } }));

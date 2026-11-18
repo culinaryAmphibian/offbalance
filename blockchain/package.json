@@ -7,7 +7,9 @@
     "chain": "hardhat node",
     "deploy:local": "hardhat run scripts/deploy-local.ts --network localhost",
     "dev": "bash scripts/dev.sh",
-    "test": "hardhat test"
+    "test": "hardhat test",
+    "test:gas": "hardhat test solidity --gas-stats",
+    "test:coverage": "hardhat test solidity --coverage"
   },
   "keywords": [],
   "author": "",
