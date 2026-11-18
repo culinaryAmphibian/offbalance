@@ -15,6 +15,7 @@ import { Builder } from "../services/builder.ts";
 import type { Chain } from "../services/chain.ts";
 import { handleChainEvent } from "../services/events.ts";
 import { Matcher } from "../services/matcher.ts";
+import { unfinishedPhaseJobIds } from "../services/phase-recovery.ts";
 
 const uri = process.env.MONGODB_URI;
 const BUYER = `0x${"1".repeat(40)}`;
@@ -117,6 +118,21 @@ describe("contract events and database jobs", { skip: !uri && "set MONGODB_URI t
 		await handleChainEvent({ name: "CANCELED", args: { jobId: 1n }, blockNumber: 2n }, matcher);
 		assert.equal((await byName("saved second")).status, JobStatus.CANCELED);
 		assert.equal((await byName("saved first")).status, JobStatus.PENDING);
+	});
+
+	test("restart recovery uses confirmed contract IDs and ignores unfunded quotes", async () => {
+		const draft = await saveJob("unfunded");
+		await JobModel.updateOne({ onChainJobId: draft.id }, { $set: { status: JobStatus.STAKING } });
+		const funded = await saveJob("funded");
+		await submittedOnChain(7, funded);
+		await JobModel.create({
+			onChainJobId: 9, owner: (await byName("funded")).owner, submittedAt: new Date(),
+			dockerImageDigest: DIGEST, maxPrice: "1", minNodesToRunOn: 1, minNodesToAgree: 1, timeWindow: 60,
+		});
+		assert.deepEqual((await unfinishedPhaseJobIds()).sort((a, b) => a - b), [7, 9]);
+
+		await handleChainEvent({ name: "CANCELED", args: { jobId: 7n }, blockNumber: 2n }, matcher);
+		assert.deepEqual(await unfinishedPhaseJobIds(), [9]);
 	});
 
 	test("wrong-wallet and mismatched funding cannot start work", async () => {
