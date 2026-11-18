@@ -135,10 +135,11 @@ export class Chain {
 		}
 		// Simulate first so a failing require() surfaces with its reason before any gas is spent.
 		await this.publicClient.simulateContract({ address, abi, functionName, args, account });
-		const { hash, receipt } = await (async () => {
-			const hash = await wallet.writeContract({ address, abi, functionName, args, account, chain: null });
-			return { hash, receipt: await this.publicClient.waitForTransactionReceipt({ hash }) };
-		})().catch(error => { throw retainUnconfirmed ? new ChainWriteUnconfirmedError(functionName, error) : error; });
+		const classifyWriteError = (error: unknown): never => {
+			throw retainUnconfirmed ? new ChainWriteUnconfirmedError(functionName, error) : error;
+		};
+		const hash = await wallet.writeContract({ address, abi, functionName, args, account, chain: null }).catch(classifyWriteError);
+		const receipt = await this.publicClient.waitForTransactionReceipt({ hash }).catch(classifyWriteError);
 		if (receipt.status !== "success") throw new Error(`${functionName} reverted (tx ${hash})`);
 	}
 
