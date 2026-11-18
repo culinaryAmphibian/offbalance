@@ -48,6 +48,21 @@ test('stored job submission encodes the real contract call and escrows the exact
   assert.deepEqual(decoded.args, [parseEther(job().maxPrice), 2n, 3n, 3600n, image]);
 });
 
+test('quoted jobs round each provider up in wei and escrow the full window', async () => {
+  const provider = mockWallet();
+  const quoteId = `0x${'a1'.repeat(32)}`;
+  const saved = { ...job(), quoteId, window: 1800, totalEscrow: '0.000000000000000186' };
+  await submitStoredJob(saved, config(), provider);
+  const [transaction] = sent(provider)[0].params;
+  assert.equal(BigInt(transaction.value), 186n);
+  const quoted = [{ ...abi[0], name: 'submitQuotedJob', inputs: [
+    { name: 'quoteId', type: 'bytes32' }, { name: 'maxHourlyRate', type: 'uint256' }, ...abi[0].inputs.slice(1),
+  ] }];
+  assert.deepEqual(decodeFunctionData({ abi: quoted, data: transaction.data }).args, [quoteId, 123n, 2n, 3n, 1800n, image]);
+  await assert.rejects(submitStoredJob({ ...saved, totalEscrow: saved.maxPrice }, config(), provider), /escrow does not match/);
+  assert.equal(sent(provider).length, 1);
+});
+
 test('wrong wallet network rejects before sending a transaction', async () => {
   const provider = mockWallet({ chains: ['0x1'] });
   await assert.rejects(submitStoredJob(job(), config(), provider), /Switch your wallet to chain 31337/);

@@ -37,6 +37,7 @@ const payoutSchema = new Schema(
 	{
 		provider: { type: Schema.Types.ObjectId, ref: "Account", required: true },
 		amount: money({ required: true }), // ETH
+		slashReward: money(),
 	},
 	{ _id: false },
 );
@@ -56,8 +57,13 @@ async function otherField(query: Query<unknown, unknown>, field: string, sort: 1
 
 const jobSchema = new Schema(
 	{
-		// the id used everywhere else: contract calls, events, the client's /jobManifest/:jobId
+		// Stable API id (also the contract id on older jobs).
 		onChainJobId: { type: Number, required: true, unique: true, min: 0 },
+		// New quotes bind the server's saved job to the wallet and actual contract-assigned id.
+		quoteId: { type: String, unique: true, sparse: true, immutable: true },
+		buyerWallet: { type: String, lowercase: true, immutable: true },
+		contractJobId: { type: Number, unique: true, sparse: true, min: 1 },
+		fundingError: String,
 		name: { type: String, trim: true, maxlength: 120, default: "" },
 		requestKey: { type: String },
 		requestHash: { type: String },
@@ -65,6 +71,12 @@ const jobSchema = new Schema(
 		status: { type: String, enum: JOB_STATUSES, default: JobStatus.PENDING },
 		submittedAt: { type: Date, default: null }, // JOB_SUBMITTED seen on-chain; only then is it matched
 		providers: { type: [{ type: Schema.Types.ObjectId, ref: "Account" }], default: [] },
+		assignedRates: { type: [new Schema({
+			provider: { type: Schema.Types.ObjectId, required: true },
+			wallet: { type: String, lowercase: true, required: true },
+			hourlyRate: { type: String, required: true },
+			bookedCharge: { type: String, required: true },
+		}, { _id: false })], default: [] },
 
 		dockerImageDigest: {
 			type: String,
@@ -118,6 +130,8 @@ const jobSchema = new Schema(
 		results: { type: [providerResultSchema], default: [] },
 		// settlement, from the contract's PAID and DELIVERED / NO_QUORUM / CANCELED events
 		payouts: { type: [payoutSchema], default: [] },
+		workCharged: money(),
+		buyerRefund: money(),
 		settledAt: { type: Date, default: null },
 	},
 	{ timestamps: { createdAt: true, updatedAt: false } },
@@ -137,3 +151,12 @@ jobSchema.index({ providers: 1, status: 1 }); // provider's jobs, busy check
 
 export type Job = InferSchemaType<typeof jobSchema>;
 export const JobModel = model("Job", jobSchema);
+
+export function contractJobId(job: Pick<Job, "onChainJobId" | "contractJobId">): number {
+	return job.contractJobId ?? job.onChainJobId;
+}
+
+export async function findContractJob(jobId: number, includeLegacy = true) {
+	const linked = await JobModel.findOne({ contractJobId: jobId });
+	return !linked && includeLegacy ? await JobModel.findOne({ onChainJobId: jobId, quoteId: null }) : linked;
+}

@@ -4,6 +4,7 @@ import { after, before, beforeEach, describe, test } from 'node:test';
 import mongoose from 'mongoose';
 import { MongoRepository } from '../adapters/repository.ts';
 import { AccountModel, HardwareModel, JobModel, JobStatus } from '../models/index.ts';
+import { ChainWriteUnconfirmedError } from '../services/chain.ts';
 import { Matcher } from '../services/matcher.ts';
 import { hardwareFields } from './helpers/hardware.ts';
 
@@ -240,5 +241,30 @@ describe('MongoDB scheduler integration', { skip: !uri }, () => {
       assert.equal(matcher.manager.pool.get(machine.wallet)?.busyJobId, '1');
     }
     assert.equal(matcher.manager.queue.peek(), null);
+  });
+  test('unconfirmed quoted assignment retains the exact wallet and rate without rematching', async () => {
+    const buyer = await account(1);
+    const selected = await provider(2, 0.1);
+    const quoted = await job(buyer._id, 2, { quoteId: 'quoted', contractJobId: 74 });
+    let calls = 0;
+    const matcher = new Matcher({
+      supportsQuotedPricing: true,
+      async assignProviders() { assert.fail('quoted job used legacy assignment'); },
+      async assignQuotedProviders(id, providers, rates) {
+        calls++;
+        assert.equal(id, 74);
+        assert.deepEqual(providers, [selected.wallet]);
+        assert.deepEqual(rates, [100_000_000_000_000_000n]);
+        throw new ChainWriteUnconfirmedError('assignQuotedProviders', new Error('response lost'));
+      },
+    }, { now: () => epoch });
+    await matcher.heartbeat(selected.wallet);
+    const persisted = await JobModel.findById(quoted._id).orFail();
+    assert.equal(persisted.assignedRates[0]?.wallet, selected.wallet);
+    assert.equal(persisted.assignedRates[0]?.hourlyRate, '0.1');
+    assert.equal((await matcher.repository.getActiveAssignment(String(selected.owner._id)))?.id, '74');
+    await matcher.ping();
+    assert.equal(calls, 1);
+    assert.equal(matcher.manager.pool.get(selected.wallet)?.busyJobId, '2');
   });
 });

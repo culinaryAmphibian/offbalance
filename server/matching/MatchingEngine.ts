@@ -16,6 +16,10 @@ export function parseEthAmount(value: unknown): bigint {
   return BigInt(whole) * WEI_PER_ETH + BigInt(fraction.padEnd(18, '0'));
 }
 
+export function bookedCharge(rateWei: bigint, seconds: number): bigint {
+  return (rateWei * BigInt(seconds) + 3599n) / 3600n;
+}
+
 export function formatEthAmount(wei: bigint): string {
   const fraction = String(wei % WEI_PER_ETH).padStart(18, '0').replace(/0+$/, '');
   return `${wei / WEI_PER_ETH}${fraction ? `.${fraction}` : ''}`;
@@ -66,7 +70,7 @@ export function quoteProviders(job: SchedulingJob, providers: AvailableProvider[
   if (!Number.isSafeInteger(job.window) || job.window <= 0) throw new TypeError('Execution window must be positive integer seconds.');
   const quotes = providers.map(provider => {
     const rateWei = parseEthAmount(provider.pricePerHour);
-    const costWei = (rateWei * BigInt(job.window) + 3599n) / 3600n;
+    const costWei = bookedCharge(rateWei, job.window);
     return { wallet: provider.wallet, rateWei: String(rateWei), pricePerHour: provider.pricePerHour, costWei: String(costWei), cost: formatEthAmount(costWei) };
   });
   const total = quotes.reduce((sum, provider) => sum + BigInt(provider.costWei), 0n);

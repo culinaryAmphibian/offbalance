@@ -51,6 +51,7 @@ export class Stack {
 	address!: Address;
 	abi!: Abi;
 	private readonly ca: Buffer;
+	private readonly contractIds = new Map<number, bigint>();
 
 	constructor(config: StackConfig) {
 		this.config = config;
@@ -108,7 +109,7 @@ export class Stack {
 	}
 
 	status(jobId: number): Promise<number> {
-		return this.read<number>("getJobStatus", [BigInt(jobId)]);
+		return this.read<number>("getJobStatus", [this.contractId(jobId)]);
 	}
 
 	credits(address: Address): Promise<bigint> {
@@ -116,14 +117,18 @@ export class Stack {
 	}
 
 	requiredStake(jobId: number, provider: Address): Promise<bigint> {
-		return this.read<readonly unknown[]>("getProviderCommitment", [BigInt(jobId), provider]).then(c => c[4] as bigint);
+		return this.read<readonly unknown[]>("getProviderCommitment", [this.contractId(jobId), provider]).then(c => c[4] as bigint);
 	}
 
 	// ───────────── the buyer ─────────────
 
-	// Saves the job, then submits it from the buyer's wallet with the same arguments as the
-	// frontend: the escrow is maxPrice, and the contract's k/quorum are the API's
-	// minNodesToAgree/minNodesToRun.
+	contractId(id: number): bigint {
+		const contractId = this.contractIds.get(id);
+		if (!contractId) throw new Error(`No on-chain job associated with saved job ${id}`);
+		return contractId;
+	}
+
+	// Save the job and fund the confirmed quote from the buyer's wallet.
 	async submitJob(job: { name: string; command: string[]; providers: number; agree: number; window: number; maxPrice: string; image?: string }): Promise<number> {
 		const saved = await this.api("POST", "/jobs", { body: {
 			name: job.name, image: job.image ?? "alpine:3.20", command: job.command, maxPrice: job.maxPrice,
@@ -131,20 +136,20 @@ export class Stack {
 		} });
 		if (saved.status !== 201) throw new Error(`POST /jobs: ${saved.status} ${JSON.stringify(saved.body)}`);
 		const id = Number(saved.body.job.id);
-		const price = parseEther(job.maxPrice);
-		const hash = await this.buyer.writeContract({ address: this.address, abi: this.abi, functionName: "submitJob",
-			args: [price, BigInt(job.agree), BigInt(job.providers), BigInt(job.window), saved.body.job.dockerImageDigest],
+		const quote = saved.body.job;
+		const price = parseEther(quote.totalEscrow);
+		const hash = await this.buyer.writeContract({ address: this.address, abi: this.abi, functionName: "submitQuotedJob",
+			args: [quote.quoteId, parseEther(job.maxPrice), BigInt(job.agree), BigInt(job.providers), BigInt(job.window), quote.dockerImageDigest],
 			value: price, account: this.buyer.account!, chain: null });
 		const receipt = await this.rpc.waitForTransactionReceipt({ hash });
-		const [submitted] = await this.rpc.getContractEvents({ address: this.address, abi: this.abi, eventName: "JOB_SUBMITTED",
+		const [submitted] = await this.rpc.getContractEvents({ address: this.address, abi: this.abi, eventName: "QUOTED_JOB_SUBMITTED",
 			fromBlock: receipt.blockNumber, toBlock: receipt.blockNumber }) as unknown as { args: { jobId: bigint } }[];
-		// TESTING_PLAN.md B1: the database and the contract number jobs separately
-		if (Number(submitted.args.jobId) !== id) throw new Error(`the server saved job ${id} but the contract calls it ${submitted.args.jobId} (B1)`);
+		this.contractIds.set(id, submitted.args.jobId);
 		return id;
 	}
 
 	cancelOnChain(jobId: number): Promise<void> {
-		return this.send(this.buyer, "cancelJob", [BigInt(jobId)]);
+		return this.send(this.buyer, "cancelJob", [this.contractId(jobId)]);
 	}
 
 	async waitForStatus(jobId: number, wanted: number[], timeoutMs: number): Promise<number> {

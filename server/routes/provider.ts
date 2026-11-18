@@ -10,6 +10,7 @@ import { requireAuth } from "../middleware/auth.ts";
 import { HardwareModel, JobModel, JobStatus, TutorialModel, type Hardware } from "../models/index.ts";
 import { formulaPrice, similarMachines, type HardwareProfile } from "../services/hardware.ts";
 import { providerControlRoutes } from "../services/providers.ts";
+import { contractJobId } from "../models/Job.ts";
 import { loadJob, type Deps } from "./deps.ts";
 import { serializeHardware, serializeResults } from "./serialize.ts";
 
@@ -95,7 +96,7 @@ export function providerRoutes({ chain, matcher, results }: Deps): Router {
 
 	// Identity, assignment and phase are checked before buffering the archive.
 	router.post("/provider/results/:jobId", requireAuth, async (req, res, next) => {
-		const job = await loadJob(req, res);
+		const job = await loadJob(req, res, Boolean(chain));
 		if (!job) return;
 		const me = res.locals.account._id;
 		if (!job.providers.some(p => p.equals(me))) {
@@ -145,13 +146,18 @@ export function providerRoutes({ chain, matcher, results }: Deps): Router {
 			res.status(410).json({ error: "the stored result has expired" });
 			return;
 		}
-		const hw = chain ? await HardwareModel.findOne({ userRef: me }) : null;
-		const provider = hw?.address ?? res.locals.wallet;
+		const pinned = job.assignedRates.find(rate => rate.provider.equals(me))?.wallet;
+		if (chain && job.quoteId && !pinned) {
+			res.status(409).json({ error: "the provider wallet is missing from the recorded quote" });
+			return;
+		}
+		const hw = chain && !job.quoteId ? await HardwareModel.findOne({ userRef: me }) : null;
+		const provider = pinned ?? hw?.address ?? res.locals.wallet;
 		const receiptMode = !chain ? 'local' : chain.supportsDeliveryReceipts === false ? 'offchain' : 'onchain';
 		let delivered = receiptMode === 'onchain' && (previous?.receiptVerified ?? false);
 		if (chain) {
 			try {
-				const state = await chain.getProviderDeliveryState(job.onChainJobId, provider);
+				const state = await chain.getProviderDeliveryState(contractJobId(job), provider);
 				if (!state.revealed || !state.agreed || state.outputHash.toLowerCase() !== keccak256(`0x${archive.hash}`)) {
 					res.status(422).json({ error: "uploaded output does not match the provider's agreed on-chain result" });
 					return;
@@ -202,7 +208,7 @@ export function providerRoutes({ chain, matcher, results }: Deps): Router {
 			}
 		}
 		if (chain && receiptMode === 'onchain' && !delivered) {
-			try { await chain.verifyReceipt(job.onChainJobId, provider); delivered = true; }
+			try { await chain.verifyReceipt(contractJobId(job), provider); delivered = true; }
 			catch { /* Keep verified bytes; an identical retry resumes the receipt. */ }
 		}
 		await JobModel.updateOne({ _id: job._id, results: { $elemMatch: { provider: me, archiveHash: archive.archiveHash } } }, {

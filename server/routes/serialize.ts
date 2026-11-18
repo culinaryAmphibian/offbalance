@@ -3,6 +3,8 @@ import type { Types } from "mongoose";
 import { formatEther, parseEther } from "viem";
 import { decimalString } from "../models/decimal.ts";
 import { JobStatus } from "../models/JobStatus.ts";
+import { contractJobId } from "../models/Job.ts";
+import { pricingQuote } from "../pricing.ts";
 import type { Account, Hardware, Job } from "../models/index.ts";
 import { REFERENCE, relativeScores, type HardwareProfile } from "../services/hardware.ts";
 
@@ -32,7 +34,7 @@ export function deliveryState(job: WithId<Job>) {
 export function paymentState(job: WithId<Job>) {
 	const settledAt = job.settledAt ?? null;
 	const payouts = (job.payouts ?? []).filter(p => p.amount != null)
-		.map(p => ({ provider: String(p.provider), amount: decimalString(p.amount!) }));
+		.map(p => ({ provider: String(p.provider), amount: decimalString(p.amount!), ...(p.slashReward ? { slashReward: dec(p.slashReward) } : {}) }));
 	const paid = sumEth(payouts.map(p => p.amount));
 	let status: string;
 	if (job.status === JobStatus.PAYOUT) status = "PAID";
@@ -41,7 +43,7 @@ export function paymentState(job: WithId<Job>) {
 	else if (job.submittedAt) status = "ESCROWED";
 	else status = "NOT_STARTED";
 	return { status, settledAt: status === "PAID" || status === "REFUNDED" ? settledAt : null,
-		paidToProviders: status === "PAID" ? paid : null, payouts };
+		paidToProviders: status === "PAID" ? paid : null, ...(job.buyerRefund ? { buyerRefund: dec(job.buyerRefund) } : {}), payouts };
 }
 
 // exact decimal ETH sum, through wei
@@ -55,6 +57,11 @@ export function serializeJob(job: WithId<Job>) {
 	const payment = paymentState(job);
 	return {
 		id: job.onChainJobId,
+		...(job.contractJobId != null ? { onChainJobId: contractJobId(job) } : {}),
+		...(job.quoteId ? { totalEscrow: pricingQuote(job).escrow, fundingError: job.fundingError } : {}),
+		...(job.quoteId ? { assignedRates: job.assignedRates.map(rate => ({
+			provider: String(rate.provider), hourlyRate: rate.hourlyRate, bookedCharge: rate.bookedCharge,
+		})) } : {}),
 		name: job.name,
 		owner: String(job.owner),
 		status: job.status,
@@ -76,7 +83,7 @@ export function serializeJob(job: WithId<Job>) {
 		delivery: deliveryState(job),
 		payment,
 		// what the buyer ended up paying: the escrowed price once settled, nothing if refunded
-		spent: payment.status === "PAID" ? dec(job.maxPrice) : payment.status === "REFUNDED" ? "0" : null,
+		spent: payment.status === "PAID" ? dec(job.workCharged ?? job.maxPrice) : payment.status === "REFUNDED" ? "0" : null,
 		result: result ? { available: true, filename: result.filename, hash: result.hash,
 			size: result.size, deliveryTime: result.deliveryTime, retainedUntil: result.retainedUntil,
 			receiptVerified: result.receiptVerified, receiptMode: result.receiptMode } : { available: false },

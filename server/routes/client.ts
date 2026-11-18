@@ -3,7 +3,8 @@
 import { Router } from "express";
 import { numericJobId } from "../adapters/repository.ts";
 import { requireAuth } from "../middleware/auth.ts";
-import { HardwareModel, JobModel } from "../models/index.ts";
+import { HardwareModel } from "../models/index.ts";
+import { findContractJob } from "../models/Job.ts";
 import { readDeployment } from "../services/chain.ts";
 import { parseProfile, ProfileError } from "../services/hardware.ts";
 import type { Deps } from "./deps.ts";
@@ -58,7 +59,7 @@ export function clientRoutes({ matcher }: Deps): Router {
 			res.status(400).json({ error: "jobId must be a non-negative integer" });
 			return;
 		}
-		const job = await JobModel.findOne({ onChainJobId: jobId });
+		const job = await findContractJob(jobId);
 		if (!job) {
 			res.status(404).json({ error: `no job ${jobId}` });
 			return;

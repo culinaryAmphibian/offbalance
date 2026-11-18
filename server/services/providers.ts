@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { numericJobId } from '../adapters/repository.ts';
 import { requireAuth } from '../middleware/auth.ts';
 import { loadJob } from '../routes/deps.ts';
+import { contractJobId } from '../models/Job.ts';
 import type { Matcher } from './matcher.ts';
 
 /** Provider control shares the API's HTTPS listener and bearer authentication. */
@@ -19,9 +20,9 @@ export function providerControlRoutes(matcher: Matcher): Router {
         res.status(400).json({ error: 'jobId must be a non-negative safe integer' });
         return;
       }
-      const job = await loadJob(req, res);
+      const job = await loadJob(req, res, true);
       if (!job) return;
-      const assignment = await matcher.repository.getAssignedJob(job.onChainJobId, String(res.locals.account._id));
+      const assignment = await matcher.repository.getAssignedJob(contractJobId(job), String(res.locals.account._id));
       if (!assignment) {
         res.status(403).json({ error: 'this job is not assigned to the provider' });
         return;
