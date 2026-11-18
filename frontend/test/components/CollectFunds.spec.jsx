@@ -29,16 +29,13 @@ describe('CollectFunds', () => {
     expect(onCollected).toHaveBeenCalled();
   });
 
-  // B17: the app renders inside <StrictMode> (src/main.jsx), which mounts components twice in
-  // development (the Vite dev server, which the demo and the Docker frontend use). CollectFunds
-  // only ever sets its `active` ref to false, so after the double mount every update is dropped:
-  // the money is withdrawn, but the button stays on "Check your wallet…" and nothing confirms it.
-  test.fails('under StrictMode, a collection is confirmed and the button comes back', async () => {
+  test('under StrictMode, a collection is confirmed and the button comes back', async () => {
     collectFunds.mockResolvedValue({ hash: '0xabc', wei: parseEther('0.0065') });
     const state = chain({ wallet: WALLET, account: WALLET, credits: parseEther('0.0065'), stake: 0n });
     render(<StrictMode><CollectFunds chain={state} /></StrictMode>);
     fireEvent.click(screen.getByRole('button', { name: 'Collect funds' }));
-    expect(await screen.findByText('Collected 0.007 ETH to your wallet.', {}, { timeout: 1000 })).toBeTruthy();
+    expect(await screen.findByText('Collected 0.007 ETH to your wallet.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Collect funds' }).disabled).toBe(false);
   });
 
   test('nothing to collect: the button is disabled', () => {

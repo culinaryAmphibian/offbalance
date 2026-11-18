@@ -33,8 +33,8 @@ export default function JobDetail({ api, id, notice }) {
   const [refundPending, setRefundPending] = useState(false);
   const [refundNotice, setRefundNotice] = useState('');
   const onChain = job?.executionMode === 'chain' && !!job.submittedAt;
-  // hidden while this page's own submitJob is in flight: the server hasn't seen the escrow yet
-  const showCancel = !!job?.canCancel && !transaction && !chainPending;
+  // Use on-chain cancellation once the coordinator records the submission.
+  const showCancel = !!job?.canCancel && !chainPending && (onChain || !transaction);
   // a canceled or unmatched on-chain job: the contract credited the escrow back to the buyer
   const showRefund = onChain && !job.canCancel && job.canViewResults !== false && ['CANCELED', 'NO_QUORUM'].includes(job.status);
 

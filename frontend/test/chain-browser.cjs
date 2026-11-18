@@ -194,10 +194,6 @@ const until = async (what, probe, timeout = 30000) => {
     await check('the page follows the chain: once the server sees the submission it offers an on-chain cancel', async () => {
       // the submission panel goes once the server has seen JOB_SUBMITTED
       await until('the server to see the submission', async () => !(await page.getByRole('region', { name: 'Blockchain submission' }).isVisible()), 30000);
-      // B16: the page that sent the transaction keeps the cancel button hidden until it's reloaded.
-      // The session lives only in memory, so a reload signs the buyer out: sign in again.
-      await page.reload();
-      await signIn();
       await page.getByRole('button', { name: 'Cancel job and refund escrow' }).waitFor();
     });
 
@@ -258,9 +254,8 @@ const until = async (what, probe, timeout = 30000) => {
       await until('the collectable amount', async () => (await page.locator('.collect-amount').textContent()).startsWith('0.010'), 30000);
       const before = await rpc.getBalance({ address: provider });
       await page.getByRole('button', { name: 'Collect funds' }).click();
-      // B17: under the dev server's StrictMode this page never confirms the collection (the
-      // button stays on "Check your wallet…"), so check the money instead of the message.
-      await until('the withdrawal on chain', async () => await read('credits', [provider]) === 0n, 30000);
+      await expectNotice('Collected 0.010 ETH to your wallet.');
+      assert.equal(await read('credits', [provider]), 0n);
       const gained = (await rpc.getBalance({ address: provider })) - before;
       assert.ok(gained > PRICE - parseEther('0.001') && gained <= PRICE, `the wallet gained ${formatEther(gained)} ETH`);
       await until('the collectable amount to drop to zero', async () => (await page.locator('.collect-amount').textContent()).startsWith('0.000'), 30000);
