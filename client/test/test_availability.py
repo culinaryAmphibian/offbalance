@@ -2,6 +2,7 @@ import contextlib
 import io
 from pathlib import Path
 import sys
+import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
@@ -10,6 +11,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ProviderClient import ProviderClient
+from blockchain.State import ProviderState
 from server.ServerManager import ServerManager
 
 
@@ -118,6 +120,46 @@ class AvailabilityTests(unittest.TestCase):
         self.assertEqual(self.sent, 1)
         self.assertTrue(self.stop.is_set())
         self.assertFalse(any(t.name == 'provider-heartbeat' for t in threading.enumerate()))
+
+    def test_restarted_provider_waits_for_and_reveals_before_benchmarking(self):
+        with tempfile.TemporaryDirectory() as folder:
+            state = ProviderState({'chain_id': 1, 'genesis': 'test', 'signer': 'test'}, b'seed', folder)
+            self.addCleanup(state.close)
+            state.update(lambda data: data.update(registered_gpus=[]))
+            self.blockchain.state = state
+            self.blockchain.assert_assignment_identity = Mock()
+            revealed = threading.Event()
+            phases = iter(('wait', 'reveal'))
+
+            def actions(**_kwargs):
+                action = next(phases, None)
+                if action is None and not revealed.is_set():
+                    action = 'wait'
+                return [(7, action, 0)] if action else []
+
+            def reveal(job_id):
+                self.assertEqual(job_id, 7)
+                self.benchmark.do_benchmark.assert_not_called()
+                self.server.post_benchmark.assert_not_called()
+                revealed.set()
+
+            def benchmark():
+                self.assertTrue(revealed.is_set())
+                self.stop.set()
+                return Mock(gpus=[])
+
+            self.blockchain.recovery_actions.side_effect = actions
+            self.blockchain.reveal.side_effect = reveal
+            self.benchmark.do_benchmark.side_effect = benchmark
+            client = ProviderClient(self.benchmark, self.blockchain, self.server, Mock())
+            limit = threading.Timer(8, self.stop.set)
+            limit.start()
+            try:
+                client.run(self.stop)
+            finally:
+                limit.cancel()
+            self.blockchain.reveal.assert_called_once_with(7)
+            self.benchmark.do_benchmark.assert_called_once()
 
     def test_heartbeat_uses_separate_authenticated_session_and_verified_https(self):
         manager = ServerManager('https://localhost:5000/', 'provider-token')

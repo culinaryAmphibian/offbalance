@@ -68,6 +68,15 @@ Temporary network/server errors retry at the next heartbeat. Invalid/revoked
 credentials (401/403) and TLS trust failures stop the client. When the client
 stops or loses connectivity, availability expires automatically.
 
+After a restart, the client checks its saved assignments and their current
+contract phases. It reconnects to its existing job container when possible and
+uses the saved result to reveal a commitment. Keep the same session key, Docker
+daemon, and `~/.offbalance` data directory until the job settles. If you set
+`OFFBALANCE_STATE_DIR`, preserve that directory as well. The original on-chain
+deadlines still apply. Previously registered clients recover active work before
+running a new benchmark. If a chain reorganization removes the recorded
+assignment, the client stops recovery for operator review.
+
 Test availability and execution handling without a running Docker daemon or blockchain node:
 
 ```bash

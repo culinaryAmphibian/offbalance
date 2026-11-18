@@ -115,6 +115,7 @@ def main():
 
     # 2. the server identifies us by the API key and tells us which contract to use
     s_mgr = ServerManager(BASE_URL, creds.api_key)
+    bc_mgr = None
     try:
         addr_str, contract_abi = ask_for_contract(s_mgr)
         contract_addr = Web3.to_checksum_address(addr_str)
@@ -126,13 +127,16 @@ def main():
         creds = creds.with_owner(resolve_owner(contract, w3, creds, args.dev))
 
         # 4. managers built from the credentials
-        bc_mgr = BlockchainManager(w3, contract, creds)
+        state_dir = os.environ.get('OFFBALANCE_STATE_DIR', str(Path.home() / '.offbalance' / 'providers'))
+        bc_mgr = BlockchainManager(w3, contract, creds, state_dir=state_dir)
         print(f"Provider {creds.owner} (signing with {creds.session_address}) listening to {contract_addr}")
 
         print("Client started...")
         mediator = ProviderClient(be_mgr, bc_mgr, s_mgr, RunManager(), credentials=creds)
         mediator.run()
     finally:
+        if bc_mgr is not None:
+            bc_mgr.close()
         s_mgr.close()
 
 if __name__ == "__main__":

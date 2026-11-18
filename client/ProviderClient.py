@@ -1,13 +1,18 @@
 # mediator design pattern - holds references to all managers and governs their interactions
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import TYPE_CHECKING
+from benchmark.HardwareProfile import GpuInfo
 from blockchain.EventData import *
 import requests
 import sys
 import threading
 import time
 from server.ServerManager import DeliveryError
+from blockchain.Contract import TransactionFailed, TransactionRetry
+from blockchain.State import ExecutionPaused, ProviderState
+from web3.exceptions import Web3RPCError
 
 if TYPE_CHECKING:
     from benchmark.BenchmarkManager import BenchmarkManager
@@ -19,6 +24,7 @@ if TYPE_CHECKING:
 HEARTBEAT_INTERVAL_SECONDS = 10
 # leave this long before the commit deadline for the commitment transaction to land
 COMMIT_MARGIN_SECONDS = 2
+RECOVERY_RETRY_ERRORS = (requests.RequestException, TransactionRetry, TransactionFailed, Web3RPCError)
 
 class WalletMismatch(RuntimeError):
     pass
@@ -37,21 +43,15 @@ class ProviderClient():
         self._results = {}
         self._delivering = set()
         self._stop_event = None
+        self._workers = set()
+        journal = getattr(blockchain, 'state', None)
+        self._state = journal if isinstance(journal, ProviderState) else None
 
     # mediator methods here...
     def run(self, stop_event: threading.Event | None = None) -> None:
         stop_event = stop_event or threading.Event()
         self._stop_event = stop_event
-        profile = self.benchmark.do_benchmark()
-        # failures terminate with error
-        self.server.post_benchmark(profile)
-        self._check_wallet_matches()
-        # GPU jobs get one of the GPUs whose benchmark container ran
-        if self.runner is not None:
-            self.runner.gpus = [gpu for gpu in profile.gpus if gpu.usable]
-
-        # Advertise immediately, then renew independently of slow chain requests.
-        self._heartbeat()
+        heartbeat_worker = None
         heartbeat_errors = []
 
         def keep_available():
@@ -63,21 +63,144 @@ class ProviderClient():
                     stop_event.set()
                     return
 
-        worker = threading.Thread(target=keep_available, name='provider-heartbeat', daemon=True)
-        worker.start()
         try:
-            while not stop_event.is_set():
-                events = self.blockchain.pollEvents()
-                for event in events:
+            if self._state is not None:
+                self.runner.enable_recovery(self._state, stop_event)
+                cached_gpus = self._state.snapshot().get('registered_gpus')
+                if cached_gpus is not None:
+                    self.runner.gpus = [GpuInfo(**gpu) for gpu in cached_gpus]
+                    self._recover_before_registration(stop_event)
                     if stop_event.is_set():
-                        break
-                    self._handle_event(event)
+                        return
+
+            profile = self.benchmark.do_benchmark()
+            self.server.post_benchmark(profile)
+            self._check_wallet_matches()
+            # Only cache hardware after successful authenticated registration.
+            if self.runner is not None:
+                self.runner.gpus = [gpu for gpu in profile.gpus if gpu.usable]
+                if self._state is not None:
+                    gpus = [asdict(gpu) for gpu in self.runner.gpus]
+                    self._state.update(lambda data: data.update(registered_gpus=gpus))
+
+            # Advertise only once registration succeeds, then renew independently.
+            self._heartbeat()
+            heartbeat_worker = threading.Thread(target=keep_available, name='provider-heartbeat', daemon=True)
+            heartbeat_worker.start()
+            next_assignment_check = 0
+            while not stop_event.is_set():
+                try:
+                    self._poll_events(stop_event)
+                    if self._state is not None and not stop_event.is_set():
+                        active = self._resume_jobs()
+                        if not active and time.monotonic() >= next_assignment_check:
+                            self._restore_assignment()
+                            next_assignment_check = time.monotonic() + HEARTBEAT_INTERVAL_SECONDS
+                except RECOVERY_RETRY_ERRORS as error:
+                    if self._state is None:
+                        raise
+                    print(f'Recovery will retry ({type(error).__name__}).', file=sys.stderr)
                 stop_event.wait(1)
         finally:
             stop_event.set()
-            worker.join()  # finish any bounded HTTP request before closing sessions
+            if heartbeat_worker is not None:
+                heartbeat_worker.join()
+            with self._job_lock:
+                workers = list(self._workers)
+            for job_worker in workers:
+                job_worker.join()
         if heartbeat_errors:
             raise heartbeat_errors[0]
+
+    def _recover_before_registration(self, stop_event):
+        # Benchmarking or a slow registration should never consume an active job's deadline.
+        # Continue polling even when the job has no action until the next on-chain phase.
+        while not stop_event.is_set():
+            try:
+                self._poll_events(stop_event)
+                if not self._resume_jobs():
+                    return
+            except RECOVERY_RETRY_ERRORS as error:
+                print(f'Existing job recovery will retry ({type(error).__name__}).', file=sys.stderr)
+            stop_event.wait(1)
+
+    def _poll_events(self, stop_event):
+        for event in self.blockchain.pollEvents():
+            if stop_event.is_set():
+                return
+            if self._state is None:
+                self._handle_event(event)
+            elif isinstance(event, ProviderSelectedEvent) and event.provider_selected.lower() == self.blockchain.owner.lower():
+                self.blockchain.remember_assignment(event.jobId, event.block_number, event.block_hash)
+        if self._state is not None:
+            self.blockchain.acknowledgeEvents()
+
+    def _restore_assignment(self):
+        # Covers upgrades from a client that had no journal yet. Chain state must still
+        # confirm this assignment before any work, stake, or commitment can be sent.
+        try:
+            job_id = self.server.get_active_assignment()
+        except requests.RequestException as error:
+            print(f'Assignment lookup failed ({type(error).__name__}); continuing chain recovery.', file=sys.stderr)
+            return
+        if job_id is not None:
+            self.blockchain.remember_assignment(job_id)
+
+    def _resume_jobs(self):
+        active_job = False
+        for job_id, action, remaining in self.blockchain.recovery_actions(include_waiting=True):
+            active_job = True
+            if action == 'wait':
+                continue
+            with self._job_lock:
+                # The runner has one active manifest; other recovery actions can wait one poll.
+                if self._workers or job_id in self._running_jobs:
+                    continue
+                self._running_jobs.add(job_id)
+                worker = threading.Thread(target=self._recover_job, args=(job_id, action, remaining), daemon=True)
+                self._workers.add(worker)
+                worker.start()
+        with self._job_lock:
+            return active_job or bool(self._workers)
+
+    def _recover_job(self, job_id, action, remaining):
+        try:
+            if self._stop_event.is_set():
+                return
+            if action != 'cleanup':
+                self.blockchain.assert_assignment_identity(job_id)
+            if action == 'stake':
+                self.blockchain.stake(job_id, remaining)
+            elif action == 'execute':
+                job = self._state.job(job_id)
+                manifest = job.get('manifest')
+                if manifest is None:
+                    started = time.monotonic()
+                    manifest = self.server.getDockerManifest(job_id)
+                    self._state.save_job(job_id, manifest=manifest)
+                    remaining -= time.monotonic() - started
+                remaining -= COMMIT_MARGIN_SECONDS
+                if remaining > 0:
+                    self.blockchain.assert_assignment_identity(job_id)
+                    self.runner.prepareJob(manifest, job_id)
+                    self._runAndCommit(job_id, remaining)
+            elif action == 'commit':
+                self.blockchain.commit(job_id, bytes.fromhex(self._state.job(job_id)['result']))
+            elif action == 'reveal':
+                self.blockchain.reveal(job_id)
+            elif action == 'deliver':
+                result = bytes.fromhex(self._state.job(job_id)['result'])
+                self._deliverResult(job_id, self.runner.output_directory(job_id), result, remaining)
+            elif action == 'cleanup':
+                self.runner.cleanupJob(job_id)
+        except RECOVERY_RETRY_ERRORS as error:
+            print(f'Job {job_id}: {action} will retry ({type(error).__name__}).', file=sys.stderr)
+        except Exception as error:
+            self._report_error(job_id, f'Recovery {action} failed: {error}')
+        finally:
+            with self._job_lock:
+                self._running_jobs.discard(job_id)
+                self._workers.discard(threading.current_thread())
 
     # The server assigns jobs to the wallet the API key was issued to; the session key acts for
     # credentials.owner. If those differ, this machine would never see its own assignments.
@@ -188,18 +311,22 @@ class ProviderClient():
     DELIVERY_RETRY_S = 25
     DELIVERY_RETRY_INTERVAL_S = 2
 
-    def _deliverResult(self, job_id, output_dir, result_hash):
-        give_up_at = time.monotonic() + self.DELIVERY_RETRY_S
+    def _deliverResult(self, job_id, output_dir, result_hash, remaining=DELIVERY_RETRY_S):
+        give_up_at = time.monotonic() + min(remaining, self.DELIVERY_RETRY_S)
         stop = self._stop_event or threading.Event()
         try:
             while True:
                 try:
                     self.server.deliver_result(job_id, output_dir, result_hash, self._stop_event)
+                    if self._state is not None:
+                        self._state.save_job(job_id, delivered=True)
                     print(f'Job {job_id}: result delivered.')
                     return
                 except DeliveryError as error:
                     # The client sees DELIVERY_PHASE_START about when the server does, so the
                     # first upload can land before the server opens the job for delivery (409).
+                    if not error.retryable and self._state is not None:
+                        self._state.save_job(job_id, delivery_failed=True)
                     if not error.retryable or time.monotonic() >= give_up_at or stop.is_set():
                         print(f'Job {job_id}: result delivery failed: {error}', file=sys.stderr)
                         return
@@ -225,13 +352,21 @@ class ProviderClient():
             result = self.runner.startJob(jobId, deadline)
             if result.status == 'ok' and result.output_dir:
                 print(f"Result was obtained: {result.output_dir}")
-                result_hash = self.runner.hash_dir(result.output_dir)
+                result_hash = (self.runner.hash_dir(result.output_dir, self._stop_event)
+                               if self._state is not None else self.runner.hash_dir(result.output_dir))
                 self.blockchain.commit(jobId, result_hash)
                 with self._job_lock:
                     self._results[jobId] = (result.output_dir, result_hash)
             else:
                 details = getattr(result, 'message', None) or 'No output was produced.'
                 self._report_error(jobId, f'Execution {result.status} (exit code {result.exitCode}): {details}')
+        except ExecutionPaused as error:
+            print(f'Job {jobId}: {error}', file=sys.stderr)
+        except RECOVERY_RETRY_ERRORS as error:
+            if self._state is None:
+                self._report_error(jobId, f'Execution or commitment failed: {error}')
+            else:
+                print(f'Job {jobId}: execution or commitment will retry ({type(error).__name__}).', file=sys.stderr)
         except Exception as error:
             self._report_error(jobId, f'Execution or commitment failed: {error}')
         finally:

@@ -30,6 +30,7 @@ function fakeTimers() {
 function fakeChain() {
 	const state = {
 		now: 1000n,
+		status: 3,
 		deadlines: { pendingDeadline: 0n, commitDeadline: 1010n, revealDeadline: 0n, deliveryDeadline: 0n } as Deadlines,
 		calls: [] as [Call, number][],
 		failures: [] as string[], // reasons the next calls revert with, in order
@@ -44,7 +45,7 @@ function fakeChain() {
 		startRevealPhase: call("startRevealPhase"),
 		endRevealPhase: call("endRevealPhase"),
 		endDeliveryPhase: call("endDeliveryPhase"),
-		getDeadlines: async () => state.deadlines,
+		getDeadlines: async () => ({ ...state.deadlines, status: state.status }),
 		chainTime: async () => state.now,
 	};
 	return { chain, state };
@@ -195,4 +196,29 @@ test("stop() clears every pending transition and ignores later events", async ()
 	await orchestrator.idle();
 	assert.equal(live().length, 0);
 	assert.deepEqual(orchestrator.scheduled, []);
+});
+
+test("startup restores the live phase without a phase-start event", async () => {
+	const { orchestrator, state, fire } = setup();
+	await orchestrator.recover([7]);
+	assert.equal(fire(), 11_000);
+	await orchestrator.idle();
+	assert.deepEqual(state.calls, [["startRevealPhase", 7]]);
+});
+
+test("startup skips assigned records already terminal on-chain", async () => {
+	const { orchestrator, state, live } = setup();
+	state.status = 8;
+	await orchestrator.recover([7]);
+	assert.deepEqual(live(), []);
+	assert.deepEqual(orchestrator.scheduled, []);
+});
+
+test("startup can finalize staking before its deadline if providers already staked", async () => {
+	const { orchestrator, state, live } = setup();
+	state.status = 1;
+	state.deadlines.pendingDeadline = state.now + 30n;
+	await orchestrator.recover([7]);
+	assert.deepEqual(state.calls, [["finalizeProviderSelection", 7]]);
+	assert.deepEqual(live(), []);
 });

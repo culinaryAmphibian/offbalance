@@ -7,6 +7,7 @@ import { Chain } from './services/chain.ts';
 import { handleChainEvent } from './services/events.ts';
 import { Matcher } from './services/matcher.ts';
 import { Orchestrator } from './services/orchestrator.ts';
+import { unfinishedPhaseJobIds } from './services/phase-recovery.ts';
 import { createHttpsServer, httpsOptions } from './https.ts';
 import { createResultStore } from './storage/results.ts';
 
@@ -47,6 +48,7 @@ try {
     await handleChainEvent(event, matcher);
     orchestrator?.onEvent(event);
   });
+  if (orchestrator) await orchestrator.recover(await unfinishedPhaseJobIds());
   await matcher.ping();
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => { void shutdown().catch(error => { console.error(error); process.exitCode = 1; }); });

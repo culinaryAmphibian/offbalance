@@ -72,6 +72,10 @@ class ServerManager():
         hardware = res.json().get('hardware') or {}
         return hardware.get('address')
 
+    def get_active_assignment(self) -> int | None:
+        assignment = self.request("GET", "/provider/assignment").json().get('assignment')
+        return int(assignment['id']) if assignment is not None else None
+
     def getDockerManifest(self, jobId):
         res = self.request("GET", f"/jobManifest/{jobId}")
         

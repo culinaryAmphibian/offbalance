@@ -7,7 +7,7 @@
 //   DELIVERY_PHASE_START -> endDeliveryPhase  after deliveryDeadline (payout)
 // Each transition's own event schedules the next one. The functions are public, so if anyone
 // else gets there first the call reverts with "Not in ... phase" and the job is left alone.
-import type { ChainEvent, Deadlines } from "./chain.ts";
+import type { ChainEvent, Deadlines, PhaseSnapshot } from "./chain.ts";
 import { errorMessage } from "./chain.ts";
 
 export type PhaseChain = {
@@ -15,7 +15,7 @@ export type PhaseChain = {
 	startRevealPhase(jobId: number): Promise<void>;
 	endRevealPhase(jobId: number): Promise<void>;
 	endDeliveryPhase(jobId: number): Promise<void>;
-	getDeadlines(jobId: number): Promise<Deadlines>;
+	getDeadlines(jobId: number): Promise<PhaseSnapshot>;
 	chainTime(): Promise<bigint>;
 };
 
@@ -31,6 +31,14 @@ const STEPS: Record<string, Step> = {
 	COMMIT_PHASE_START: { call: "startRevealPhase", deadline: "commitDeadline" },
 	REVEAL_PHASE_START: { call: "endRevealPhase", deadline: "revealDeadline" },
 	DELIVERY_PHASE_START: { call: "endDeliveryPhase", deadline: "deliveryDeadline" },
+};
+
+// OffBalance.Status indices for externally observable, deadline-driven phases.
+const CHAIN_STEPS: Partial<Record<number, Step>> = {
+	1: FINALIZE,
+	3: STEPS.COMMIT_PHASE_START,
+	4: STEPS.REVEAL_PHASE_START,
+	6: STEPS.DELIVERY_PHASE_START,
 };
 
 // the job is over; nothing left to drive
@@ -85,6 +93,16 @@ export class Orchestrator {
 		}
 	}
 
+	/** Restore timers even when their phase-start events were already checkpointed. */
+	async recover(jobIds: Iterable<number>): Promise<void> {
+		for (const jobId of jobIds) {
+			if (this.stopped || !Number.isSafeInteger(jobId) || jobId < 0 || this.pending.has(jobId)) continue;
+			const generation = this.claim(jobId);
+			this.track(this.schedule(jobId, undefined, generation, 0));
+		}
+		await this.idle();
+	}
+
 	/** Pending job ids, for logging and tests. */
 	get scheduled(): number[] {
 		return [...this.pending.keys()];
@@ -132,20 +150,29 @@ export class Orchestrator {
 	}
 
 	// Sleep until the step's deadline has passed in chain time, then run it.
-	private async schedule(jobId: number, step: Step, generation: number, failures: number): Promise<void> {
-		let ms: number;
+	private async schedule(jobId: number, expected: Step | undefined, generation: number, failures: number): Promise<void> {
 		try {
-			const [deadlines, now] = await Promise.all([this.chain.getDeadlines(jobId), this.chain.chainTime()]);
-			// the contract requires block.timestamp > deadline, so aim one second past it
-			ms = Math.max(0, Number(deadlines[step.deadline] - now + 1n)) * 1000;
+			const [snapshot, now] = await Promise.all([this.chain.getDeadlines(jobId), this.chain.chainTime()]);
+			if (!this.current(jobId, generation)) return;
+			const step = expected ?? CHAIN_STEPS[snapshot.status];
+			if (!step) {
+				this.clear(jobId); // submitted but unassigned, already completed, or concurrently canceled
+				return;
+			}
+			if (expected === undefined && step === FINALIZE) {
+				await this.run(jobId, step, generation, failures);
+				return;
+			}
+			// The contract checks block.timestamp > deadline. Bound long timers to Node's limit.
+			const remaining = snapshot[step.deadline] - now + 1n;
+			const ms = Math.min(2 ** 31 - 1, Math.max(0, Number(remaining) * 1000));
+			this.log.log(`Job ${jobId}: ${step.call} in ${ms / 1000}s`);
+			if (ms === 2 ** 31 - 1) this.wait(jobId, generation, ms, () => this.schedule(jobId, expected, generation, failures));
+			else this.wait(jobId, generation, ms, () => this.run(jobId, step, generation, failures));
 		} catch (error) {
 			this.log.warn(`Job ${jobId}: reading deadlines failed (${errorMessage(error)}); retrying`);
-			this.wait(jobId, generation, backoff(failures), () => this.schedule(jobId, step, generation, failures + 1));
-			return;
+			this.wait(jobId, generation, backoff(failures), () => this.schedule(jobId, expected, generation, failures + 1));
 		}
-		if (!this.current(jobId, generation)) return;
-		this.log.log(`Job ${jobId}: ${step.call} in ${ms / 1000}s`);
-		this.wait(jobId, generation, ms, () => this.run(jobId, step, generation, failures));
 	}
 
 	private async run(jobId: number, step: Step, generation: number, failures: number): Promise<void> {
