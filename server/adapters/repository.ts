@@ -1,7 +1,9 @@
 import { isValidObjectId } from 'mongoose';
+import { pricingQuote } from '../pricing.ts';
+import { contractJobId, findContractJob } from '../models/Job.ts';
 import { decimalString } from '../models/decimal.ts';
 import { AccountModel, HardwareModel, JobModel, JobStatus, TERMINAL_STATUSES, type Hardware, type Job } from '../models/index.ts';
-import { formatEthAmount, parseEthAmount } from '../matching/MatchingEngine.ts';
+import { bookedCharge, formatEthAmount, parseEthAmount } from '../matching/MatchingEngine.ts';
 import type { GpuRequirement, HardwareRequirements, MatchRepository, ProviderRecord, SchedulingJob } from '../matching/types.ts';
 import { machineSpecs, type HardwareProfile } from '../services/hardware.ts';
 import type { Assignment, AssignmentRepository, JobId } from '../agent-manager/types.ts';
@@ -34,7 +36,7 @@ export function schedulingJob(job: Job): SchedulingJob {
   const rate = parseEthAmount(decimalString(job.maxPrice ?? '0'));
   // DB API: each provider's hourly ceiling. Manager: total execution budget.
   // Round each provider's maximum cost up exactly as quoteProviders does.
-  const budget = ((rate * BigInt(job.timeWindow) + 3599n) / 3600n) * BigInt(job.minNodesToRunOn);
+  const budget = job.quoteId ? pricingQuote(job).escrowWei : bookedCharge(rate, job.timeWindow) * BigInt(job.minNodesToRunOn);
   return {
     id: String(job.onChainJobId), owner: String(job.owner), k: job.minNodesToRunOn,
     quorum: job.minNodesToAgree, window: job.timeWindow, maxPrice: formatEthAmount(budget),
@@ -57,7 +59,7 @@ export class MongoRepository implements MatchRepository, AssignmentRepository {
     const number = numericJobId(id);
     if (number === null) return null;
     const job = await JobModel.findOne({ onChainJobId: number, status: JobStatus.PENDING,
-      submittedAt: { $ne: null }, providers: { $size: 0 } });
+      submittedAt: { $ne: null }, fundingError: null, providers: { $size: 0 } });
     return job ? schedulingJob(job) : null;
   }
 
@@ -84,14 +86,14 @@ export class MongoRepository implements MatchRepository, AssignmentRepository {
   async getAssignedJob(id: JobId, providerId: string): Promise<Assignment | null> {
     const number = numericJobId(id);
     if (number === null || !isValidObjectId(providerId)) return null;
-    const job = await JobModel.findOne({ onChainJobId: number, providers: providerId });
-    return job ? { id: String(job.onChainJobId), dockerImage: job.dockerImageDigest,
+    const job = await findContractJob(number);
+    return job?.providers.some(provider => provider.equals(providerId)) ? { id: String(contractJobId(job)), dockerImage: job.dockerImageDigest,
       requirements: jobRequirements(job), window: job.timeWindow } : null;
   }
 
   async getActiveAssignment(providerId: string): Promise<Assignment | null> {
     if (!isValidObjectId(providerId)) return null;
     const job = await JobModel.findOne({ providers: providerId, status: { $nin: TERMINAL_STATUSES } });
-    return job ? this.getAssignedJob(job.onChainJobId, providerId) : null;
+    return job ? this.getAssignedJob(contractJobId(job), providerId) : null;
   }
 }

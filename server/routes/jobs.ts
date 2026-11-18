@@ -1,6 +1,6 @@
 // /jobs: buyers submit and follow jobs; providers see the jobs they're on.
 import { Router } from "express";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { StorageError, MAX_RESULT_BYTES } from "../storage/results.ts";
 import { config } from "../config.ts";
 import { isValidObjectId } from "mongoose";
@@ -9,6 +9,8 @@ import { AccountModel, BuildModel, BuildStatus, JobModel, JobStatus, nextSeq } f
 import { registry } from "../services/registry.ts";
 import { loadJob, type Deps } from "./deps.ts";
 import { serializeJob } from "./serialize.ts";
+import { pricingQuote } from "../pricing.ts";
+import { contractJobId } from "../models/Job.ts";
 
 const SETTABLE = [
 	// no cpuLimit/memLimitMb: the job model derives them from requirements
@@ -27,7 +29,7 @@ export function jobRoutes({ chain, matcher, results }: Deps): Router {
 	const browserJob = (job: Parameters<typeof serializeJob>[0], me: unknown, wallet: string) => ({
 		...serializeJob(job), executionMode: chain ? "chain" : "local",
 		canViewResults: String(job.owner) === String(me),
-		...(String(job.owner) === String(me) ? { submitWallet: wallet } : {}),
+		...(String(job.owner) === String(me) ? { submitWallet: job.buyerWallet ?? wallet, quoteId: job.quoteId } : {}),
 		canSubmit: String(job.owner) === String(me) && Boolean(chain) && !job.submittedAt && job.status === JobStatus.PENDING,
 		canCancel: String(job.owner) === String(me) && cancelable(job),
 	});
@@ -38,9 +40,8 @@ export function jobRoutes({ chain, matcher, results }: Deps): Router {
 		(Boolean(chain) && job.status === JobStatus.CANCELED && Boolean(job.submittedAt) && !job.settledAt);
 	router.use("/jobs", requireAuth);
 
-	// Creates the job and reserves its on-chain id. The buyer's wallet then calls
-	// submitJob(price, k, quorum, timeWindow, image), escrowing the price;
-	// matching starts on JOB_SUBMITTED.
+	// Save the quote before the wallet confirms the on-chain escrow.
+	// Its quote id links the wallet transaction to this record regardless of submission order.
 	//
 	// The image is one of:
 	//   image             any reference ("python:3.12"); the server pins it by digest
@@ -88,8 +89,14 @@ export function jobRoutes({ chain, matcher, results }: Deps): Router {
 			fields.dockerImageDigest = build.image;
 		}
 
-		const job = new JobModel({ ...fields, owner: res.locals.account._id, onChainJobId: 0, ...(requestKey ? { requestKey, requestHash } : {}) });
+		const job = new JobModel({ ...fields, owner: res.locals.account._id, onChainJobId: 0,
+			...(chain ? { quoteId: `0x${randomBytes(32).toString("hex")}`, buyerWallet: res.locals.wallet } : {}),
+			...(requestKey ? { requestKey, requestHash } : {}) });
 		await job.validate(); // before using up an id
+		if (chain) {
+			try { pricingQuote(job); }
+			catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : String(error) }); return; }
+		}
 		job.onChainJobId = await nextSeq("jobId");
 		if (!chain) job.submittedAt = new Date(); // no chain to wait for
 		try { await job.save(); }
@@ -135,7 +142,7 @@ export function jobRoutes({ chain, matcher, results }: Deps): Router {
 			return;
 		}
 		if (chain && job.submittedAt) {
-			res.status(409).json({ error: `job is on-chain; call cancelJob(${job.onChainJobId}) from your wallet` });
+			res.status(409).json({ error: `job is on-chain; call cancelJob(${contractJobId(job)}) from your wallet` });
 			return;
 		}
 		// atomic, so the matcher can't claim the job between the check above and the cancel

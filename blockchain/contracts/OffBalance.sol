@@ -47,6 +47,7 @@ contract OffBalance {
         bool revealed;
         bytes32 commitmentHash; // keccak256(abi.encode(outputHash, salt))
         bytes32 outputHash;     // keccak256(output), populated at reveal
+        uint256 bookedCharge;   // work payment for this provider when the job is quoted
         uint256 requiredStake;  // fixed when the provider is assigned
         uint256 stake;          // currently deposited (0 once refunded, paid out or slashed)
     }
@@ -55,6 +56,7 @@ contract OffBalance {
         address payable creator;
         JobID_t id;
         uint256 price;
+        uint256 maxHourlyRate;  // zero for legacy lump-sum jobs
         uint256 k;              // matching reveals needed for consensus
         uint256 quorum;         // providers assigned
         uint256 executionTime;
@@ -84,6 +86,12 @@ contract OffBalance {
     }
 
     event JOB_SUBMITTED(JobID_t indexed jobId);
+    event QUOTED_JOB_SUBMITTED(
+        JobID_t indexed jobId, bytes32 indexed quoteId, address indexed buyer,
+        uint256 price, uint256 maxHourlyRate, uint256 k, uint256 quorum, uint256 executionTime, string dockerName
+    );
+    event WORK_SETTLED(JobID_t indexed jobId, uint256 charged, uint256 refund);
+    event SLASH_REWARD(JobID_t indexed jobId, address indexed provider, uint256 amount);
     event PROVIDER_SELECTED(JobID_t indexed jobId, address indexed provider, uint256 stake);
     event COMMIT_STAKE_PHASE_START(JobID_t indexed jobId, uint256 deadline);
     event STAKED(JobID_t indexed jobId, address indexed provider, uint256 amount);
@@ -109,6 +117,7 @@ contract OffBalance {
     uint256 private nextJobId = 1;
 
     mapping(JobID_t => Job) private jobs;
+    mapping(address => mapping(bytes32 => bool)) private submittedQuotes;
     mapping(address => Provider) private providers;
     mapping(address => uint256) public credits;
     // Buyer deposits still locked in unsettled jobs, excluding withdrawable credits.
@@ -257,6 +266,37 @@ contract OffBalance {
         uint256 executionTime,
         string calldata dockerName
     ) external payable returns (JobID_t jobId) {
+        jobId = _submitJob(price, k, quorum, executionTime, dockerName);
+        emit JOB_SUBMITTED(jobId);
+    }
+
+    function submitQuotedJob(
+        bytes32 quoteId,
+        uint256 maxHourlyRate,
+        uint256 k,
+        uint256 quorum,
+        uint256 executionTime,
+        string calldata dockerName
+    ) external payable returns (JobID_t jobId) {
+        require(quoteId != bytes32(0) && !submittedQuotes[msg.sender][quoteId], "Invalid or used quote");
+        require(maxHourlyRate > 0, "Hourly rate must be positive");
+        uint256 price = _bookedCharge(maxHourlyRate, executionTime) * quorum;
+        jobId = _submitJob(price, k, quorum, executionTime, dockerName);
+        submittedQuotes[msg.sender][quoteId] = true;
+        jobs[jobId].maxHourlyRate = maxHourlyRate;
+        emit QUOTED_JOB_SUBMITTED(jobId, quoteId, msg.sender, price, maxHourlyRate, k, quorum, executionTime, dockerName);
+    }
+
+    // Decompose the factors so the intermediate product may exceed uint256 when the charge fits.
+    function _bookedCharge(uint256 hourlyRate, uint256 executionTime) private pure returns (uint256) {
+        uint256 remainder = hourlyRate % 3600;
+        return (hourlyRate / 3600) * executionTime + remainder * (executionTime / 3600)
+            + (remainder * (executionTime % 3600) + 3599) / 3600;
+    }
+
+    function _submitJob(
+        uint256 price, uint256 k, uint256 quorum, uint256 executionTime, string calldata dockerName
+    ) private returns (JobID_t jobId) {
         require(price > 0, "Price must be positive");
         require(msg.value == price, "Send exact job price");
         require(k > 0 && quorum >= k, "Invalid consensus threshold");
@@ -273,8 +313,6 @@ contract OffBalance {
         job.executionTime = executionTime;
         job.status = Status.JOB_SUBMITTED;
         job.dockerImgName = dockerName;
-
-        emit JOB_SUBMITTED(jobId);
     }
 
     // The buyer can cancel until the provider set is finalized. Escrow and any deposited stakes
@@ -296,6 +334,19 @@ contract OffBalance {
     // The server proposes the provider set, fixes each provider's stake from its current
     // reputation, and opens the staking window.
     function assignProviders(JobID_t jobId, address[] calldata providerAddresses) external onlyServer {
+        require(jobs[jobId].maxHourlyRate == 0, "Quoted job requires rates");
+        _assignProviders(jobId, providerAddresses, new uint256[](0));
+    }
+
+    function assignQuotedProviders(
+        JobID_t jobId, address[] calldata providerAddresses, uint256[] calldata hourlyRates
+    ) external onlyServer {
+        require(jobs[jobId].maxHourlyRate != 0, "Job is not quoted");
+        require(hourlyRates.length == providerAddresses.length, "Rates must match providers");
+        _assignProviders(jobId, providerAddresses, hourlyRates);
+    }
+
+    function _assignProviders(JobID_t jobId, address[] calldata providerAddresses, uint256[] memory hourlyRates) private {
         Job storage job = jobs[jobId];
         require(job.creator != address(0), "Unknown job");
         require(job.status == Status.JOB_SUBMITTED, "Job not awaiting assignment");
@@ -313,6 +364,10 @@ contract OffBalance {
             p.jobsAssigned.push(jobId);
             uint256 required = stakeFor(addr);
             p.answers[jobId].requiredStake = required;
+            if (job.maxHourlyRate != 0) {
+                require(hourlyRates[i] <= job.maxHourlyRate, "Provider rate exceeds cap");
+                p.answers[jobId].bookedCharge = _bookedCharge(hourlyRates[i], job.executionTime);
+            }
             emit PROVIDER_SELECTED(jobId, addr, required);
         }
         job.status = Status.PROVIDER_SELECTED;
@@ -499,9 +554,11 @@ contract OffBalance {
         }
         require(winners >= job.k, "Consensus invariant failed");
 
-        uint256 pool = job.price + slashedPool;
+        bool quoted = job.maxHourlyRate != 0;
+        uint256 pool = quoted ? slashedPool : job.price + slashedPool;
         uint256 share = pool / winners;
         uint256 dust = pool - share * winners;
+        uint256 charged;
 
         for (uint256 i = 0; i < n; ++i) {
             address addr = job.assignedProviders[i];
@@ -512,15 +569,26 @@ contract OffBalance {
             lockedStake[addr] -= staked;
             c.stake = 0;
             if (c.winning) {
-                uint256 amount = share + dust;
+                uint256 reward = share + dust;
                 dust = 0;
-                credits[addr] += amount + staked;
+                uint256 work = quoted ? c.bookedCharge : reward;
+                credits[addr] += staked + (quoted ? work + reward : work);
                 if (p.reputation < type(uint16).max) p.reputation += 1;
-                emit PAID(jobId, addr, amount);
+                emit PAID(jobId, addr, work);
+                if (quoted) {
+                    charged += work;
+                    emit STAKE_REFUNDED(jobId, addr, staked);
+                    if (reward > 0) emit SLASH_REWARD(jobId, addr, reward);
+                }
             } else {
                 if (p.reputation > 0) p.reputation -= 1;
                 emit SLASHED(jobId, addr, staked);
             }
+        }
+        if (quoted) {
+            uint256 refund = job.price - charged;
+            credits[job.creator] += refund;
+            emit WORK_SETTLED(jobId, charged, refund);
         }
         job.status = Status.PAID;
     }
