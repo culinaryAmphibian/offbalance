@@ -54,12 +54,12 @@ Status as of 2026-11-17, on the `test-coverage` branch (from `milestone4` `1b402
 
 | Suite | `milestone4` | On `test-coverage` (11/17) |
 |---|---|---|
-| Contract (Solidity) | 22 | 46, all pass (incl. 3 fuzz tests) |
+| Contract (Solidity) | 22 | 47, all pass (incl. 3 fuzz tests) |
 | Provider client | 85 | 138: 131 pass, 1 skipped (real GPU), 6 expected failures (known bugs) |
 | Frontend unit | 88 | 93: 92 pass, 1 todo (known bug) |
 | Frontend components | — | 34: 33 pass, 1 expected failure (known bug) |
 | Frontend browser | 5 demo + 6 real-server scenarios | unchanged (CI only) |
-| Server | 218 | 299: 292 pass, 7 todo (known bugs/gaps), 0 fail |
+| Server | 218 | 300: 297 pass, 3 todo (B1, B5), 0 fail (after `fix/server-bugs`) |
 | System (full stack, real clients + Docker) | — | 5 scenarios, all pass (about 8 min) |
 | Compose smoke | — | 1 job end to end, passes |
 
@@ -79,16 +79,16 @@ Each has a test marked `todo` (Node), `expectedFailure` (Python) or `test.fails`
 | # | Bug | Severity | Test | Fix |
 |---|---|---|---|---|
 | B1 | **Database and contract job numbers drift apart.** The server numbers saved jobs itself; the contract numbers only submitted jobs, in submission order. Cancelling a job before submitting it, or submitting jobs out of order, makes the chain's events update the wrong job. | High | `job-ids.test.ts` (2 todo) | Take the contract's job ID from the `submitJob` receipt or `JOB_SUBMITTED` (with the sender and transaction), instead of a server counter. |
-| B2 | **A docker command that exits early crashes the server** (`EPIPE`, no error handler on the child's stdin). Affects `login`, `push` and the `image rm` after every build. | High | `builds.test.ts` (1 todo) | One line in `docker()` in `services/builder.ts`: `child.stdin.on("error", () => {})`. |
-| B3 | One account can list the same wallet twice. | Low | `mongo-db-audit.test.ts` (todo) | Validate unique `walletIds` within an account. |
-| B4 | An update can raise "required matching results" above "providers". | Low | `mongo-db-audit.test.ts` (todo) | Fix the `minNodesToAgree` update validator. |
+| B2 | ✅ **Fixed on `fix/server-bugs`.** **A docker command that exits early crashes the server** (`EPIPE`, no error handler on the child's stdin). Affects `login`, `push` and the `image rm` after every build. | High | `builds.test.ts` (runs normally) | One line in `docker()` in `services/builder.ts`: `child.stdin.on("error", () => {})`. |
+| B3 | ✅ **Fixed on `fix/server-bugs`.** One account can list the same wallet twice. | Low | `mongo-db-audit.test.ts` (runs normally) | Validate unique `walletIds` within an account. |
+| B4 | ✅ **Fixed on `fix/server-bugs`** (also stops an update lowering "providers" below "required matching results"). An update can raise "required matching results" above "providers". | Low | `mongo-db-audit.test.ts` (runs normally) | Fix the `minNodesToAgree` update validator. |
 | B5 | **Jobs stall after a server restart.** Phase timers live in memory and the monitor resumes from its checkpoint, so jobs that were mid-phase are never advanced. | High | `e2e-staking-restart.test.ts` (todo) | On startup, re-schedule open jobs from `getDeadlines`. |
 | B8 | **A paid job looks unfinished in the UI.** The server's final status for a paid job is `PAYOUT`, which the frontend shows as "verifying — Payment is being processed". | Medium | `frontend/test/statuses.test.js` (todo) | Show `PAYOUT` as completed in `jobs.js`. |
 | B9 | **Jobs have no process limit.** A buyer's container can fork-bomb the provider's machine (`pids.max` is `max`). | High | `test_docker_integration.py` (expected failure) | `pids_limit` in `RunManager`'s `containers.run`. |
 | B10 | **Jobs can gain privileges** through setuid binaries in their image (`NoNewPrivs` is 0). | Medium | `test_docker_integration.py` (expected failure) | `security_opt=['no-new-privileges']` in `RunManager`. |
 | B12 | **A provider client restarted after committing can't reveal** (the committed result hash is only kept in memory), so the provider is slashed for a job it did. | High | `test_chain_integration.py` (expected failure) | Persist the committed hash (it isn't secret; the salt is) and reload it at startup. |
 | B13 | **A provider client restarted after it was assigned never runs the job**: it watches the chain from the current block, so it never sees its `PROVIDER_SELECTED` again, and it's slashed. | High | `test_chain_integration.py` (expected failure) | Read `GET /provider/assignment` at startup (the server already provides it). |
-| B14 | **An expired sign-in nonce still works** for up to about a minute: the server relies on MongoDB's TTL cleanup instead of checking the nonce's age. | Low | `auth-hardening.test.ts` (todo) | Check `createdAt` against `NONCE_TTL_S` in `verifyWalletSignature`. |
+| B14 | ✅ **Fixed on `fix/server-bugs`.** **An expired sign-in nonce still works** for up to about a minute: the server relies on MongoDB's TTL cleanup instead of checking the nonce's age. | Low | `auth-hardening.test.ts` (runs normally) | Check `createdAt` against `NONCE_TTL_S` in `verifyWalletSignature`. |
 | B15 | **`docker compose run host-client --dev` crashes**: `docker-compose.yml` passes `OFFBALANCE_API_KEY` as an empty string when it isn't configured, and `--dev` uses that instead of the dev key ("the API key is empty"). Only the interactive mode works. | Medium | `test_chain_and_dispatch.py` (expected failure); the CI smoke job works around it with `-e OFFBALANCE_API_KEY=dev` | Treat an empty variable as unset in `main.load_dev_credentials` (or drop the default in the compose file). |
 | B16 | **After submitting a job, its page never offers "Cancel"** until it's reloaded: the page hides cancel while its own transaction is in flight and never clears that state. Reloading signs the user out (the session lives only in memory), so they have to sign in again to cancel. | Low | `JobDetail.spec.jsx` (`test.fails`); `chain-browser.cjs` works around it | Clear the transaction state once the job shows `submittedAt`. |
 | B17 | **"Collect funds" never confirms in the dev server (and so in the demo)**: the money is withdrawn, but the button stays on "Check your wallet…". The app runs in `<StrictMode>`, which mounts components twice in development, and `CollectFunds` only ever sets its `active` ref to `false`. | Medium (visible in the demo) | `CollectFunds.spec.jsx` (`test.fails`); `chain-browser.cjs` checks the money instead | One line: `useEffect(() => { active.current = true; return () => { active.current = false; }; }, [])`, as the other components do. |

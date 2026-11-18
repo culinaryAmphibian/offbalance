@@ -112,8 +112,8 @@ describe("database audit", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, (
 			assert.ok((await AccountModel.findOne({ walletIds: w("B") }))?._id.equals(a._id));
 		});
 
-		// latent: the routes check `includes` before pushing, but the schema doesn't enforce it
-		test("one account can't list the same wallet twice", { todo: "schema allows duplicates within one account" }, async () => {
+		// the routes check `includes` before pushing; the schema enforces it too (B3)
+		test("one account can't list the same wallet twice", async () => {
 			await assert.rejects(AccountModel.create({ walletIds: [w("c"), w("C")] }));
 		});
 
@@ -131,11 +131,22 @@ describe("database audit", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, (
 	});
 
 	describe("jobs", () => {
-		// latent: no route updates a job's quorum yet; the update validator only sees k if it's in the same update
-		test("quorum can't be raised above k by an update", { todo: "validator ignores the stored minNodesToRunOn" }, async () => {
+		// No route updates a job's quorum or k yet; the update validators compare against the stored
+		// value when the update changes only one of them (B4).
+		test("quorum can't be raised above k by an update", async () => {
 			const owner = await AccountModel.create({ walletIds: [w("1")] });
 			const job = await JobModel.create(jobFields({ owner: owner._id, onChainJobId: 1 }));
 			await assert.rejects(JobModel.updateOne({ _id: job._id }, { $set: { minNodesToAgree: 5 } }, { runValidators: true }));
+		});
+
+		test("k can't be lowered below the quorum by an update, but valid updates go through", async () => {
+			const owner = await AccountModel.create({ walletIds: [w("3")] });
+			const job = await JobModel.create(jobFields({ owner: owner._id, onChainJobId: 3, minNodesToRunOn: 4, minNodesToAgree: 3 }));
+			await assert.rejects(JobModel.updateOne({ _id: job._id }, { $set: { minNodesToRunOn: 2 } }, { runValidators: true }));
+			await JobModel.updateOne({ _id: job._id }, { $set: { minNodesToAgree: 4 } }, { runValidators: true });
+			await JobModel.updateOne({ _id: job._id }, { $set: { minNodesToRunOn: 2, minNodesToAgree: 2 } }, { runValidators: true });
+			const stored = await JobModel.findById(job._id).lean();
+			assert.deepEqual([stored?.minNodesToRunOn, stored?.minNodesToAgree], [2, 2]);
 		});
 
 		test("nextSeq hands out unique ids under concurrency", async () => {

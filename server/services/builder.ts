@@ -144,6 +144,10 @@ export function docker(
 			resolve({ code, output });
 		});
 
+		// docker can exit before reading its input (daemon down, image already gone); the write then
+		// fails with EPIPE, and without a listener that's an uncaught exception that ends the server.
+		// The failure is already reported through the exit code above.
+		child.stdin.on("error", () => {});
 		if (opts.stdinFile) createReadStream(opts.stdinFile).pipe(child.stdin);
 		else child.stdin.end(opts.stdinText ?? "");
 	});
