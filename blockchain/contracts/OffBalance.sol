@@ -117,7 +117,6 @@ contract OffBalance {
     uint256 private nextJobId = 1;
 
     mapping(JobID_t => Job) private jobs;
-    mapping(address => mapping(bytes32 => bool)) private submittedQuotes;
     mapping(address => Provider) private providers;
     mapping(address => uint256) public credits;
     // Buyer deposits still locked in unsettled jobs, excluding withdrawable credits.
@@ -132,6 +131,7 @@ contract OffBalance {
     // owner => number of session keys registered so far; part of the signed message so a
     // revoked authorization can't be replayed.
     mapping(address => uint256) public sessionKeyNonce;
+    mapping(address => mapping(bytes32 => bool)) private submittedQuotes;
 
     // Demo-length windows, in seconds. Providers have PENDING_WINDOW after assignment to deposit
     // their stake; the server finalizes early once every assigned provider has staked.
@@ -538,9 +538,8 @@ contract OffBalance {
         }
     }
 
-    // Winners (revealed the consensus output) get their stake back plus an equal share of the
-    // price and of every slashed stake; the first winner also gets the rounding dust. Every other
-    // staked provider (wrong output, no commit, or no reveal) is slashed.
+    // Winners get their stakes, work payment, and a share of the slashed stakes. The first
+    // winner gets the rounding dust. For legacy jobs the work price is split equally as before.
     function _payWinnersAndSlashLosers(JobID_t jobId) private {
         Job storage job = jobs[jobId];
         uint256 n = job.assignedProviders.length;
@@ -562,27 +561,11 @@ contract OffBalance {
 
         for (uint256 i = 0; i < n; ++i) {
             address addr = job.assignedProviders[i];
-            Provider storage p = providers[addr];
-            Commitment_t storage c = p.answers[jobId];
-            uint256 staked = c.stake;
-            if (staked == 0) continue;
-            lockedStake[addr] -= staked;
-            c.stake = 0;
-            if (c.winning) {
-                uint256 reward = share + dust;
+            if (providers[addr].answers[jobId].winning) {
+                charged += _settleProvider(jobId, addr, quoted, share + dust);
                 dust = 0;
-                uint256 work = quoted ? c.bookedCharge : reward;
-                credits[addr] += staked + (quoted ? work + reward : work);
-                if (p.reputation < type(uint16).max) p.reputation += 1;
-                emit PAID(jobId, addr, work);
-                if (quoted) {
-                    charged += work;
-                    emit STAKE_REFUNDED(jobId, addr, staked);
-                    if (reward > 0) emit SLASH_REWARD(jobId, addr, reward);
-                }
             } else {
-                if (p.reputation > 0) p.reputation -= 1;
-                emit SLASHED(jobId, addr, staked);
+                _settleProvider(jobId, addr, quoted, 0);
             }
         }
         if (quoted) {
@@ -591,6 +574,32 @@ contract OffBalance {
             emit WORK_SETTLED(jobId, charged, refund);
         }
         job.status = Status.PAID;
+    }
+
+    function _settleProvider(JobID_t jobId, address addr, bool quoted, uint256 share) private returns (uint256 work) {
+        Provider storage p = providers[addr];
+        Commitment_t storage c = p.answers[jobId];
+        uint256 staked = c.stake;
+        if (staked == 0) return 0;
+        lockedStake[addr] -= staked;
+        c.stake = 0;
+        if (!c.winning) {
+            if (p.reputation > 0) p.reputation -= 1;
+            emit SLASHED(jobId, addr, staked);
+            return 0;
+        }
+
+        if (p.reputation < type(uint16).max) p.reputation += 1;
+        if (quoted) {
+            work = c.bookedCharge;
+            credits[addr] += staked + work + share;
+            emit PAID(jobId, addr, work);
+            emit STAKE_REFUNDED(jobId, addr, staked);
+            if (share > 0) emit SLASH_REWARD(jobId, addr, share);
+        } else {
+            credits[addr] += staked + share;
+            emit PAID(jobId, addr, share);
+        }
     }
 
     function _noQuorum(JobID_t jobId) private {

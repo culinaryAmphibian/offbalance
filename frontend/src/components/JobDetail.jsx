@@ -35,8 +35,9 @@ export default function JobDetail({ api, id, notice }) {
   const onChain = job?.executionMode === 'chain' && !!job.submittedAt;
   // Use on-chain cancellation once the coordinator records the submission.
   const showCancel = !!job?.canCancel && !chainPending && (onChain || !transaction);
-  // a canceled or unmatched on-chain job: the contract credited the escrow back to the buyer
-  const showRefund = onChain && !job.canCancel && job.canViewResults !== false && ['CANCELED', 'NO_QUORUM'].includes(job.status);
+  const partialRefund = job?.payment?.buyerRefund && job.payment.buyerRefund !== '0';
+  const showRefund = onChain && !job.canCancel && job.canViewResults !== false &&
+    (partialRefund || ['CANCELED', 'NO_QUORUM'].includes(job.status));
 
   async function cancel() {
     if (cancelPending || !window.confirm(onChain
@@ -123,6 +124,8 @@ export default function JobDetail({ api, id, notice }) {
     {job?.executionMode === 'local' && <p className="notice">Database-backed coordinator mode. Blockchain submission, escrow, and settlement are disabled.</p>}
     {needsChain && <section className="panel" aria-label="Blockchain submission">
       <p>This job is saved in the database. It needs a blockchain submission before providers can be assigned.</p>
+      {job.totalEscrow != null && <p>Your wallet will escrow <strong>{job.totalEscrow} ETH</strong> for the booked window. Any unused escrow is refundable.</p>}
+      {job.canSubmit === false && job.canViewResults && !job.quoteId && <p>Save a new job to receive a quote before submitting.</p>}
       {job.canSubmit !== false && <button className="button primary" onClick={submitChain} disabled={chainPending || !!transaction}>{chainPending ? 'Check your wallet…' : transaction ? 'Transaction sent' : 'Submit to blockchain'}</button>}
       {transaction && <p className="notice" role="status">Transaction sent: <span className="mono">{transaction}</span>. Waiting for the coordinator to observe the submission. Keep this page open while it is pending.</p>}
       {chainError && <p className="notice error" role="alert">{chainError}</p>}
@@ -135,7 +138,7 @@ export default function JobDetail({ api, id, notice }) {
         <button className="button" onClick={cancel} disabled={cancelPending}>{cancelPending ? (onChain ? 'Check your wallet…' : 'Canceling…') : onChain ? 'Cancel job and refund escrow' : 'Cancel job'}</button>
       </>}
       {showRefund && <>
-        <p>The escrowed price was returned to your OffBalance balance. Collect it to your wallet.</p>
+        <p>{partialRefund ? `${job.payment.buyerRefund} ETH of unused escrow was returned to your OffBalance balance.` : 'The escrowed price was returned to your OffBalance balance.'} Collect it to your wallet.</p>
         <button className="button" onClick={collectRefund} disabled={refundPending}>{refundPending ? 'Check your wallet…' : 'Collect refund'}</button>
       </>}
       {refundNotice && <p className="notice" role="status">{refundNotice}</p>}
@@ -157,7 +160,7 @@ export default function JobDetail({ api, id, notice }) {
           <Item label="Amount spent">{job.spent == null ? '—' : `${formatEth(job.spent)} ETH`}</Item>
           {job.onChainJobId != null && <Item label="On-chain job ID" mono>{job.onChainJobId}</Item>}
         </dl>
-        {job.error && <p className="notice error" role="alert">{job.error}</p>}
+        {(job.fundingError || job.error) && <p className="notice error" role="alert">{job.fundingError || job.error}</p>}
       </section>
       <section className="panel" aria-labelledby="result-heading">
         <div className="section-heading"><h2 id="result-heading">Result</h2></div>

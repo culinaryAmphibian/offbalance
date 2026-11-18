@@ -30,7 +30,7 @@ export function jobRoutes({ chain, matcher, results }: Deps): Router {
 		...serializeJob(job), executionMode: chain ? "chain" : "local",
 		canViewResults: String(job.owner) === String(me),
 		...(String(job.owner) === String(me) ? { submitWallet: job.buyerWallet ?? wallet, quoteId: job.quoteId } : {}),
-		canSubmit: String(job.owner) === String(me) && Boolean(chain) && !job.submittedAt && job.status === JobStatus.PENDING,
+		canSubmit: String(job.owner) === String(me) && Boolean(chain) && Boolean(job.quoteId) && !job.submittedAt && job.status === JobStatus.PENDING,
 		canCancel: String(job.owner) === String(me) && cancelable(job),
 	});
 	// Pending with nobody assigned; or canceled here while the buyer's submitJob was still in

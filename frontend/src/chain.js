@@ -4,7 +4,9 @@ import { decodeFunctionResult, encodeFunctionData, parseEther, toHex } from 'vie
 // The contract assigns the job id itself. The buyer escrows the price, so the call is payable.
 const submitAbi = [{ type: 'function', name: 'submitJob', stateMutability: 'payable',
   inputs: [...['price', 'k', 'quorum', 'executionTime'].map(name => ({ name, type: 'uint256' })),
-    { name: 'dockerName', type: 'string' }], outputs: [{ type: 'bool' }] }];
+    { name: 'dockerName', type: 'string' }], outputs: [{ type: 'uint256' }] }];
+const quotedSubmitAbi = [{ ...submitAbi[0], name: 'submitQuotedJob',
+  inputs: [{ name: 'quoteId', type: 'bytes32' }, { name: 'maxHourlyRate', type: 'uint256' }, ...submitAbi[0].inputs.slice(1)] }];
 
 export async function submitStoredJob(job, config, provider = globalThis.window?.ethereum, { signal } = {}) {
   signal?.throwIfAborted();
@@ -28,17 +30,25 @@ export async function submitStoredJob(job, config, provider = globalThis.window?
   const actual = await provider.request({ method: 'eth_chainId' });
   signal?.throwIfAborted();
   if (BigInt(actual) !== BigInt(chainId)) throw new Error(`Switch your wallet to chain ${chainId} before submitting.`);
-  const price = parseEther(String(job.maxPrice));
-  // The names are swapped on chain: the contract's `quorum` is how many providers get
-  // assigned (our job.k), and its `k` is how many matching results settle the job (our job.quorum).
-  const data = encodeFunctionData({ abi: submitAbi, functionName: 'submitJob',
-    args: [price, BigInt(job.quorum), BigInt(job.k), BigInt(job.window), job.dockerImage] });
+  const cap = parseEther(String(job.maxPrice));
+  const quoted = job.quoteId != null;
+  const providerCount = BigInt(job.k);
+  const window = BigInt(job.window);
+  const escrow = quoted ? parseEther(String(job.totalEscrow)) : cap;
+  if (quoted && (!/^0x[\da-f]{64}$/i.test(job.quoteId) || escrow !== ((cap * window + 3599n) / 3600n) * providerCount)) {
+    throw new Error('The saved escrow does not match the hourly cap and execution window.');
+  }
+  // The contract lists the agreement threshold before the provider count.
+  const terms = [BigInt(job.quorum), providerCount, window, job.dockerImage];
+  const data = quoted
+    ? encodeFunctionData({ abi: quotedSubmitAbi, functionName: 'submitQuotedJob', args: [job.quoteId, cap, ...terms] })
+    : encodeFunctionData({ abi: submitAbi, functionName: 'submitJob', args: [cap, ...terms] });
   const [current] = await provider.request({ method: 'eth_accounts' });
   signal?.throwIfAborted();
   const currentChain = await provider.request({ method: 'eth_chainId' });
   signal?.throwIfAborted();
   if (current?.toLowerCase() !== wallet.toLowerCase() || BigInt(currentChain) !== BigInt(chainId)) throw new Error('Your wallet changed. Sign in again.');
-  const hash = await provider.request({ method: 'eth_sendTransaction', params: [{ from: wallet, to: config.chain.address, data, value: toHex(price) }] });
+  const hash = await provider.request({ method: 'eth_sendTransaction', params: [{ from: wallet, to: config.chain.address, data, value: toHex(escrow) }] });
   if (!/^0x[\da-f]{64}$/i.test(hash ?? '')) throw new Error('The wallet returned an invalid transaction hash. Check your wallet before retrying.');
   return { hash };
 }
@@ -149,10 +159,11 @@ const cancelAbi = [{ type: 'function', name: 'cancelJob', stateMutability: 'nonp
 export async function cancelStoredJob(job, config, provider = globalThis.window?.ethereum, { signal, pollMs = 1000, maxPolls = 120 } = {}) {
   signal?.throwIfAborted();
   const { address, chainId } = chainTarget(config);
-  if (!job?.canCancel || !/^\d+$/.test(String(job.id))) throw new Error('This job can no longer be canceled.');
+  const jobId = job?.onChainJobId ?? job?.id;
+  if (!job?.canCancel || !/^\d+$/.test(String(jobId))) throw new Error('This job can no longer be canceled.');
   const wallet = await connectedWallet(provider, chainId, signal);
   if (job.submitWallet && wallet.toLowerCase() !== job.submitWallet.toLowerCase()) throw new Error('Connect the wallet that submitted this job.');
-  const data = encodeFunctionData({ abi: cancelAbi, functionName: 'cancelJob', args: [BigInt(job.id)] });
+  const data = encodeFunctionData({ abi: cancelAbi, functionName: 'cancelJob', args: [BigInt(jobId)] });
   // dry run first, so a revert (e.g. providers were just assigned) is reported before the wallet prompts
   await provider.request({ method: 'eth_call', params: [{ from: wallet, to: address, data }, 'latest'] });
   signal?.throwIfAborted();

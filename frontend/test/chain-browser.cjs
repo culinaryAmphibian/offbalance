@@ -167,7 +167,7 @@ const until = async (what, probe, timeout = 30000) => {
         return false;
       }, 30000);
     };
-    const PRICE = parseEther('0.01');
+    const PRICE = parseEther('0.03');
     let jobId;
 
     await page.goto(webUrl);
@@ -184,6 +184,7 @@ const until = async (what, probe, timeout = 30000) => {
       await page.getByLabel('Container image').fill(DIGEST);
       await page.getByLabel('Hourly cap per provider (ETH)').fill('0.01');
       await page.getByRole('button', { name: 'Save job' }).click();
+      await page.getByText('0.03 ETH', { exact: true }).waitFor();
       await page.getByRole('button', { name: 'Submit to blockchain' }).click();
       await page.getByText(/Transaction sent:/).waitFor();
       jobId = Number(page.url().match(/#\/jobs\/(\d+)/)[1]);
@@ -207,7 +208,7 @@ const until = async (what, probe, timeout = 30000) => {
     await check('the buyer collects the refund into their wallet', async () => {
       const before = await rpc.getBalance({ address: buyer });
       await page.getByRole('button', { name: 'Collect refund' }).click();
-      await expectNotice('Collected 0.010 ETH to your wallet.');
+      await expectNotice('Collected 0.030 ETH to your wallet.');
       assert.equal(await read('credits', [buyer]), 0n);
       const gained = (await rpc.getBalance({ address: buyer })) - before;
       assert.ok(gained > PRICE - parseEther('0.001') && gained <= PRICE, `the wallet gained ${formatEther(gained)} ETH (the refund less gas)`);
@@ -251,10 +252,10 @@ const until = async (what, probe, timeout = 30000) => {
 
       await page.evaluate(() => { window.location.hash = '#/'; }); // a full navigation would sign out
       await page.getByRole('button', { name: 'Provider', exact: true }).click();
-      await until('the collectable amount', async () => (await page.locator('.collect-amount').textContent()).startsWith('0.010'), 30000);
+      await until('the collectable amount', async () => (await page.locator('.collect-amount').textContent()).startsWith('0.030'), 30000);
       const before = await rpc.getBalance({ address: provider });
       await page.getByRole('button', { name: 'Collect funds' }).click();
-      await expectNotice('Collected 0.010 ETH to your wallet.');
+      await expectNotice('Collected 0.030 ETH to your wallet.');
       assert.equal(await read('credits', [provider]), 0n);
       const gained = (await rpc.getBalance({ address: provider })) - before;
       assert.ok(gained > PRICE - parseEther('0.001') && gained <= PRICE, `the wallet gained ${formatEther(gained)} ETH`);
