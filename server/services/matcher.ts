@@ -2,23 +2,25 @@ import { AccountModel, JobModel, JobStatus } from '../models/index.ts';
 import { MongoRepository } from '../adapters/repository.ts';
 import { MatchManager } from '../matching/MatchManager.ts';
 import type { AvailableProvider, MatchQuote, SchedulingJob } from '../matching/types.ts';
-import type { Chain } from './chain.ts';
+import { ChainWriteUnconfirmedError, type Chain } from './chain.ts';
 import { formatEthAmount } from '../matching/MatchingEngine.ts';
 
 export class Matcher {
   readonly repository: MongoRepository;
   readonly manager: MatchManager;
   private queue: Promise<void> = Promise.resolve();
-  private chain: Pick<Chain, 'assignProviders'> & Partial<Pick<Chain, 'assignQuotedProviders'>> | null;
+  private chain: Pick<Chain, 'assignProviders'> & Partial<Pick<Chain, 'assignQuotedProviders' | 'supportsQuotedPricing'>> | null;
   private now: () => number;
 
-  constructor(chain: (Pick<Chain, 'assignProviders'> & Partial<Pick<Chain, 'assignQuotedProviders'>>) | null, { now = Date.now, heartbeatTimeoutMs = 30_000 } = {}) {
+  constructor(chain: (Pick<Chain, 'assignProviders'> & Partial<Pick<Chain, 'assignQuotedProviders' | 'supportsQuotedPricing'>>) | null, { now = Date.now, heartbeatTimeoutMs = 30_000 } = {}) {
     this.chain = chain;
     this.now = now;
     this.repository = new MongoRepository();
     this.manager = new MatchManager({ repository: this.repository, now, heartbeatTimeoutMs,
       onMatched: (job, providers, quote) => this.assign(job, providers, quote) });
   }
+
+  get supportsQuotedPricing(): boolean { return this.chain?.supportsQuotedPricing === true; }
 
   // A benchmark or price update never establishes liveness. Authenticated
   // HTTPS heartbeats explicitly call this method instead.
@@ -76,6 +78,11 @@ export class Matcher {
         await this.chain?.assignProviders(claimed.onChainJobId, wallets);
       }
     } catch (error) {
+      if (claimed.quoteId && error instanceof ChainWriteUnconfirmedError) {
+        // A confirmed transaction may still arrive. Keep its exact wallet/rate set for event replay.
+        console.warn(`Quoted assignment ${claimed.contractJobId} remains reserved: ${error.message}`);
+        return;
+      }
       await JobModel.updateOne({ _id: claimed._id }, { $set: { providers: [], assignedRates: [], runningPrice: '0' } });
       await AccountModel.updateMany({ _id: { $in: accountIds } }, { $pull: { takenJobs: claimed._id } });
       throw error;

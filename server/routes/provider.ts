@@ -146,8 +146,13 @@ export function providerRoutes({ chain, matcher, results }: Deps): Router {
 			res.status(410).json({ error: "the stored result has expired" });
 			return;
 		}
-		const hw = chain ? await HardwareModel.findOne({ userRef: me }) : null;
-		const provider = hw?.address ?? res.locals.wallet;
+		const pinned = job.assignedRates.find(rate => rate.provider.equals(me))?.wallet;
+		if (chain && job.quoteId && !pinned) {
+			res.status(409).json({ error: "the provider wallet is missing from the recorded quote" });
+			return;
+		}
+		const hw = chain && !job.quoteId ? await HardwareModel.findOne({ userRef: me }) : null;
+		const provider = pinned ?? hw?.address ?? res.locals.wallet;
 		const receiptMode = !chain ? 'local' : chain.supportsDeliveryReceipts === false ? 'offchain' : 'onchain';
 		let delivered = receiptMode === 'onchain' && (previous?.receiptVerified ?? false);
 		if (chain) {

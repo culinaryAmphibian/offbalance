@@ -55,7 +55,7 @@ describe("contract events and database jobs", { skip: !uri && "set MONGODB_URI t
 		const account = await AccountModel.create({ walletIds: [BUYER] });
 		await AuthTokenModel.create({ tokenHash: hashToken("test-buyer"), account: account._id, wallet: BUYER });
 		// a chain, so saved jobs wait for JOB_SUBMITTED; the job routes only check that there is one
-		server = createApp({ chain: {} as Chain, matcher, builder: new Builder() }, { log: false }).listen(0, "127.0.0.1");
+		server = createApp({ chain: { supportsQuotedPricing: true } as Chain, matcher, builder: new Builder() }, { log: false }).listen(0, "127.0.0.1");
 		await new Promise(resolve => server.once("listening", resolve));
 		base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 	});

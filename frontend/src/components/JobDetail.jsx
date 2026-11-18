@@ -125,7 +125,8 @@ export default function JobDetail({ api, id, notice }) {
     {needsChain && <section className="panel" aria-label="Blockchain submission">
       <p>This job is saved in the database. It needs a blockchain submission before providers can be assigned.</p>
       {job.totalEscrow != null && <p>Your wallet will escrow <strong>{job.totalEscrow} ETH</strong> for the booked window. Any unused escrow is refundable.</p>}
-      {job.canSubmit === false && job.canViewResults && !job.quoteId && <p>Save a new job to receive a quote before submitting.</p>}
+      {job.canSubmit === false && job.canViewResults && job.quoteId && <p>The coordinator must deploy the current contract before you can submit.</p>}
+      {job.canSubmit === false && job.canViewResults && !job.quoteId && <p>This draft predates escrow quotes. Cancel it and save a new job before submitting.</p>}
       {job.canSubmit !== false && <button className="button primary" onClick={submitChain} disabled={chainPending || !!transaction}>{chainPending ? 'Check your wallet…' : transaction ? 'Transaction sent' : 'Submit to blockchain'}</button>}
       {transaction && <p className="notice" role="status">Transaction sent: <span className="mono">{transaction}</span>. Waiting for the coordinator to observe the submission. Keep this page open while it is pending.</p>}
       {chainError && <p className="notice error" role="alert">{chainError}</p>}

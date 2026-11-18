@@ -50,9 +50,10 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 		if (matches) await matcher.ping();
 		return;
 	}
+	if (name === "JOB_SUBMITTED" && matcher.supportsQuotedPricing) return;
 	const job = name === "JOB_SUBMITTED"
 		? await JobModel.findOne({ onChainJobId: jobId, quoteId: null })
-		: await findContractJob(jobId);
+		: await findContractJob(jobId, !matcher.supportsQuotedPricing);
 	if (!job) {
 		console.warn(`${name}: job ${jobId} isn't in the database; ignoring`);
 		return;
@@ -82,11 +83,15 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 		// the contract reports the provider's payout in wei; older events without it settle at the running price
 		case "PAID": {
 			const account = await accountForAddress(args.provider, job);
+			if (job.quoteId && (!account || typeof args.amount !== "bigint")) {
+				throw new Error("A quoted provider payment requires a pinned provider and exact chain amount.");
+			}
 			if (account) {
 				const earned = typeof args.amount === "bigint" ? Types.Decimal128.fromString(formatEther(args.amount)) : job.runningPrice;
+				const paid = job.quoteId ? `job:${job._id}:provider:${account}` : `${effectId}:provider`;
 				await AccountModel.updateOne(
-					{ _id: account, processedChainEvents: { $ne: `${effectId}:provider` } },
-					{ $inc: { reputation: 1, totalEarned: earned }, $addToSet: { processedChainEvents: `${effectId}:provider` } },
+					{ _id: account, processedChainEvents: { $ne: paid } },
+					{ $inc: { reputation: 1, totalEarned: earned }, $addToSet: { processedChainEvents: paid } },
 				);
 				// the job view's payment details; one payout per provider per job
 				await JobModel.updateOne(

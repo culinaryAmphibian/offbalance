@@ -156,7 +156,7 @@ export function contractJobId(job: Pick<Job, "onChainJobId" | "contractJobId">):
 	return job.contractJobId ?? job.onChainJobId;
 }
 
-export async function findContractJob(jobId: number) {
-	return await JobModel.findOne({ contractJobId: jobId })
-		?? await JobModel.findOne({ onChainJobId: jobId, quoteId: null });
+export async function findContractJob(jobId: number, includeLegacy = true) {
+	const linked = await JobModel.findOne({ contractJobId: jobId });
+	return !linked && includeLegacy ? await JobModel.findOne({ onChainJobId: jobId, quoteId: null }) : linked;
 }

@@ -30,13 +30,13 @@ export function jobRoutes({ chain, matcher, results }: Deps): Router {
 		...serializeJob(job), executionMode: chain ? "chain" : "local",
 		canViewResults: String(job.owner) === String(me),
 		...(String(job.owner) === String(me) ? { submitWallet: job.buyerWallet ?? wallet, quoteId: job.quoteId } : {}),
-		canSubmit: String(job.owner) === String(me) && Boolean(chain) && Boolean(job.quoteId) && !job.submittedAt && job.status === JobStatus.PENDING,
+		canSubmit: String(job.owner) === String(me) && Boolean(chain?.supportsQuotedPricing) && Boolean(job.quoteId) && !job.submittedAt && job.status === JobStatus.PENDING,
 		canCancel: String(job.owner) === String(me) && cancelable(job),
 	});
 	// Pending with nobody assigned; or canceled here while the buyer's submitJob was still in
 	// flight, so the escrow landed on chain anyway and only the buyer's cancelJob() returns it.
 	const cancelable = (job: Parameters<typeof serializeJob>[0]) =>
-		(job.status === JobStatus.PENDING && job.providers.length === 0) ||
+		(job.status === JobStatus.PENDING && (job.providers.length === 0 || Boolean(job.quoteId && job.submittedAt))) ||
 		(Boolean(chain) && job.status === JobStatus.CANCELED && Boolean(job.submittedAt) && !job.settledAt);
 	router.use("/jobs", requireAuth);
 
@@ -66,6 +66,10 @@ export function jobRoutes({ chain, matcher, results }: Deps): Router {
 			return true;
 		};
 		if (await replay()) return;
+		if (chain && !chain.supportsQuotedPricing) {
+			res.status(503).json({ error: "Deploy the current OffBalance contract before saving new chain jobs." });
+			return;
+		}
 		const fields: Record<string, unknown> = Object.fromEntries(
 			SETTABLE.filter((k) => req.body?.[k] !== undefined).map((k) => [k, req.body[k]]),
 		);

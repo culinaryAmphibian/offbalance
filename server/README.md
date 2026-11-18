@@ -27,6 +27,12 @@ To use the deployed contract, remove `CHAIN=off`, start/deploy the local chain u
 - The database API's `maxPrice` is each provider's hourly ceiling, and `runningPrice` is the highest selected hourly rate. The repository filters each provider by that ceiling and translates it into the matching engine's aggregate execution budget using integer wei arithmetic. This preserves the database branch's pricing contract.
 - `adapters/checkpoints.ts` persists block number and hash under a chain/contract namespace. The monitor retries failed callbacks without advancing the cursor; payment/reputation effects deduplicate stable event IDs in MongoDB. Reorgs stop the monitor until explicitly reconciled. Local development chains default to zero confirmations; other chains default to six (`CHAIN_CONFIRMATIONS` overrides this).
 
+## Chain pricing
+
+New chain jobs book a fixed execution window. Each provider's booked charge is its quoted hourly rate multiplied by the window in seconds, divided by 3,600 and rounded up to one wei. The wallet escrows that calculation at the buyer's hourly cap for every requested provider. Eligible providers receive their own booked charge, along with any separately credited stake return and slash reward. Unused escrow becomes withdrawable buyer credit.
+
+Drain and settle the previous contract before deploying the priced contract and switching the coordinator to the new ABI and a clean chain database. Old funded jobs keep their original terms on their deployment. Unfunded drafts from before quotes can be canceled and recreated. If an assignment transaction's outcome is unclear, the coordinator keeps the exact providers and rates reserved until the chain confirms assignment or the buyer cancels the pending job.
+
 ## Providers and liveness
 
 The existing Python HTTP endpoints remain available:

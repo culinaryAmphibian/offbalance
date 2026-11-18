@@ -36,7 +36,7 @@ step(`job ${id} submitted; waiting for staking, commit, reveal, delivery and pay
 await stack.waitForStatus(id, [Status.PAID], 300_000);
 
 const stake = await stack.requiredStake(id, provider);
-assert.equal(await stack.credits(provider) - before, parseEther("0.01") + stake, "the provider is paid the price plus its stake back");
+assert.equal(await stack.credits(provider) - before, parseEther("0.001") / 60n + 1n + stake, "the provider is paid its rounded booked charge plus its stake back");
 const files = await stack.download(id);
 assert.equal(files.get("result.txt"), "compose smoke\n", "the buyer downloads what the provider's container wrote");
 const job = await until("the server to record the payout", async () => { const j = await stack.job(id); return j.status === "PAYOUT" && j; }, 30_000);

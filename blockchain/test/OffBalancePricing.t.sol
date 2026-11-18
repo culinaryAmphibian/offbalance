@@ -19,12 +19,14 @@ contract OffBalancePricingTest is OffBalanceFixture {
         ob.submitQuotedJob{value: ESCROW - 1}(QUOTE, CAP, 2, 3, EXEC, "img");
         JobID_t id = _submitQuote();
         assertEq(address(ob).balance, ESCROW);
+        assertEq(ob.escrowed(buyer), ESCROW);
         vm.prank(buyer);
         vm.expectRevert("Invalid or used quote");
         ob.submitQuotedJob{value: ESCROW}(QUOTE, CAP, 2, 3, EXEC, "img");
         vm.prank(buyer);
         ob.cancelJob(id);
         assertEq(ob.credits(buyer), ESCROW);
+        assertEq(ob.escrowed(buyer), 0);
     }
 
     function test_QuotedJobPaysUnequalBookedRatesAndRefundsUnusedEscrow() public {
@@ -54,6 +56,7 @@ contract OffBalancePricingTest is OffBalanceFixture {
 
         assertEq(_status(id), PAID);
         assertEq(ob.credits(buyer), ESCROW - 3);
+        assertEq(ob.escrowed(buyer), 0);
         assertEq(ob.credits(ps[0]), 1 + stake + (stake + 1) / 2);
         assertEq(ob.credits(ps[1]), 2 + stake + stake / 2);
         assertEq(ob.credits(ps[2]), 0);
@@ -71,6 +74,7 @@ contract OffBalancePricingTest is OffBalanceFixture {
         ob.finalizeProviderSelection(id);
         assertEq(_status(id), NO_QUORUM);
         assertEq(ob.credits(buyer), ESCROW);
+        assertEq(ob.escrowed(buyer), 0);
         assertEq(ob.credits(ps[0]), stake);
         assertEq(address(ob).balance, _owed());
     }
