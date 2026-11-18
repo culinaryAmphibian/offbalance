@@ -10,8 +10,11 @@ export default function CollectFunds({ chain, onCollected }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [pending, setPending] = useState(false);
-  const active = useRef(true);
-  useEffect(() => () => { active.current = false; }, []);
+  const active = useRef(false);
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
 
   if (chain.config && !chain.available) return null; // demo mode: no contract
   const { balances } = chain;
