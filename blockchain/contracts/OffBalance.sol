@@ -111,6 +111,8 @@ contract OffBalance {
     mapping(JobID_t => Job) private jobs;
     mapping(address => Provider) private providers;
     mapping(address => uint256) public credits;
+    // Buyer deposits still locked in unsettled jobs, excluding withdrawable credits.
+    mapping(address => uint256) public escrowed;
     // Stake each provider currently has locked in unsettled jobs (returned or slashed at settlement).
     mapping(address => uint256) public lockedStake;
 
@@ -265,6 +267,7 @@ contract OffBalance {
         job.id = jobId;
         job.creator = payable(msg.sender);
         job.price = price;
+        escrowed[msg.sender] += price;
         job.k = k;
         job.quorum = quorum;
         job.executionTime = executionTime;
@@ -282,6 +285,7 @@ contract OffBalance {
         require(msg.sender == job.creator, "Only buyer");
         require(job.status == Status.JOB_SUBMITTED || job.status == Status.PROVIDER_SELECTED, "Job no longer pending");
         job.status = Status.CANCELED;
+        escrowed[job.creator] -= job.price;
         credits[job.creator] += job.price;
         _refundAllStakes(jobId);
         emit CANCELED(jobId);
@@ -449,6 +453,7 @@ contract OffBalance {
         require(job.status == Status.DELIVERING, "Not in delivery phase");
         require(block.timestamp > job.deliveryDeadline, "Delivery window not ended");
         job.status = Status.DELIVERED;
+        escrowed[job.creator] -= job.price;
         emit DELIVERED(jobId);
         _payWinnersAndSlashLosers(jobId);
     }
@@ -523,6 +528,7 @@ contract OffBalance {
     function _noQuorum(JobID_t jobId) private {
         Job storage job = jobs[jobId];
         job.status = Status.NO_QUORUM;
+        escrowed[job.creator] -= job.price;
         credits[job.creator] += job.price;
         _refundAllStakes(jobId);
         emit NO_QUORUM(jobId);

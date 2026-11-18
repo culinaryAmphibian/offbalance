@@ -15,6 +15,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import {
 	createPublicClient, createWalletClient, encodeAbiParameters, http, keccak256, nonceManager,
 	parseEther, toHex, type Abi, type Address, type Hex,
@@ -75,6 +76,7 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 		});
 		const deployer = wallet(env.SERVER_PRIVATE_KEY);
 		const buyer = wallet(env.BUYER_PRIVATE_KEY);
+		const linkedBuyer = wallet(env.PROVIDER_4_PRIVATE_KEY);
 		const providers = [1, 2, 3].map(n => wallet(env[`PROVIDER_${n}_PRIVATE_KEY`]));
 		const [p1, p2, p3] = providers.map(p => p.account!.address);
 
@@ -93,6 +95,8 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 		const { handleChainEvent } = await import("../services/events.ts");
 		const { Matcher } = await import("../services/matcher.ts");
 		const { Orchestrator } = await import("../services/orchestrator.ts");
+		const { createApp } = await import("../app.ts");
+		const { Builder } = await import("../services/builder.ts");
 
 		await mongoose.connect(uri!, { dbName: `offbalance_e2e_test_${randomUUID().replaceAll("-", "")}` });
 		await mongoose.syncIndexes();
@@ -106,10 +110,25 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 			await handleChainEvent(event, matcher);
 			orchestrator.onEvent(event);
 		});
-		stopServer = async () => { await orchestrator.stop(); await chain.stop(); };
+		const dashboardServer = createApp({ chain, matcher, builder: new Builder() }, { log: false }).listen(0, "127.0.0.1");
+		stopServer = async () => { dashboardServer.close(); await orchestrator.stop(); await chain.stop(); };
+		await once(dashboardServer, "listening");
+		const base = `http://127.0.0.1:${(dashboardServer.address() as { port: number }).port}`;
 
-		const owner = await AccountModel.create({ walletIds: [buyer.account!.address.toLowerCase()] });
+		const owner = await AccountModel.create({ walletIds: [buyer.account!.address, linkedBuyer.account!.address] });
 		for (const p of [p1, p2, p3]) await AccountModel.create({ walletIds: [p.toLowerCase()] });
+		const { message } = await fetch(`${base}/auth/nonce?wallet=${buyer.account!.address}`).then(res => res.json());
+		const auth = await fetch(`${base}/auth`, {
+			method: "POST", headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ wallet: buyer.account!.address, signature: await buyer.account!.signMessage({ message }) }),
+		});
+		assert.equal(auth.status, 201);
+		const { token } = await auth.json();
+		async function dashboardEscrow() {
+			const res = await fetch(`${base}/account/me/dashboard`, { headers: { Authorization: `Bearer ${token}` } });
+			assert.equal(res.status, 200);
+			return (await res.json()).buyer.currentEscrowed;
+		}
 
 		const read = <T>(functionName: string, args: unknown[]) => rpc.readContract({ address, abi, functionName, args }) as Promise<T>;
 		const send = async (who: ReturnType<typeof wallet>, functionName: string, args: unknown[], value = 0n) => {
@@ -122,11 +141,14 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 
 		// The server records the job and the buyer submits it (the contract numbers jobs 1, 2, ...);
 		// k = 2 matching results out of quorum = 3 providers.
-		async function submit(jobId: number, price: bigint) {
-			await JobModel.create({
+		function save(jobId: number) {
+			return JobModel.create({
 				onChainJobId: jobId, owner: owner._id, dockerImageDigest: `example/job@sha256:${"a".repeat(64)}`,
 				maxPrice: "1", runningPrice: "1", minNodesToRunOn: 3, minNodesToAgree: 2, timeWindow: EXECUTION_TIME,
 			});
+		}
+		async function submit(jobId: number, price: bigint) {
+			await save(jobId);
 			await send(buyer, "submitJob", [price, 2n, 3n, BigInt(EXECUTION_TIME), "example/job"], price);
 			await chain!.assignProviders(jobId, [p1, p2, p3]);
 		}
@@ -156,9 +178,16 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 
 		const priceA = parseEther("1");
 		const priceB = parseEther("0.3");
+		await save(99); // a saved job with no contract deposit
+		assert.equal(await dashboardEscrow(), "0");
 		// both assigned before either settles, so every stake is a new provider's
 		await submit(1, priceA);
 		await submit(2, priceB);
+		await save(3);
+		await send(linkedBuyer, "submitJob", [1n, 2n, 3n, BigInt(EXECUTION_TIME), "example/job"], 1n);
+		assert.equal(await dashboardEscrow(), "1.300000000000000001");
+		await send(linkedBuyer, "cancelJob", [3n]);
+		assert.equal(await dashboardEscrow(), "1.3");
 		const stake = await requiredStake(1, p1);
 		assert.equal(stake, 6n * await read<bigint>("STAKE", []));
 
@@ -171,6 +200,7 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 		assert.equal(endB, NO_QUORUM);
 		assert.equal(await status(1), PAID);
 		assert.equal(await status(2), NO_QUORUM);
+		assert.equal(await dashboardEscrow(), "0");
 
 		// job A: price + p3's slashed stake split between p1 and p2 (p1 takes the rounding dust),
 		//        who also get their own stakes back
@@ -185,6 +215,11 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 			const [a, b] = await Promise.all([1, 2].map(id => JobModel.findOne({ onChainJobId: id }).orFail()));
 			return a.status === JobStatus.PAYOUT && b.status === JobStatus.NO_QUORUM;
 		}, 10_000);
+
+		const exited = once(node, "exit");
+		process.kill(-node.pid!, "SIGTERM");
+		await exited;
+		assert.equal(await dashboardEscrow(), null, "the dashboard stays available if the RPC is down");
 	} finally {
 		await stopServer().catch(() => {});
 		if (mongoose.connection.readyState === 1) {
