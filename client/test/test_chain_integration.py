@@ -16,8 +16,13 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
+
+import requests
 
 from eth_account import Account
 from eth_account.messages import encode_defunct
@@ -25,9 +30,12 @@ from web3 import Web3
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from Credentials import Credentials, parse_session_key
+from ProviderClient import ProviderClient
+from job.JobResult import JobResult
 from blockchain.BlockchainEvent import BlockchainEvent
 from blockchain.BlockchainManager import BlockchainManager
 from blockchain.Contract import ProviderContractWrapper
+from blockchain.State import StateConflict
 from blockchain.EventData import CommitPhaseStartEvent, ProviderSelectedEvent, RevealPhaseStartEvent
 import main
 
@@ -89,6 +97,9 @@ class ClientAgainstRealChainTests(unittest.TestCase):
         receipt = self.send(self.server, factory.constructor())
         self.contract = self.w3.eth.contract(address=receipt['contractAddress'], abi=self.artifact['abi'])
         self.wrapper = ProviderContractWrapper(self.contract)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.state_dir = directory.name
 
     # ───────────── the test's own (buyer/server) transactions ─────────────
 
@@ -110,10 +121,15 @@ class ClientAgainstRealChainTests(unittest.TestCase):
         signature = Account.sign_message(encode_defunct(primitive=digest), session.key).signature
         self.send(owner, self.contract.functions.registerSessionKey(session.address, expires_at, signature), funding)
 
-    def manager(self, session_key, owner):
+    def manager(self, session_key, owner, *, recover=False):
+        wrapper = ProviderContractWrapper(self.contract)
         with contextlib.redirect_stdout(io.StringIO()):
-            return BlockchainManager(self.w3, self.wrapper,
-                                     Credentials('api', parse_session_key(session_key), owner=owner))
+            manager = BlockchainManager(
+                self.w3, wrapper, Credentials('api', parse_session_key(session_key), owner=owner),
+                state_dir=self.state_dir if recover else None,
+            )
+        self.addCleanup(manager.close)
+        return manager
 
     def submitted_and_assigned(self, providers, k=2):
         receipt = self.send(self.buyer, self.contract.functions.submitJob(PRICE, k, len(providers), 10, 'img'), PRICE)
@@ -241,43 +257,113 @@ class ClientAgainstRealChainTests(unittest.TestCase):
         self.assertIsInstance(BlockchainEvent.PROVIDER_SELECTED, BlockchainEvent)
 
 
-    # A client that restarts after committing has lost the result hash it committed to (it's
-    # only kept in memory, in BlockchainManager.committed_jobs), so when the reveal phase starts
-    # the new process sends nothing and the provider is slashed for a job it did. Keeping the
-    # committed hash on disk (it's not secret: the salt is) would make this pass.
-    @unittest.expectedFailure
     def test_a_client_restarted_after_committing_still_reveals(self):
-        m1 = self.manager(self.p1.key.hex(), self.p1.address)
+        session = Account.create()
+        self.register_session_key(self.p1, session)
+        m1 = self.manager(session.key.hex(), self.p1.address, recover=True)
         m2 = self.manager(self.p2.key.hex(), self.p2.address)
         job_id = self.submitted_and_assigned([self.p1, self.p2], k=1)
         with contextlib.redirect_stdout(io.StringIO()):
             for manager, provider in ((m1, self.p1), (m2, self.p2)):
                 manager.stake(job_id, self.contract.functions.getProviderCommitment(job_id, provider.address).call()[4])
             self.send(self.server, self.contract.functions.finalizeProviderSelection(job_id))
-            m1.commit(job_id, RESULT)
             m2.commit(job_id, RESULT)
-        restarted = self.manager(self.p1.key.hex(), self.p1.address)  # same key, new process
+            # The RPC mines the original transaction but loses its response.
+            send_raw = self.w3.eth.send_raw_transaction
+
+            def lose_response(raw):
+                send_raw(raw)
+                raise requests.ConnectionError('lost response')
+
+            with patch.object(self.w3.eth, 'send_raw_transaction', side_effect=lose_response):
+                with self.assertRaises(requests.ConnectionError):
+                    m1.commit(job_id, RESULT)
+
+        recorded = m1.state.snapshot()['transactions'][f'commit:{job_id}']
+        self.assertEqual(recorded['status'], 'pending')
+        nonce = self.w3.eth.get_transaction_count(session.address)
+        m1.close()
+        restarted = self.manager(session.key.hex(), self.p1.address, recover=True)
         self.advance(11)
         self.send(self.server, self.contract.functions.startRevealPhase(job_id))
+        canonical_receipt = restarted.contract._canonical_receipt
+        first_read = True
+
+        def lagging_commit_receipt(w3, record):
+            nonlocal first_read
+            if first_read and record['hash'] == recorded['hash']:
+                first_read = False
+                return None
+            return canonical_receipt(w3, record)
+
+        with patch.object(restarted.contract, '_canonical_receipt', side_effect=lagging_commit_receipt):
+            self.assertEqual(list(restarted.recovery_actions()), [(job_id, 'reveal', 0)])
+        self.assertFalse(first_read)
+        self.assertEqual(restarted.state.snapshot()['transactions'][f'commit:{job_id}']['hash'], recorded['hash'])
+        self.assertEqual(self.w3.eth.get_transaction_count(session.address), nonce)
         with contextlib.redirect_stdout(io.StringIO()):
             restarted.reveal(job_id)
         revealed = self.contract.functions.getProviderCommitment(job_id, self.p1.address).call()[2]
-        self.assertTrue(revealed, 'the restarted client revealed its commitment')
+        self.assertTrue(revealed, 'the restarted client revealed for the wallet that owns the session key')
+        self.assertEqual(list(restarted.recovery_actions()), [], 'a repeated wake must not submit a duplicate reveal')
+        self.assertEqual(self.w3.eth.get_transaction_count(session.address), nonce + 1)
 
-    # A client that restarts after it was assigned (and staked) starts watching the chain from
-    # the current block, so it never sees its PROVIDER_SELECTED again, never fetches the manifest,
-    # ignores the commit phase and is slashed. The server already exposes the assignment
-    # (GET /provider/assignment); reading it at startup would make this pass.
-    @unittest.expectedFailure
-    def test_a_client_restarted_after_staking_still_sees_its_assignment(self):
-        m1 = self.manager(self.p1.key.hex(), self.p1.address)
+    def test_a_client_restarted_after_staking_still_runs_its_assignment(self):
+        m1 = self.manager(self.p1.key.hex(), self.p1.address, recover=True)
+        m2 = self.manager(self.p2.key.hex(), self.p2.address)
         job_id = self.submitted_and_assigned([self.p1, self.p2])
         with contextlib.redirect_stdout(io.StringIO()):
-            m1.stake(job_id, self.contract.functions.getProviderCommitment(job_id, self.p1.address).call()[4])
-        self.advance(1)
-        restarted = self.manager(self.p1.key.hex(), self.p1.address)
-        selected = [e for e in self.events(restarted, ProviderSelectedEvent) if e.provider_selected == self.p1.address]
-        self.assertEqual([e.jobId for e in selected], [job_id], 'the restarted client knows it is on the job')
+            before = ProviderClient(Mock(), m1, Mock(), Mock())
+            before._poll_events(threading.Event())
+            for manager, provider in ((m1, self.p1), (m2, self.p2)):
+                manager.stake(job_id, self.contract.functions.getProviderCommitment(job_id, provider.address).call()[4])
+        self.assertIn('assignment', m1.state.job(job_id))
+        nonce = self.w3.eth.get_transaction_count(self.p1.address)
+        m1.close()
+        self.send(self.server, self.contract.functions.finalizeProviderSelection(job_id))
+
+        restarted = self.manager(self.p1.key.hex(), self.p1.address, recover=True)
+        # The original assignment block was already acknowledged. Recovery uses the
+        # saved job and the current contract phase even when the event is absent.
+        self.assertEqual(self.events(restarted, ProviderSelectedEvent), [])
+        runner = Mock()
+        runner.startJob.return_value = JobResult('ok', output_dir=Path('output'))
+        runner.hash_dir.return_value = RESULT
+        server = Mock()
+        manifest = {'image': 'fixture', 'command': ['run']}
+        server.getDockerManifest.return_value = manifest
+        client = ProviderClient(Mock(), restarted, server, runner)
+        client._stop_event = threading.Event()
+        client._resume_jobs()
+        end = time.monotonic() + 5
+        while client._workers and time.monotonic() < end:
+            time.sleep(0.01)
+        self.assertFalse(client._workers, 'recovery worker completed')
+        runner.prepareJob.assert_called_once_with(manifest, job_id)
+        runner.startJob.assert_called_once()
+        self.assertEqual(self.contract.functions.getProviderCommitment(job_id, self.p1.address).call()[0],
+                         restarted.commitment(job_id, RESULT))
+        self.assertEqual(self.w3.eth.get_transaction_count(self.p1.address), nonce + 1, 'no duplicate stake')
+        client._resume_jobs()
+        runner.startJob.assert_called_once()
+
+    def test_orphaned_assignment_does_not_replay_pending_stake_for_reused_id(self):
+        fork = self.w3.provider.make_request('evm_snapshot', [])['result']
+        manager = self.manager(self.p1.key.hex(), self.p1.address, recover=True)
+        job_id = self.submitted_and_assigned([self.p1], k=1)
+        stake = self.contract.functions.getProviderCommitment(job_id, self.p1.address).call()[4]
+        with patch.object(self.w3.eth, 'send_raw_transaction', side_effect=requests.ConnectionError):
+            with self.assertRaises(requests.ConnectionError):
+                manager.stake(job_id, stake)
+        self.assertEqual(manager.state.snapshot()['transactions'][f'stake:{job_id}']['status'], 'pending')
+        self.assertTrue(self.w3.provider.make_request('evm_revert', [fork])['result'])
+        self.advance(10)
+        self.assertEqual(self.submitted_and_assigned([self.p1], k=1), job_id)
+        with patch.object(self.w3.eth, 'send_raw_transaction') as broadcast:
+            with self.assertRaisesRegex(StateConflict, f'Job {job_id} assignment'):
+                list(manager.recovery_actions())
+            broadcast.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

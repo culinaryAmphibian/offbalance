@@ -2,7 +2,7 @@
 // event handling + Orchestrator, and MongoDB), for the cases that one doesn't cover:
 //   - a provider that never stakes is dropped when the staking window closes, and the job goes on
 //   - too few providers stake: the job ends in NO_QUORUM and everyone is refunded
-//   - the server restarts while a job is in progress (TESTING_PLAN.md B5; todo until fixed)
+//   - the server restarts while a job is in progress (TESTING_PLAN.md B5)
 // Every phase transition must come from the server. This takes about two minutes, because the
 // staking window is 30 seconds of real time.
 //
@@ -27,7 +27,7 @@ const PORT = Number(process.env.E2E_RESTART_CHAIN_PORT ?? 8547);
 const RPC_URL = `http://127.0.0.1:${PORT}`;
 
 // Status enum indices in OffBalance.sol
-const COMMIT = 3, REVEAL = 4, DELIVERING = 6, PAID = 8, NO_QUORUM = 10;
+const COMMIT = 3, REVEAL = 4, PAID = 8, NO_QUORUM = 10;
 const EXECUTION_TIME = 10;
 
 function devEnv(): Record<string, string> {
@@ -61,6 +61,7 @@ describe("the server drives staking and survives restarts", { skip: !uri && "set
 	let wallets: Record<string, ReturnType<typeof createWalletClient>>;
 	let startServer: () => Promise<Awaited<ReturnType<typeof import("../services/chain.ts").Chain.connect>>>;
 	let createJob: (jobId: number, k: number, providers: number) => Promise<void>;
+	let checkpointBlock: () => Promise<number>;
 
 	const read = <T>(functionName: string, args: unknown[]) => rpc.readContract({ address, abi, functionName, args }) as Promise<T>;
 	const send = async (who: string, functionName: string, args: unknown[], value = 0n) => {
@@ -114,6 +115,10 @@ describe("the server drives staking and survives restarts", { skip: !uri && "set
 		const { Orchestrator } = await import("../services/orchestrator.ts");
 		await mongoose.connect(uri!, { dbName: `offbalance_e2e_restart_${randomUUID().replaceAll("-", "")}` });
 		await mongoose.syncIndexes();
+		const { MongoCheckpointStore, checkpointNamespace } = await import("../adapters/checkpoints.ts");
+		const checkpoint = new MongoCheckpointStore(checkpointNamespace(31337, address));
+		checkpointBlock = async () => (await checkpoint.load())?.blockNumber ?? -1;
+		const { unfinishedPhaseJobIds } = await import("../services/phase-recovery.ts");
 
 		// the same wiring as server.ts; calling it again is a server restart (same database)
 		startServer = async () => {
@@ -125,6 +130,7 @@ describe("the server drives staking and survives restarts", { skip: !uri && "set
 				await handleChainEvent(event, matcher);
 				orchestrator.onEvent(event);
 			});
+			await orchestrator.recover(await unfinishedPhaseJobIds());
 			stopServer = async () => { await orchestrator.stop(); await chain.stop(); };
 			return chain;
 		};
@@ -189,12 +195,9 @@ describe("the server drives staking and survives restarts", { skip: !uri && "set
 		assert.equal(await read<number>("reputationOf", [p3]), 0, "not staking costs no reputation");
 	});
 
-	// The orchestrator's phase timers live in memory, and the event monitor resumes from its
-	// checkpoint after a restart, so events it already handled aren't seen again: a job that was
-	// mid-phase when the server restarted is never advanced (TESTING_PLAN.md B5).
-	test("a job in progress when the server restarts still finishes", { todo: "B5: the orchestrator doesn't resume in-progress jobs after a restart" }, async () => {
+	test("a job in progress when the server restarts still finishes", async () => {
 		await stopServer();
-		let chain = (await startServer())!;
+		const chain = (await startServer())!;
 		const price = parseEther("0.4");
 		await createJob(3, 2, 2);
 		await send("buyer", "submitJob", [price, 2n, 2n, BigInt(EXECUTION_TIME), "example/job"], price);
@@ -208,18 +211,22 @@ describe("the server drives staking and survives restarts", { skip: !uri && "set
 		const { JobModel, JobStatus } = await import("../models/index.ts");
 		await until("the server to record job 3's commit phase", async () =>
 			(await JobModel.findOne({ onChainJobId: 3 }))?.status === JobStatus.COMMIT_PHASE, 30_000);
-		await new Promise(resolve => setTimeout(resolve, 2_000)); // a few polls: the checkpoint is saved
+		const logs = await rpc.getContractEvents({
+			address, abi, eventName: "COMMIT_PHASE_START", args: { jobId: 3n }, fromBlock: 0n, toBlock: "latest",
+		});
+		assert.equal(logs.length, 1);
+		await until("the commit phase event to be checkpointed", async () =>
+			await checkpointBlock() >= Number(logs[0].blockNumber), 30_000);
 
 		// restart the server mid-commit, then let the commit deadline pass
 		await stopServer();
-		chain = (await startServer())!;
+		await startServer();
 		const result = keccak256(toHex("result 3"));
 		await send("p1", "submitCommitment", [3n, commitment(result, salt(3, "p1"))]);
 		await send("p2", "submitCommitment", [3n, commitment(result, salt(3, "p2"))]);
 		await until("job 3 reveal phase after the restart", async () => await status(3) === REVEAL, (EXECUTION_TIME + 20) * 1000);
 		await send("p1", "submitReveal", [3n, result, salt(3, "p1")]);
 		await send("p2", "submitReveal", [3n, result, salt(3, "p2")]);
-		const reached = await until("job 3 consensus", async () => { const s = await status(3); return (s === DELIVERING || s === PAID) && s; }, 60_000);
-		assert.ok(reached);
+		await until("job 3 payout", async () => await status(3) === PAID, 90_000);
 	});
 });

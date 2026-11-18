@@ -37,6 +37,7 @@ export function errorMessage(error: unknown): string {
 
 // Chain-time deadlines (unix seconds) from OffBalance.getDeadlines; 0 until that phase starts.
 export type Deadlines = { pendingDeadline: bigint; commitDeadline: bigint; revealDeadline: bigint; deliveryDeadline: bigint };
+export type PhaseSnapshot = Deadlines & { status: number };
 
 export type ChainEvent = { id?: string; name: string; args: Record<string, unknown>; blockNumber: bigint };
 
@@ -190,11 +191,11 @@ export class Chain {
 		return this.write("endDeliveryPhase", [BigInt(jobId)]);
 	}
 
-	async getDeadlines(jobId: number): Promise<Deadlines> {
-		const [, pendingDeadline, commitDeadline, revealDeadline, deliveryDeadline] = await this.publicClient.readContract({
+	async getDeadlines(jobId: number): Promise<PhaseSnapshot> {
+		const [status, pendingDeadline, commitDeadline, revealDeadline, deliveryDeadline] = await this.publicClient.readContract({
 			address: this.deployment.address, abi: this.deployment.abi, functionName: "getDeadlines", args: [BigInt(jobId)],
 		}) as readonly [number, bigint, bigint, bigint, bigint];
-		return { pendingDeadline, commitDeadline, revealDeadline, deliveryDeadline };
+		return { status, pendingDeadline, commitDeadline, revealDeadline, deliveryDeadline };
 	}
 
 	// The latest block's timestamp: the clock the contract checks deadlines against.

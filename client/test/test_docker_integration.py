@@ -12,6 +12,7 @@ import io
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -74,6 +75,50 @@ class RealDockerJobTests(unittest.TestCase):
         result, _ = self.run_job('echo "something broke" >&2; exit 3')
         self.assertEqual((result.status, result.exitCode), ('failed', 3))
         self.assertIn('something broke', result.message)
+
+    def test_a_runner_reconnects_to_its_container_and_reuses_completed_output(self):
+        from blockchain.State import ExecutionPaused, ProviderState
+        from job.RunManager import RunManager
+
+        root = Path(self.folder.name)
+        identity = {'chain_id': 31337, 'genesis': str(root), 'signer': 'test'}
+        state = ProviderState(identity, b'test-seed', root / 'providers')
+        self.addCleanup(state.close)
+        stop = threading.Event()
+        self.runner.enable_recovery(state, stop)
+        manifest = {'image': IMAGE, 'command': ['sh', '-c',
+                    'echo started >> /output/runs; sleep 2; echo done > /output/result']}
+        self.runner.prepareJob(manifest, 7)
+        self.addCleanup(self.runner.cleanupJob, 7)
+
+        def pause_after_start():
+            end = time.monotonic() + 5
+            while time.monotonic() < end:
+                if (self.runner.out_dir / 'runs').is_file():
+                    stop.set()
+                    return
+                time.sleep(0.05)
+            stop.set()
+
+        watcher = threading.Thread(target=pause_after_start)
+        watcher.start()
+        try:
+            with self.assertRaises(ExecutionPaused):
+                self.runner.startJob(7, 10)
+        finally:
+            watcher.join()
+        name = state.job(7)['execution']['container']
+        self.assertEqual(DOCKER.containers.get(name).labels['offbalance.provider'], state.directory.name)
+
+        restarted = RunManager()
+        restarted.jobs_dir = root
+        restarted.enable_recovery(state, threading.Event())
+        restarted.prepareJob(manifest, 7)
+        self.assertEqual(restarted.startJob(7, 10).status, 'ok')
+        self.assertEqual(self.read(restarted.out_dir, 'runs'), 'started')
+        self.assertEqual(self.read(restarted.out_dir, 'result'), 'done')
+        self.assertEqual(restarted.startJob(7, 10).status, 'ok')
+        self.assertEqual(self.read(restarted.out_dir, 'runs'), 'started')
 
     # ───────────── isolation ─────────────
 
