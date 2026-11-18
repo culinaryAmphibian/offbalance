@@ -15,11 +15,15 @@ const wallet = () => `0x${randomBytes(20).toString("hex")}`;
 const hash = (n: number) => `0x${n.toString(16).padStart(64, "0")}`;
 let nextJobId = 100;
 
-async function fixture(selfProvider = false) {
+async function fixture(selfProvider = false, quoted = false) {
 	const owner = await AccountModel.create({ walletIds: [wallet()] });
 	const provider = selfProvider ? owner : await AccountModel.create({ walletIds: [wallet()] });
 	const job = await JobModel.create({
 		onChainJobId: nextJobId++, owner: owner._id, providers: [provider._id],
+		...(quoted ? {
+			quoteId: hash(nextJobId), contractJobId: nextJobId + 300,
+			assignedRates: [{ provider: provider._id, wallet: provider.walletIds[0], hourlyRate: "1.5", bookedCharge: "0.025" }],
+		} : {}),
 		status: JobStatus.AWAITING_DELIVERY,
 		dockerImageDigest: `example/job@sha256:${"a".repeat(64)}`,
 		maxPrice: "3", runningPrice: "2.75", minNodesToRunOn: 1, minNodesToAgree: 1, timeWindow: 60,
@@ -30,7 +34,7 @@ async function fixture(selfProvider = false) {
 		busyJobId: String(job.onChainJobId), lastHeartbeat: Date.now() });
 	const event = (name: string, id = `${job.onChainJobId}:${name}`): ChainEvent & { id: string } => ({
 		id, name, blockNumber: 1n,
-		args: { jobId: BigInt(job.onChainJobId), provider: provider.walletIds[0] },
+		args: { jobId: BigInt(job.contractJobId ?? job.onChainJobId), provider: provider.walletIds[0] },
 	});
 	return { owner, provider, job, matcher, event };
 }
@@ -96,6 +100,29 @@ test("Mongo chain event effects survive replay and partial failures", { skip: !u
 			assert.equal((await account(f.owner._id)).spent, "3"); // maxPrice, the escrow
 			assert.equal((await account(f.provider._id)).earned, "1.5");
 			assert.equal((await account(second._id)).earned, "1.5");
+		});
+
+		await t.test("replayed quoted settlement separates booked work and slash rewards and never bills twice", async () => {
+			const f = await fixture(false, true);
+			const work = 25_000_000_000_000_000n;
+			const reward = 3_000_000_000_000_000n;
+			const paid = f.event("PAID");
+			const slash = f.event("SLASH_REWARD");
+			const settled = f.event("WORK_SETTLED");
+			await handleChainEvent(f.event("DELIVERED"), f.matcher);
+			assert.equal((await account(f.owner._id)).spent, "0");
+			for (const suffix of ["first", "duplicate"]) {
+				await handleChainEvent({ ...paid, id: `${paid.id}:${suffix}`, args: { ...paid.args, amount: work } }, f.matcher);
+				await handleChainEvent({ ...slash, id: `${slash.id}:${suffix}`, args: { ...slash.args, amount: reward } }, f.matcher);
+				await handleChainEvent({ ...settled, id: `${settled.id}:${suffix}`, args: { ...settled.args, charged: work, refund: work } }, f.matcher);
+			}
+			assert.equal((await account(f.owner._id)).spent, "0.025");
+			assert.equal((await account(f.provider._id)).earned, "0.025");
+			assert.equal((await account(f.provider._id)).reputation, 1);
+			const job = await JobModel.findById(f.job._id).orFail();
+			assert.equal(job.status, JobStatus.PAYOUT);
+			assert.equal(job.buyerRefund?.toString(), "0.025");
+			assert.equal(job.payouts[0].slashReward?.toString(), "0.003");
 		});
 
 		await t.test("a failed buyer update leaves no processed receipt and retry never charges the buyer twice", async () => {

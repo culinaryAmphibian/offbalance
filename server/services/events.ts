@@ -2,13 +2,17 @@
 import { Types } from "mongoose";
 import { formatEther } from "viem";
 import { AccountModel, ChainEventModel, HardwareModel, JobModel, TERMINAL_STATUSES } from "../models/index.ts";
-import { STATUS_FOR_EVENT } from "../models/JobStatus.ts";
+import { JobStatus, STATUS_FOR_EVENT } from "../models/JobStatus.ts";
 import type { ChainEvent } from "./chain.ts";
 import type { Matcher } from "./matcher.ts";
+import { findContractJob, type Job } from "../models/Job.ts";
+import { pricingQuote } from "../pricing.ts";
 
-async function accountForAddress(address: unknown) {
-	const hw = await HardwareModel.findOne({ address: String(address).toLowerCase() });
-	return hw?.userRef ?? (await AccountModel.findOne({ walletIds: String(address).toLowerCase() }))?._id ?? null;
+async function accountForAddress(address: unknown, job: Job) {
+	const wallet = String(address).toLowerCase();
+	if (job.quoteId) return job.assignedRates.find(rate => rate.wallet === wallet)?.provider ?? null;
+	const hw = await HardwareModel.findOne({ address: wallet });
+	return hw?.userRef ?? (await AccountModel.findOne({ walletIds: wallet }))?._id ?? null;
 }
 
 const IGNORED_EVENTS = new Set([
@@ -31,7 +35,25 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 	const jobId = Number(args.jobId);
 	if (!Number.isSafeInteger(jobId) || jobId < 0) throw new TypeError("Invalid event jobId.");
 	const effectId = id ?? `${jobId}:${name}:${String(args.provider ?? "").toLowerCase()}`;
-	const job = await JobModel.findOne({ onChainJobId: jobId });
+	if (name === "QUOTED_JOB_SUBMITTED") {
+		const quote = await JobModel.findOne({ quoteId: String(args.quoteId), buyerWallet: String(args.buyer).toLowerCase() });
+		if (!quote) return;
+		const { hourlyRateWei, escrowWei } = pricingQuote(quote);
+		const matches = args.price === escrowWei && args.maxHourlyRate === hourlyRateWei
+			&& args.k === BigInt(quote.minNodesToAgree) && args.quorum === BigInt(quote.minNodesToRunOn)
+			&& args.executionTime === BigInt(quote.timeWindow) && args.dockerName === quote.dockerImageDigest;
+		// Keep the actual id on a mismatch so the buyer can cancel and reclaim the deposit.
+		await JobModel.updateOne({ _id: quote._id, contractJobId: null }, { $set: {
+			contractJobId: jobId, submittedAt: new Date(),
+			...(matches ? {} : { fundingError: "The funded job differs from the saved quote. Cancel it to reclaim the escrow." }),
+		} });
+		if (matches) await matcher.ping();
+		return;
+	}
+	if (name === "JOB_SUBMITTED" && matcher.supportsQuotedPricing) return;
+	const job = name === "JOB_SUBMITTED"
+		? await JobModel.findOne({ onChainJobId: jobId, quoteId: null })
+		: await findContractJob(jobId, !matcher.supportsQuotedPricing);
 	if (!job) {
 		console.warn(`${name}: job ${jobId} isn't in the database; ignoring`);
 		return;
@@ -48,7 +70,7 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 
 		// the server's own assignment, read back from the chain
 		case "PROVIDER_SELECTED": {
-			const account = await accountForAddress(args.provider);
+			const account = await accountForAddress(args.provider, job);
 			if (!account) {
 				console.warn(`PROVIDER_SELECTED: no account for ${args.provider}`);
 				return;
@@ -60,12 +82,16 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 
 		// the contract reports the provider's payout in wei; older events without it settle at the running price
 		case "PAID": {
-			const account = await accountForAddress(args.provider);
+			const account = await accountForAddress(args.provider, job);
+			if (job.quoteId && (!account || typeof args.amount !== "bigint")) {
+				throw new Error("A quoted provider payment requires a pinned provider and exact chain amount.");
+			}
 			if (account) {
 				const earned = typeof args.amount === "bigint" ? Types.Decimal128.fromString(formatEther(args.amount)) : job.runningPrice;
+				const paid = job.quoteId ? `job:${job._id}:provider:${account}` : `${effectId}:provider`;
 				await AccountModel.updateOne(
-					{ _id: account, processedChainEvents: { $ne: `${effectId}:provider` } },
-					{ $inc: { reputation: 1, totalEarned: earned }, $addToSet: { processedChainEvents: `${effectId}:provider` } },
+					{ _id: account, processedChainEvents: { $ne: paid } },
+					{ $inc: { reputation: 1, totalEarned: earned }, $addToSet: { processedChainEvents: paid } },
 				);
 				// the job view's payment details; one payout per provider per job
 				await JobModel.updateOne(
@@ -80,6 +106,7 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 		// The buyer escrowed job.maxPrice in submitJob; settlement spends exactly that escrow.
 		// Keyed by job (not by log) so a replayed or duplicate DELIVERED never charges twice.
 		case "DELIVERED": {
+			if (job.quoteId) return; // quoted jobs settle after the per-provider payout events
 			const charge = `job:${job._id}:buyer-spent`;
 			await AccountModel.updateOne(
 				{ _id: job.owner, processedChainEvents: { $ne: charge } },
@@ -88,14 +115,39 @@ async function applyChainEvent({ name, args, id }: ChainEvent, matcher: Matcher)
 			break; // then the status update below
 		}
 
+		case "WORK_SETTLED": {
+			if (!job.quoteId || typeof args.charged !== "bigint" || typeof args.refund !== "bigint"
+				|| args.charged + args.refund !== pricingQuote(job).escrowWei) {
+				throw new TypeError("Settlement does not reconcile with the saved quote.");
+			}
+			const charge = `job:${job._id}:buyer-spent`;
+			job.workCharged = Types.Decimal128.fromString(formatEther(args.charged));
+			job.buyerRefund = Types.Decimal128.fromString(formatEther(args.refund));
+			await AccountModel.updateOne(
+				{ _id: job.owner, processedChainEvents: { $ne: charge } },
+				{ $inc: { totalSpent: job.workCharged }, $addToSet: { processedChainEvents: charge } },
+			);
+			break;
+		}
+
+		case "SLASH_REWARD": {
+			const account = await accountForAddress(args.provider, job);
+			if (!account || typeof args.amount !== "bigint") return;
+			await JobModel.updateOne(
+				{ _id: job._id, "payouts.provider": account },
+				{ $set: { "payouts.$.slashReward": Types.Decimal128.fromString(formatEther(args.amount)) } },
+			);
+			return;
+		}
+
 		case "SLASHED": {
-			const account = await accountForAddress(args.provider);
+			const account = await accountForAddress(args.provider, job);
 			if (account) await AccountModel.updateOne({ _id: account, processedChainEvents: { $ne: effectId } }, { $inc: { reputation: -1 }, $addToSet: { processedChainEvents: effectId } });
 			return;
 		}
 	}
 
-	const status = STATUS_FOR_EVENT[name];
+	const status = name === "WORK_SETTLED" ? JobStatus.PAYOUT : STATUS_FOR_EVENT[name];
 	if (!status) {
 		console.warn(`Unhandled contract event ${name}`);
 		return;

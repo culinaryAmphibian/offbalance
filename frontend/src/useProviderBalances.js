@@ -18,7 +18,7 @@ export function useProviderBalances(api, account, { enabled = true, interval = 1
   // only consulted when the deployed contract has no lockedStake view
   const unsettledJobIds = useCallback(async signal => {
     const { jobs } = await api.listJobs('provider', signal);
-    return (Array.isArray(jobs) ? jobs : []).filter(job => !SETTLED.has(job.status)).map(job => job.id);
+    return (Array.isArray(jobs) ? jobs : []).filter(job => !SETTLED.has(job.status)).map(job => job.onChainJobId ?? job.id);
   }, [api]);
 
   const load = useCallback(async signal => {

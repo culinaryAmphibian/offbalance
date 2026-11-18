@@ -19,9 +19,12 @@ import { parseEther, type Address } from "viem";
 import { ScriptedProvider, Stack, Status, until } from "./system/driver.ts";
 import { missingRequirements, startLocalStack, type LocalStack } from "./system/local-stack.ts";
 
-const PRICE = "0.01"; // ETH escrowed per job
+const PRICE = "0.01"; // maximum ETH per provider-hour
 const WINDOW = 30;    // seconds each provider gets to run the job
 const JOB_TIMEOUT = 300_000;
+const booked = (rate: string) => (parseEther(rate) * BigInt(WINDOW) + 3599n) / 3600n;
+const ESCROW = 3n * booked(PRICE);
+const PROVIDER_CHARGE = booked("0.001");
 
 describe("full stack with real provider clients and Docker", { skip: missingRequirements(), timeout: 900_000 }, () => {
 	let local: LocalStack;
@@ -53,27 +56,42 @@ describe("full stack with real provider clients and Docker", { skip: missingRequ
 
 	const balances = (addresses: Address[]) => Promise.all(addresses.map(a => stack.credits(a)));
 	const reputations = (addresses: Address[]) => Promise.all(addresses.map(a => stack.read<number>("reputationOf", [a])));
-	const assigned = async (jobId: number) => (await stack.read<Address[]>("getAssignedProviders", [BigInt(jobId)])).map(a => a.toLowerCase());
+	const assigned = async (jobId: number) => (await stack.read<Address[]>("getAssignedProviders", [stack.contractId(jobId)])).map(a => a.toLowerCase());
 
 	test("1. three real providers agree: the job is paid and the buyer downloads the result", () => scenario(async () => {
 		const addresses = real.map(p => p.address);
 		const [before, repBefore] = [await balances([stack.buyer.account!.address, ...addresses]), await reputations(addresses)];
+		const draft = await stack.api("POST", "/jobs", { body: {
+			name: "discarded draft", image: "alpine:3.20", maxPrice: PRICE, minNodesToRunOn: 1, minNodesToAgree: 1, timeWindow: WINDOW,
+		} });
+		assert.equal(draft.status, 201);
+		assert.equal((await stack.api("POST", `/jobs/${draft.body.job.id}/cancel`)).status, 200);
 		const id = await stack.submitJob({ name: "happy path", command: ["sh", "-c", "echo 'result from the happy path' > /output/result.txt"],
 			providers: 3, agree: 2, window: WINDOW, maxPrice: PRICE });
 		await stack.waitForStatus(id, [Status.PAID], JOB_TIMEOUT);
 
 		const stakes = await Promise.all(addresses.map(a => stack.requiredStake(id, a)));
 		const after = await balances([stack.buyer.account!.address, ...addresses]);
-		assert.equal(after[0], before[0], "the buyer isn't refunded");
-		const gained = addresses.map((_, i) => after[i + 1] - before[i + 1]);
-		assert.equal(gained.reduce((a, b) => a + b, 0n), parseEther(PRICE) + stakes.reduce((a, b) => a + b, 0n), "the providers share the price and get their stakes back");
-		for (const [i, g] of gained.entries()) assert.ok(g >= parseEther(PRICE) / 3n + stakes[i], `provider ${i + 1} got a full share`);
+		assert.notEqual(stack.contractId(id), BigInt(id), "the discarded draft shifts only the browser ID");
+		assert.equal(after[0] - before[0], ESCROW - 3n * PROVIDER_CHARGE, "the buyer gets unused escrow back");
+		for (const [i, stake] of stakes.entries()) {
+			assert.equal(after[i + 1] - before[i + 1], PROVIDER_CHARGE + stake, `provider ${i + 1} gets their booked charge and stake`);
+		}
 		assert.deepEqual(await reputations(addresses), repBefore.map(r => r + 1), "everyone gains reputation");
 
 		const files = await stack.download(id);
 		assert.equal(files.get("result.txt"), "result from the happy path\n");
 		const job = await until("the server to record the payout", async () => { const j = await stack.job(id); return j.status === "PAYOUT" && j; }, 30_000);
 		assert.equal(job.result.available, true);
+		assert.equal(parseEther(job.totalEscrow), ESCROW);
+		assert.equal(parseEther(job.spent), 3n * PROVIDER_CHARGE);
+		assert.equal(parseEther(job.payment.buyerRefund), ESCROW - 3n * PROVIDER_CHARGE);
+		const dashboard = await stack.api("GET", "/account/me/dashboard");
+		assert.equal(parseEther(dashboard.body.buyer.totalSpent), 3n * PROVIDER_CHARGE);
+		for (const provider of real) {
+			const providerDashboard = await stack.api("GET", "/account/me/dashboard", { token: provider.token });
+			assert.equal(parseEther(providerDashboard.body.provider.totalEarned), PROVIDER_CHARGE);
+		}
 	}));
 
 	test("2. every provider's output differs: no consensus, buyer and stakes refunded", () => scenario(async () => {
@@ -85,7 +103,7 @@ describe("full stack with real provider clients and Docker", { skip: missingRequ
 		await stack.waitForStatus(id, [Status.NO_QUORUM], JOB_TIMEOUT);
 		const stakes = await Promise.all(addresses.map(a => stack.requiredStake(id, a)));
 		const after = await balances([stack.buyer.account!.address, ...addresses]);
-		assert.equal(after[0] - before[0], parseEther(PRICE), "the buyer gets the price back");
+		assert.equal(after[0] - before[0], ESCROW, "the buyer gets the price back");
 		for (const [i, stake] of stakes.entries()) assert.equal(after[i + 1] - before[i + 1], stake, `provider ${i + 1} gets its stake back`);
 		assert.deepEqual(await reputations(addresses), repBefore, "nobody's reputation changes");
 		assert.equal((await stack.api("GET", `/jobs/${id}/result`)).status, 404, "there's no result to download");
@@ -110,10 +128,10 @@ describe("full stack with real provider clients and Docker", { skip: missingRequ
 		await stack.waitForStatus(id, [Status.PAID], JOB_TIMEOUT);
 		const after = await balances(everyone);
 		assert.equal(after[0], before[0], "the cheater gets nothing back");
-		const pool = parseEther(PRICE) + cheaterStake;
+		const pool = 2n * PROVIDER_CHARGE + cheaterStake;
 		const honestGained = (after[1] - before[1]) + (after[2] - before[2]);
 		const honestStakes = (await stack.requiredStake(id, honest[0])) + (await stack.requiredStake(id, honest[1]));
-		assert.equal(honestGained, pool + honestStakes, "the honest providers share the price and the cheater's stake");
+		assert.equal(honestGained, pool + honestStakes, "the honest providers earn their work rate and share the cheater's stake");
 		assert.equal(await stack.read<number>("reputationOf", [scripted.address]), 0);
 		assert.equal((await stack.download(id)).get("result.txt"), "honest\n");
 	}));
@@ -123,7 +141,7 @@ describe("full stack with real provider clients and Docker", { skip: missingRequ
 		const id = await stack.submitJob({ name: "with a no-show", command: ["sh", "-c", "echo still done > /output/result.txt"],
 			providers: 3, agree: 2, window: WINDOW, maxPrice: PRICE });
 		await stack.waitForStatus(id, [Status.PROVIDER_SELECTED], 60_000);
-		const pending = (await stack.read<readonly bigint[]>("getDeadlines", [BigInt(id)]))[1];
+		const pending = (await stack.read<readonly bigint[]>("getDeadlines", [stack.contractId(id)]))[1];
 		assert.ok((await assigned(id)).includes(scripted.address.toLowerCase()), "the no-show was assigned");
 		const before = await stack.credits(scripted.address);
 
@@ -147,7 +165,7 @@ describe("full stack with real provider clients and Docker", { skip: missingRequ
 		const staking = real.map(p => p.address).filter(a => chosen.includes(a.toLowerCase()));
 		// wait until the real providers have staked, then cancel before the window closes
 		await until("the real providers' stakes", async () => {
-			const staked = await Promise.all(staking.map(a => stack.read<readonly unknown[]>("getProviderCommitment", [BigInt(id), a]).then(c => c[5] as bigint)));
+			const staked = await Promise.all(staking.map(a => stack.read<readonly unknown[]>("getProviderCommitment", [stack.contractId(id), a]).then(c => c[5] as bigint)));
 			return staked.every(s => s > 0n);
 		}, 25_000);
 		const before = await balances([buyer, ...staking]);
@@ -155,7 +173,7 @@ describe("full stack with real provider clients and Docker", { skip: missingRequ
 		await stack.cancelOnChain(id);
 		assert.equal(await stack.status(id), Status.CANCELED);
 		const after = await balances([buyer, ...staking]);
-		assert.equal(after[0] - before[0], parseEther(PRICE), "the buyer gets the price back");
+		assert.equal(after[0] - before[0], ESCROW, "the buyer gets the price back");
 		for (const [i, stake] of stakes.entries()) assert.equal(after[i + 1] - before[i + 1], stake, "stakes come back");
 		await until("the server to record the cancellation", async () => (await stack.job(id)).status === "CANCELED", 30_000);
 	}));

@@ -35,6 +35,12 @@ export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+export class ChainWriteUnconfirmedError extends Error {
+	constructor(functionName: string, cause: unknown) {
+		super(`${functionName} has an unconfirmed outcome: ${errorMessage(cause)}`, { cause });
+	}
+}
+
 // Chain-time deadlines (unix seconds) from OffBalance.getDeadlines; 0 until that phase starts.
 export type Deadlines = { pendingDeadline: bigint; commitDeadline: bigint; revealDeadline: bigint; deliveryDeadline: bigint };
 export type PhaseSnapshot = Deadlines & { status: number };
@@ -119,23 +125,36 @@ export class Chain {
 		return !this.stopped && this.walletClient !== null;
 	}
 
-	private async write(functionName: string, args: unknown[]): Promise<void> {
+	private async write(functionName: string, args: unknown[], retainUnconfirmed = false): Promise<void> {
 		if (this.stopped) throw new Error("Chain connection has stopped.");
 		const wallet = this.walletClient;
-		if (!wallet?.account) throw new Error("SERVER_PRIVATE_KEY is required for server contract transactions.");
+		const account = wallet?.account;
+		if (!wallet || !account) throw new Error("SERVER_PRIVATE_KEY is required for server contract transactions.");
 		const { address, abi, chainId } = readDeployment();
 		if (chainId !== this.deployment.chainId || address.toLowerCase() !== this.deployment.address.toLowerCase()) {
 			throw new Error("Contract deployment changed; restart the chain connection before submitting transactions.");
 		}
 		// Simulate first so a failing require() surfaces with its reason before any gas is spent.
-		await this.publicClient.simulateContract({ address, abi, functionName, args, account: wallet.account });
-		const hash = await wallet.writeContract({ address, abi, functionName, args, account: wallet.account, chain: null });
-		const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
+		await this.publicClient.simulateContract({ address, abi, functionName, args, account });
+		const classifyWriteError = (error: unknown): never => {
+			throw retainUnconfirmed ? new ChainWriteUnconfirmedError(functionName, error) : error;
+		};
+		const hash = await wallet.writeContract({ address, abi, functionName, args, account, chain: null }).catch(classifyWriteError);
+		const receipt = await this.publicClient.waitForTransactionReceipt({ hash }).catch(classifyWriteError);
 		if (receipt.status !== "success") throw new Error(`${functionName} reverted (tx ${hash})`);
 	}
 
 	assignProviders(jobId: number, providers: string[]): Promise<void> {
 		return this.write("assignProviders", [BigInt(jobId), providers]);
+	}
+
+	assignQuotedProviders(jobId: number, providers: string[], hourlyRates: bigint[]): Promise<void> {
+		return this.write("assignQuotedProviders", [BigInt(jobId), providers, hourlyRates], true);
+	}
+
+	get supportsQuotedPricing(): boolean {
+		const functions = this.deployment.abi.flatMap(item => item.type === "function" ? [item.name] : []);
+		return functions.includes("submitQuotedJob") && functions.includes("assignQuotedProviders");
 	}
 
 	// Milestone4 pays winning providers without an on-chain delivery receipt hook.
