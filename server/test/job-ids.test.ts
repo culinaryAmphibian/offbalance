@@ -109,6 +109,11 @@ describe("contract events and database jobs", { skip: !uri && "set MONGODB_URI t
 		await submittedOnChain(1, second);
 		assert.ok((await byName("saved second")).submittedAt);
 		assert.equal((await byName("saved first")).submittedAt, null);
+		const reserved = await byName("saved second");
+		await JobModel.updateOne({ _id: reserved._id }, { $set: { providers: [new mongoose.Types.ObjectId()] } });
+		const detail = await call("GET", `/jobs/${second.id}`);
+		assert.equal(detail.body.job.canCancel, true, "a pending quoted job remains cancelable with reserved providers");
+		assert.equal(detail.body.job.onChainJobId, 1);
 		await handleChainEvent({ name: "CANCELED", args: { jobId: 1n }, blockNumber: 2n }, matcher);
 		assert.equal((await byName("saved second")).status, JobStatus.CANCELED);
 		assert.equal((await byName("saved first")).status, JobStatus.PENDING);
