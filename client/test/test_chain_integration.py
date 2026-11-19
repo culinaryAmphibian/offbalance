@@ -203,7 +203,7 @@ class ClientAgainstRealChainTests(unittest.TestCase):
     def test_the_contract_rejects_a_reveal_that_doesnt_match_the_commitment(self):
         m1 = self.manager(self.p1.key.hex(), self.p1.address)
         m2 = self.manager(self.p2.key.hex(), self.p2.address)
-        job_id = self.submitted_and_assigned([self.p1, self.p2], k=1)
+        job_id = self.submitted_and_assigned([self.p1, self.p2])
         for manager, provider in ((m1, self.p1), (m2, self.p2)):
             with contextlib.redirect_stdout(io.StringIO()):
                 manager.stake(job_id, self.contract.functions.getProviderCommitment(job_id, provider.address).call()[4])
@@ -262,7 +262,7 @@ class ClientAgainstRealChainTests(unittest.TestCase):
         self.register_session_key(self.p1, session)
         m1 = self.manager(session.key.hex(), self.p1.address, recover=True)
         m2 = self.manager(self.p2.key.hex(), self.p2.address)
-        job_id = self.submitted_and_assigned([self.p1, self.p2], k=1)
+        job_id = self.submitted_and_assigned([self.p1, self.p2])
         with contextlib.redirect_stdout(io.StringIO()):
             for manager, provider in ((m1, self.p1), (m2, self.p2)):
                 manager.stake(job_id, self.contract.functions.getProviderCommitment(job_id, provider.address).call()[4])
