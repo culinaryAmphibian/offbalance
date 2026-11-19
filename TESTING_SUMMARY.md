@@ -66,7 +66,7 @@ Fixed bugs are marked below. When fixing an open bug, remove its known-failure m
 | B1 | The server's and the contract's job IDs drift apart after a job is canceled before submission, or after jobs are submitted out of order. Chain events then update the wrong job. ✅ **Fixed in [#40](https://github.com/culinaryAmphibian/offbalance/pull/40).** | server |
 | B2 | A docker command that exits early crashes the server (`EPIPE`). ✅ Fixed on `fix/server-bugs`. | server |
 | B5 | Jobs stall after a server restart, because the phase timers aren't restored. ✅ **Fixed in [#39](https://github.com/culinaryAmphibian/offbalance/pull/39).** | server |
-| B9 | A job has no process limit, so it can fork-bomb the provider's machine. | client |
+| B9 | A job has no process limit, so it can fork-bomb the provider's machine. ✅ Fixed on `milestone5`. | client |
 | B12 | A provider restarted after committing can't reveal, so it gets slashed. ✅ **Fixed in [#39](https://github.com/culinaryAmphibian/offbalance/pull/39).** | client |
 | B13 | A provider restarted after being assigned never runs the job, so it gets slashed. ✅ **Fixed in [#39](https://github.com/culinaryAmphibian/offbalance/pull/39).** | client |
 
@@ -76,19 +76,19 @@ Fixed bugs are marked below. When fixing an open bug, remove its known-failure m
 |---|---|---|
 | B17 | "Collect funds" never confirms in the dev server, and so in the demo, even though the money is withdrawn. ✅ **Fixed in [#36](https://github.com/culinaryAmphibian/offbalance/pull/36).** | frontend |
 | B7 | Wallet escrow and settlement disagreed with the hourly rate. New quoted jobs fund the booked window, pay the booked rates and refund unused escrow on the updated contract. ✅ **Fixed in [#40](https://github.com/culinaryAmphibian/offbalance/pull/40).** | contract, server, frontend |
-| B8 | A paid job shows as "Payment is being processed" instead of completed. | frontend |
-| B10 | A job can gain privileges through setuid binaries. | client |
-| B15 | `docker compose run host-client --dev` crashes; only interactive mode works. | client/compose |
+| B8 | A paid job shows as "Payment is being processed" instead of completed. ✅ Fixed on `milestone5`. | frontend |
+| B10 | A job can gain privileges through setuid binaries. ✅ Fixed on `milestone5`. | client |
+| B15 | `docker compose run host-client --dev` crashes; only interactive mode works. ✅ Fixed on `milestone5`. | client/compose |
 
 **Low priority:**
 - B3: duplicate wallets on one account. ✅ Fixed on `fix/server-bugs`.
 - B4: a validator lets "required matches" exceed "providers". ✅ Fixed.
-- B11: a second assignment can overwrite the first.
+- B11: a second assignment can overwrite the first. ✅ Fixed on `milestone5`.
 - B14: an expired sign-in nonce still works for about a minute. ✅ Fixed.
 - B16: "Cancel" is hidden after submitting until the page is reloaded. ✅ **Fixed in [#36](https://github.com/culinaryAmphibian/offbalance/pull/36).**
 
 ### 3. Team decisions needed
-- **B6, tied consensus:** a 2–2 split currently picks whichever answer was revealed first, and the other pair is slashed. Should the contract require a majority?   
+- **B6, tied consensus:** ✅ Decided and fixed on `milestone5`: more than half the providers must agree (2k > quorum), enforced when a job is submitted, so ties can't happen.   
 - **Token expiry:** sign-in tokens never expire. We need to agree on a policy before we can test one.
 
 ### 4. Remaining tests
