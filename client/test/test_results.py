@@ -113,8 +113,7 @@ class CommitEventTests(unittest.TestCase):
         creds = Credentials('api-key', parse_session_key('0x' + '11' * 32), owner='provider')
         self.blockchain = BlockchainManager(self.w3, Mock(), creds)
         self.runner, self.server = Mock(), Mock()
-        self.runner.currentJobId = 7
-        self.runner.currentManifest = {'timeout_s': 60}
+        self.runner.manifests = {7: {'timeout_s': 60}}
         self.client = ProviderClient(Mock(), self.blockchain, self.server, self.runner)
 
     def test_commit_event_carries_the_absolute_commit_deadline(self):
@@ -158,7 +157,7 @@ class CommitEventTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in self.w3.eth.get_block.call_args_list], ['latest'])
 
     def test_invalid_manifest_timeout_is_reported_before_any_block_read(self):
-        self.runner.currentManifest['timeout_s'] = 0
+        self.runner.manifests[7]['timeout_s'] = 0
         with patch('ProviderClient.threading.Thread') as worker, contextlib.redirect_stderr(io.StringIO()):
             self.client.handleCommitPhaseStart(7, block_number=12)
             worker.assert_not_called()

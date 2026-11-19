@@ -29,9 +29,8 @@ describe('JobDetail', () => {
     expect(el.className).toContain(phase);
   });
 
-  // B8: PAYOUT is the server's final status for a paid job, but the page shows it as still
-  // verifying ("Payment is being processed"). test.fails passes while that's true.
-  test.fails('a paid job (PAYOUT) is shown as completed', async () => {
+  // B8: PAYOUT is the server's final status for a paid job, so it is shown as completed.
+  test('a paid job (PAYOUT) is shown as completed', async () => {
     render(<JobDetail api={api(job({ status: 'PAYOUT', submittedAt: '2026-11-17T00:00:00Z', canCancel: false }))} id="5" />);
     expect((await badge()).className).toContain('completed');
   });

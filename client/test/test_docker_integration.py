@@ -180,17 +180,16 @@ class RealDockerJobTests(unittest.TestCase):
         host_file.write_text('two')
         self.assertEqual(self.runner.hash_dir(out), first)
 
-    # The runner doesn't cap the number of processes, so a job can fork-bomb the provider's
-    # machine. A cap (docker-py `pids_limit`) would make this pass. The job only reads the limit.
-    @unittest.expectedFailure
+    # B9: the runner caps the number of processes, so a job can't fork-bomb the provider's
+    # machine. The job only reads the limit.
     def test_a_job_cant_start_unlimited_processes(self):
+        from job.RunManager import JOB_PIDS_LIMIT
         result, out = self.run_job('cat /sys/fs/cgroup/pids.max > /output/pids 2>/dev/null || echo unknown > /output/pids')
         self.assertEqual(result.status, 'ok')
-        self.assertNotEqual(self.read(out, 'pids'), 'max', 'no process limit')
+        self.assertEqual(self.read(out, 'pids'), str(JOB_PIDS_LIMIT), 'no process limit')
 
-    # setuid binaries in a job's image can still gain privileges inside the container. Docker's
-    # `no-new-privileges` (docker-py `security_opt=['no-new-privileges']`) would make this pass.
-    @unittest.expectedFailure
+    # B10: setuid binaries in a job's image can't gain privileges inside the container
+    # (Docker's `no-new-privileges`).
     def test_a_job_cant_gain_new_privileges(self):
         result, out = self.run_job("grep NoNewPrivs /proc/self/status | awk '{print $2}' > /output/nnp")
         self.assertEqual(result.status, 'ok')

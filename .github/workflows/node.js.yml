@@ -175,9 +175,7 @@ jobs:
           echo "HOST_ADDRESS=$(hostname -I | awk '{print $1}')" > .env
           docker compose --profile host up -d --build --wait mongo blockchain server
       - name: Start a provider on the host
-        # -e: docker-compose.yml passes OFFBALANCE_API_KEY as an empty string when it isn't set, and
-        # --dev then uses "" instead of the dev key (TESTING_PLAN.md B15)
-        run: docker compose --profile host run -d --rm -e OFFBALANCE_API_KEY=dev host-client --dev --provider 1
+        run: docker compose --profile host run -d --rm host-client --dev --provider 1
       - name: Run one job through the compose stack
         run: |
           docker compose --profile host cp server:/app/server/.local/tls/cert.pem "$RUNNER_TEMP/offbalance-cert.pem"

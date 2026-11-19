@@ -10,6 +10,7 @@ import io
 import sys
 import threading
 import unittest
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
@@ -26,6 +27,7 @@ from blockchain.Contract import ProviderContractWrapper, TransactionFailed
 from blockchain.EventData import (CanceledEvent, CommitPhaseStartEvent, DeliveredEvent, DeliveryPhaseStartEvent,
                                   Event, NoQuorumEvent, ProviderSelectedEvent, RevealPhaseStartEvent,
                                   event_class_factory)
+from job.RunManager import RunManager
 from server.ServerManager import DeliveryError, ServerManager
 
 KEY = '0x' + '11' * 32
@@ -236,7 +238,7 @@ class DispatchTests(unittest.TestCase):
         self.blockchain.owner = OWNER
         self.server = Mock()
         self.runner = Mock()
-        self.runner.currentJobId = None
+        self.runner.manifests = {}
         self.client = ProviderClient(Mock(), self.blockchain, self.server, self.runner)
 
     @silenced
@@ -273,7 +275,7 @@ class DispatchTests(unittest.TestCase):
 
     @silenced
     def test_an_unreadable_commit_deadline_skips_the_run_and_reports_it(self):
-        self.runner.currentJobId = 4
+        self.runner.manifests = {4: {'timeout_s': 30}}
         self.blockchain.seconds_until.side_effect = ConnectionError('rpc down')
         with patch('ProviderClient.threading.Thread') as thread:
             self.client.handleCommitPhaseStart(4, commit_deadline=1_234)
@@ -282,7 +284,7 @@ class DispatchTests(unittest.TestCase):
 
     @silenced
     def test_commit_events_for_jobs_this_machine_isnt_running_are_ignored(self):
-        self.runner.currentJobId = 5
+        self.runner.manifests = {5: {'timeout_s': 30}}
         with patch('ProviderClient.threading.Thread') as thread:
             self.client.handleCommitPhaseStart(4, deadline=30)
         thread.assert_not_called()
@@ -296,24 +298,36 @@ class DispatchTests(unittest.TestCase):
         self.assertIn('RuntimeError', err.getvalue())
         self.assertNotIn('secret', err.getvalue())
 
-    # The server gives a provider one job at a time, so this shouldn't happen. But nothing in the
-    # client guards it: preparing job 5 replaces job 4's manifest, so when job 4's commit phase
-    # starts the client ignores it, never commits, and its stake for job 4 is slashed.
-    @unittest.expectedFailure
+    # B11: the server gives a provider one job at a time, so this shouldn't happen. But if job 5 is
+    # assigned before job 4 runs, preparing job 5 mustn't replace job 4's manifest: job 4 still runs
+    # (with its own image) when its commit phase starts, and the provider isn't slashed for it.
     @silenced
     def test_a_second_assignment_before_the_first_job_runs_doesnt_drop_the_first(self):
-        runner = SimpleNamespace(currentJobId=None, currentManifest=None)
-
-        def prepare(manifest, job_id):
-            runner.currentJobId, runner.currentManifest = job_id, manifest
-        runner.prepareJob = prepare
+        with patch('job.RunManager.docker.from_env'):
+            runner = RunManager()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        runner.jobs_dir = Path(folder.name)
         self.client.runner = runner
-        self.server.getDockerManifest.return_value = {'image': 'alpine', 'timeout_s': 30}
+        manifests = {4: {'image': 'job-four', 'command': [], 'timeout_s': 30},
+                     5: {'image': 'job-five', 'command': [], 'timeout_s': 30}}
+        self.server.getDockerManifest.side_effect = manifests.get
         self.client.handleAssignment(4, 1)
         self.client.handleAssignment(5, 1)
         with patch('ProviderClient.threading.Thread') as thread:
             self.client.handleCommitPhaseStart(4, deadline=30)
         thread.assert_called_once()
+        self.assertEqual(runner.manifests, manifests)
+        # each job runs its own image
+        with patch.object(runner, 'container_user', return_value='1:1'), patch.object(runner, '_pull_image'):
+            for job_id, image in ((4, 'job-four'), (5, 'job-five')):
+                runner.client.containers.run.return_value.wait.return_value = {'StatusCode': 0}
+                runner.client.containers.run.return_value.attrs = {'State': {'OOMKilled': False}}
+                self.assertEqual(runner.startJob(job_id, 30).status, 'ok')
+                self.assertEqual(runner.client.containers.run.call_args.args[0], image)
+        # a finished job's manifest is dropped once the chain says the job is over
+        self.client._handle_event(DeliveredEvent(1, BlockchainEvent.DELIVERED, 4))
+        self.assertEqual(list(runner.manifests), [5])
 
 
 class ServerManagerTests(unittest.TestCase):
@@ -376,10 +390,8 @@ class ServerManagerTests(unittest.TestCase):
 
 
 class DevCredentialsTests(unittest.TestCase):
-    # docker-compose.yml passes OFFBALANCE_API_KEY: ${OFFBALANCE_API_KEY:-}, so inside the container
-    # it's set but empty when nobody configured a key. --dev then uses "" instead of the dev key and
-    # stops with "the API key is empty", which breaks `docker compose run host-client --dev`.
-    @unittest.expectedFailure
+    # B15: docker-compose.yml passes OFFBALANCE_API_KEY: ${OFFBALANCE_API_KEY:-}, so inside the
+    # container it's set but empty when nobody configured a key. --dev must fall back to the dev key.
     def test_dev_mode_ignores_an_empty_api_key_variable(self):
         import main
         with patch.dict('os.environ', {'OFFBALANCE_API_KEY': ''}):

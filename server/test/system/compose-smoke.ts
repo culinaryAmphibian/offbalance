@@ -3,8 +3,7 @@
 // machine once the stack and one provider are up:
 //
 //   docker compose --profile host up -d --build --wait mongo blockchain server
-//   docker compose --profile host run -d --rm -e OFFBALANCE_API_KEY=dev host-client --dev --provider 1
-//     (-e: compose passes an empty OFFBALANCE_API_KEY otherwise, which --dev uses; TESTING_PLAN.md B15)
+//   docker compose --profile host run -d --rm host-client --dev --provider 1
 //   docker compose --profile host cp server:/app/server/.local/tls/cert.pem /tmp/offbalance-cert.pem
 //   CA_FILE=/tmp/offbalance-cert.pem node server/test/system/compose-smoke.ts
 //

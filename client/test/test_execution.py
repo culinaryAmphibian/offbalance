@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from ProviderClient import ProviderClient
 from benchmark.HardwareProfile import GpuInfo
 from job.JobResult import JobResult
-from job.RunManager import RunManager
+from job.RunManager import JOB_PIDS_LIMIT, RunManager
 from server.ServerManager import ServerManager
 
 
@@ -38,6 +38,9 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(args['volumes'], {str(self.runner.out_dir): {'bind': '/output', 'mode': 'rw'}})
         self.assertEqual(args['command'], ['run-job'])
         self.assertNotIn('entrypoint', args)
+        # B9, B10: bounded process count, no privilege gain through setuid binaries
+        self.assertEqual(args['pids_limit'], JOB_PIDS_LIMIT)
+        self.assertEqual(args['security_opt'], ['no-new-privileges'])
         self.assertEqual(result.status, 'ok')
         self.assertFalse(self.runner.isActive)
         self.container.remove.assert_called_once_with(force=True)
@@ -114,7 +117,7 @@ class ExecutionReportingTests(unittest.TestCase):
     def setUp(self):
         self.server = Mock()
         self.runner = Mock()
-        self.runner.currentJobId = 7
+        self.runner.manifests = {7: {'timeout_s': 60}}
         self.blockchain = Mock()
         self.client = ProviderClient(Mock(), self.blockchain, self.server, self.runner)
         self.stderr = contextlib.redirect_stderr(io.StringIO())

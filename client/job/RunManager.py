@@ -12,17 +12,28 @@ import time
 import threading
 from blockchain.State import StateConflict, ExecutionPaused
 
+# Most processes (and threads, which count against the cgroup's pids limit) a job's container
+# may have at once, so a buyer's container can't fork-bomb the provider's machine.
+JOB_PIDS_LIMIT = 1024
+
 class RunManager():
     def __init__(self):
-        self.isActive = False # starts out not running anything
-        self.currentJobId = None
-        self.currentManifest = None
+        self._active = 0 # containers being run right now
+        self._active_lock = threading.Lock()
+        # job ID -> manifest for every job prepared on this machine and not yet finished on chain.
+        # One per job, so a second assignment can't replace a job that hasn't run yet (B11).
+        self.manifests = {}
         self.client = docker.from_env(timeout=5)
         self.jobs_dir = Path.home() / '.offbalance' / 'jobs'
+        # output folder of the most recently prepared job
         self.out_dir = None
         self.state = None
         self.stop_event = threading.Event()
         self.gpus = []
+
+    @property
+    def isActive(self):
+        return self._active > 0
 
     def enable_recovery(self, state, stop_event):
         self.state = state
@@ -34,16 +45,17 @@ class RunManager():
 
 
     def prepareJob(self, manifest, jobId):
-        self.currentJobId = None
-        self.currentManifest = None
-        self.out_dir = None
+        self.manifests.pop(jobId, None)
         out_dir = self.output_directory(jobId)
         execution = self.state.job(jobId).get('execution', {}) if self.state is not None else {}
         if execution.get('status') != 'ready':
             out_dir.mkdir(parents=True, exist_ok=True)
-        self.currentJobId = jobId
-        self.currentManifest = manifest
+        self.manifests[jobId] = manifest
         self.out_dir = out_dir
+
+    def forgetJob(self, jobId):
+        """Drop a finished job's manifest. Its output folder is left alone."""
+        self.manifests.pop(jobId, None)
 
 
     def container_user(self):
@@ -139,13 +151,17 @@ class RunManager():
         if name:
             self._remove_container(self._existing_container(name, job_id))
             self._execution(job_id, cleaned=True)
+        self.forgetJob(job_id)
 
     def startJob(self, jobId: int, deadline: int):
-        if jobId != self.currentJobId or self.currentManifest is None or self.out_dir is None:
+        manifest = self.manifests.get(jobId)
+        if manifest is None:
             raise RuntimeError('Load the assigned job manifest before starting it.')
         if deadline <= 0:
             raise ValueError('Execution window must be positive.')
-        self.isActive = True
+        out_dir = self.output_directory(jobId)
+        with self._active_lock:
+            self._active += 1
         container = None
         preserve = False
         try:
@@ -159,9 +175,9 @@ class RunManager():
                 name = name or f'offbalance-{self.state.directory.name[:24]}-{jobId}'
                 container = self._existing_container(name, jobId)
                 if execution.get('status') == 'ready':
-                    if not self.out_dir.is_dir():
+                    if not out_dir.is_dir():
                         raise StateConflict(f'Completed output for job {jobId} is missing from disk.')
-                    return JobResult(status='ok', output_dir=self.out_dir)
+                    return JobResult(status='ok', output_dir=out_dir)
                 if execution.get('status') == 'failed':
                     return JobResult(status='failed', message='Previous execution failed; it will not be rerun automatically.')
             expires = min(execution.get('expires', float('inf')), time.time() + deadline)
@@ -170,12 +186,12 @@ class RunManager():
             if container is None:
                 if self.state is not None:
                     # No managed container can still write here. Never mix two attempts' output.
-                    shutil.rmtree(self.out_dir)
-                    self.out_dir.mkdir()
+                    shutil.rmtree(out_dir)
+                    out_dir.mkdir()
                 if time.time() >= expires:
                     self._execution(jobId, status='failed')
                     return JobResult(status='timeout', message='Execution deadline passed while the provider was stopped.')
-                image = self.currentManifest['image']
+                image = manifest['image']
                 try:
                     self.client.images.get(image)
                 except ImageNotFound:
@@ -183,10 +199,10 @@ class RunManager():
                 options = {}
                 if self.state is not None:
                     options = dict(name=name, labels=self._labels(jobId))
-                env = dict(self.currentManifest.get('env') or {})
-                if self.currentManifest.get('input_url'):
-                    env['INPUT_URL'] = self.currentManifest['input_url']
-                limits, gpu_env = self.resource_options(self.currentManifest)
+                env = dict(manifest.get('env') or {})
+                if manifest.get('input_url'):
+                    env['INPUT_URL'] = manifest['input_url']
+                limits, gpu_env = self.resource_options(manifest)
                 env.update(gpu_env)
                 if self.stop_event.is_set():
                     raise ExecutionPaused('Provider stopping; no job container was started.')
@@ -194,10 +210,13 @@ class RunManager():
                     self._execution(jobId, status='failed')
                     return JobResult(status='timeout', message='Execution deadline passed during preparation.')
                 container = self.client.containers.run(
-                    image, command=self.currentManifest['command'], environment=env,
-                    network_disabled=not self.currentManifest.get('input_url'),
-                    volumes={str(self.out_dir): {'bind': '/output', 'mode': 'rw'}},
-                    user=self.container_user(), detach=True, **options, **limits,
+                    image, command=manifest['command'], environment=env,
+                    network_disabled=not manifest.get('input_url'),
+                    volumes={str(out_dir): {'bind': '/output', 'mode': 'rw'}},
+                    user=self.container_user(), detach=True,
+                    # setuid binaries in the job's image can't gain privileges; bounded process count
+                    security_opt=['no-new-privileges'], pids_limit=JOB_PIDS_LIMIT,
+                    **options, **limits,
                 )
             elif container.status == 'created':
                 if self.stop_event.is_set():
@@ -225,7 +244,7 @@ class RunManager():
                 return JobResult(status='failed', exitCode=result['StatusCode'], message=self._logs(container))
             # This precedes removal and hashing; restart can reuse output without rerunning.
             self._execution(jobId, status='ready')
-            return JobResult(status='ok', output_dir=self.out_dir)
+            return JobResult(status='ok', output_dir=out_dir)
         except ExecutionPaused:
             preserve = True
             raise
@@ -246,7 +265,8 @@ class RunManager():
                 if not preserve and container is not None and self.state is not None and self.state.job(jobId).get('execution'):
                     self._execution(jobId, cleaned=True)
             finally:
-                self.isActive = False
+                with self._active_lock:
+                    self._active -= 1
 
     def _wait_recoverable(self, container, expires):
         while not self.stop_event.is_set():

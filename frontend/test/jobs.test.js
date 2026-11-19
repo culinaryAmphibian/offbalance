@@ -150,15 +150,15 @@ test('job IDs accept canonical, Mongo and numeric values and reject missing IDs'
   }
 });
 
-test('phase descriptions distinguish execution, consensus, delivery and pending payout', () => {
+test('phase descriptions distinguish execution, consensus, delivery and payout', () => {
   assert.match(jobPhase('COMMIT_PHASE')[1], /committing/);
   assert.match(jobPhase('REVEAL_PHASE')[1], /revealing/);
   assert.match(jobPhase('CONSENSUS_VERIFICATION')[1], /agree/);
   assert.match(jobPhase('AWAITING_DELIVERY')[1], /Waiting.*output/);
   assert.match(jobPhase('DELIVERY_RECEIPT_VALIDATION')[1], /receipt/);
-  assert.equal(jobPhase('PAYOUT')[0], 'verifying');
-  assert.match(jobPhase('PAYOUT')[1], /being processed/);
-  assert.match(jobPhase('PAYOUT')[1], /separately/);
+  // PAYOUT is terminal on the server: the job is paid (B8)
+  assert.equal(jobPhase('PAYOUT')[0], 'completed');
+  assert.match(jobPhase('PAYOUT')[1], /paid/);
   assert.match(jobPhase('COMPLETED')[1], /Delivery and payment.*separately/);
   assert.equal(jobPhase('NO_QUORUM')[0], 'failed');
   assert.equal(jobPhase('CANCELLED')[0], 'canceled');

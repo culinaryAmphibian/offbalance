@@ -153,7 +153,7 @@ class ProviderClient():
             if action == 'wait':
                 continue
             with self._job_lock:
-                # The runner has one active manifest; other recovery actions can wait one poll.
+                # Recovery runs one job action at a time; the others wait for the next poll.
                 if self._workers or job_id in self._running_jobs:
                     continue
                 self._running_jobs.add(job_id)
@@ -244,14 +244,10 @@ class ProviderClient():
             print("Handling delivery phase start")
             self.handleDeliveryPhaseStart(event.jobId)
 
-        elif isinstance(event, DeliveredEvent):
-            print("Handling delivered event")
-
-        elif isinstance(event, CanceledEvent):
-            print("Handling canceled event")
-
-        elif isinstance(event, NoQuorumEvent):
-            print("Handling No quorum event")
+        elif isinstance(event, (DeliveredEvent, CanceledEvent, NoQuorumEvent)):
+            # The job is over on chain: nothing left to run for it.
+            print(f"Handling end of job ({type(event).__name__})")
+            self.runner.forgetJob(event.jobId)
 
         else:    
             raise ValueError(f"Unknown event of type: {event.type}")
@@ -279,7 +275,8 @@ class ProviderClient():
         with self._job_lock:
             # Commit-phase events are broadcast to every provider, including
             # machines that were not selected for this job.
-            if self.runner.currentJobId != jobId or jobId in self._running_jobs:
+            manifest = self.runner.manifests.get(jobId)
+            if manifest is None or jobId in self._running_jobs:
                 return
             if deadline is None and commit_deadline is not None:
                 try:
@@ -289,7 +286,7 @@ class ProviderClient():
                     return
             if deadline is None:
                 try:
-                    deadline = self.blockchain.execution_window(block_number, self.runner.currentManifest['timeout_s'])
+                    deadline = self.blockchain.execution_window(block_number, manifest['timeout_s'])
                 except Exception:
                     self._report_error(jobId, 'Cannot read the commit execution window.')
                     return

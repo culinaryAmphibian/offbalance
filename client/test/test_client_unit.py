@@ -37,12 +37,13 @@ class FakeRunner:
     def __init__(self):
         self.started = threading.Event()
         self.release = threading.Event()
-        self.currentJobId = None
-        self.currentManifest = None
+        self.manifests = {}
 
     def prepareJob(self, manifest, jobId):
-        self.currentJobId = jobId
-        self.currentManifest= manifest
+        self.manifests[jobId] = manifest
+
+    def forgetJob(self, jobId):
+        self.manifests.pop(jobId, None)
 
     def startJob(self, jobId, deadline):
         self.started.set()
@@ -73,7 +74,7 @@ class BlockchainIntegrationTest(unittest.TestCase):
     # concurrency testing, more involved mock example
     def test_duplicate_commit_phase_does_not_restart_job(self):
         runner, bc = self.client.runner, self.client.blockchain
-        runner.currentJobId = self.jobId
+        runner.manifests[self.jobId] = self.mockManifest
         
         with patch('ProviderClient.threading.Thread', wraps=threading.Thread) as thread_cls:
             self.client.handleCommitPhaseStart(self.jobId, self.deadline)

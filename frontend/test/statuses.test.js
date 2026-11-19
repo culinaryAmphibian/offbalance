@@ -28,11 +28,9 @@ test('canceled and no-quorum jobs are shown as finished', () => {
   assert.equal(jobPhase('NO_QUORUM')[0], 'failed');
 });
 
-// PAYOUT is the server's final status for a paid job (DELIVERED -> PAYOUT, and it's terminal),
-// but the view shows it as "verifying" with "Payment is being processed", so a paid job looks
-// unfinished forever. The demo API uses COMPLETED instead, which is why the demo doesn't show it.
-test('a paid job (PAYOUT, the server\'s final status) is shown as finished',
-  { todo: 'jobs.js shows PAYOUT as in progress' }, () => {
+// B8: PAYOUT is the server's final status for a paid job (DELIVERED -> PAYOUT, and it's terminal),
+// so it must look finished, not "Payment is being processed".
+test('a paid job (PAYOUT, the server\'s final status) is shown as finished', () => {
     assert.ok(TERMINAL_STATUSES.includes('PAYOUT'));
     assert.ok(FINISHED.has(jobPhase('PAYOUT')[0]), `PAYOUT is shown as "${jobPhase('PAYOUT')[0]}"`);
   });

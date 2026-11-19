@@ -61,8 +61,9 @@ def load_dev_credentials(provider: int) -> Credentials:
     if key_name not in dev_env:
         raise ValueError(f"{key_name} is not in {DEV_ENV_FILE}")
     default_api_key = 'dev' if provider == 1 else f'dev{provider}'
+    # docker-compose.yml passes OFFBALANCE_API_KEY as "" when it isn't configured: treat that as unset
     return Credentials(
-        api_key=parse_api_key(os.environ.get('OFFBALANCE_API_KEY', default_api_key)),
+        api_key=parse_api_key(os.environ.get('OFFBALANCE_API_KEY') or default_api_key),
         session=parse_session_key(dev_env[key_name]),
     )
 

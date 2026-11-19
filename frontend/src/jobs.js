@@ -45,9 +45,10 @@ const phases = {
 		"verifying",
 		"Checking the output’s delivery receipt.",
 	],
+	// PAYOUT is the server's final status for a paid job (see server/models/JobStatus.ts).
 	PAYOUT: [
-		"verifying",
-		"Payment is being processed. Settlement is reported separately below.",
+		"completed",
+		"The job is complete and providers have been paid. Delivery and payment details are below.",
 	],
 	COMPLETED: [
 		"completed",
