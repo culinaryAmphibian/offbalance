@@ -65,11 +65,17 @@ contract OffBalanceFuzzTest is OffBalanceFixture {
         vm.warp(block.timestamp + _next() % 25); // time passes; windows are 10-30, 15 and 30 s
     }
 
+    // a random k with 2k > quorum and k <= quorum (TESTING_PLAN.md B6)
+    function _majority(uint256 quorum) internal returns (uint256) {
+        return quorum / 2 + 1 + _next() % (quorum - quorum / 2);
+    }
+
     function _actSubmit() internal {
         if (_openJobs() >= 3) return;
         uint256 price = 1 + _next() % 3 ether;
         uint256 quorum = 1 + _next() % 4;
-        uint256 k = 1 + _next() % quorum;
+        // a valid threshold (more than half must agree), and now and then one the contract refuses
+        uint256 k = _next() % 10 == 0 ? 1 + _next() % quorum : _majority(quorum);
         vm.prank(buyer);
         try ob.submitJob{value: price}(price, k, quorum, 10 + _next() % 21, "img") returns (JobID_t id) {
             jobs.push(id);
@@ -247,7 +253,7 @@ contract OffBalanceFuzzTest is OffBalanceFixture {
     function _lcSubmitAndStake() internal {
         curPrice = 1 + _next() % 3 ether;
         uint256 quorum = 1 + _next() % 4;
-        curK = 1 + _next() % quorum;
+        curK = _majority(quorum);
         delete curPs;
         delete curHow;
         delete curStake;

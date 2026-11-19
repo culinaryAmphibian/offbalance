@@ -66,6 +66,15 @@ test('resource summaries read as plain capacity', () => {
   assert.equal(resourceSummary(null), '—');
 });
 
+test('more than half of the providers must agree (B6)', () => {
+  for (const [k, quorum] of [['2', '1'], ['4', '2'], ['5', '2'], ['6', '3']]) {
+    assert.equal(validateJob({ ...valid(), k, quorum }).quorum, 'More than half of the providers must agree.', `${quorum} of ${k}`);
+  }
+  for (const [k, quorum] of [['1', '1'], ['2', '2'], ['3', '2'], ['4', '3'], ['5', '3']]) {
+    assert.equal(validateJob({ ...valid(), k, quorum }).quorum, undefined, `${quorum} of ${k}`);
+  }
+});
+
 test('quorum cannot exceed provider count, and may equal it', () => {
   assert.ok(validateJob({ ...valid(), k: '2', quorum: '3' }).quorum);
   assert.equal(validateJob({ ...valid(), k: '3', quorum: '3' }).quorum, undefined);

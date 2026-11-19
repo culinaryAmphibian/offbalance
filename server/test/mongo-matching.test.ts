@@ -84,7 +84,7 @@ describe('MongoDB scheduler integration', { skip: !uri }, () => {
     const buyer = await account(1);
     const first = await provider(2, 0.0000001);
     const second = await provider(3, 0.0000001);
-    const pending = await job(buyer._id, 1, { maxPrice: '0.0000001', minNodesToRunOn: 2 });
+    const pending = await job(buyer._id, 1, { maxPrice: '0.0000001', minNodesToRunOn: 2, minNodesToAgree: 2 });
     assert.match(pending.maxPrice?.toString() ?? '', /[eE]-7$/, 'fixture exercises Decimal128 scientific notation');
     const matcher = new Matcher(null, { now: () => epoch });
     const mapped = await matcher.repository.getJob('1');
@@ -205,7 +205,7 @@ describe('MongoDB scheduler integration', { skip: !uri }, () => {
     const buyer = await account(1);
     const first = await provider(2, 0.1);
     const second = await provider(3, 0.2);
-    const pending = await job(buyer._id, 1, { maxPrice: '0.2', minNodesToRunOn: 2 });
+    const pending = await job(buyer._id, 1, { maxPrice: '0.2', minNodesToRunOn: 2, minNodesToAgree: 2 });
     let fail = true;
     const calls: { id: number; wallets: string[] }[] = [];
     const matcher = new Matcher({ async assignProviders(id, wallets) {

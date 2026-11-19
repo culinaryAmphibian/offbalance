@@ -13,6 +13,7 @@ contract OffBalanceTest is Test {
     uint256 constant P2_KEY = 0xA2;
     uint256 constant P3_KEY = 0xA3;
     uint256 constant P4_KEY = 0xA4;
+    uint256 constant P5_KEY = 0xA5;
     uint256 constant SESSION_KEY = 0xB1;
     uint256 constant ATTACKER_KEY = 0xC1;
 
@@ -21,6 +22,7 @@ contract OffBalanceTest is Test {
     address p2 = vm.addr(P2_KEY);
     address p3 = vm.addr(P3_KEY);
     address p4 = vm.addr(P4_KEY);
+    address p5 = vm.addr(P5_KEY);
     address session = vm.addr(SESSION_KEY);
     address attacker = vm.addr(ATTACKER_KEY);
 
@@ -34,6 +36,7 @@ contract OffBalanceTest is Test {
         vm.deal(p2, 100 ether);
         vm.deal(p3, 100 ether);
         vm.deal(p4, 100 ether);
+        vm.deal(p5, 100 ether);
         vm.deal(session, 100 ether);
         vm.deal(attacker, 100 ether);
     }
@@ -75,6 +78,11 @@ contract OffBalanceTest is Test {
     function _list4(address a, address b, address c, address d) internal pure returns (address[] memory l) {
         l = new address[](4);
         (l[0], l[1], l[2], l[3]) = (a, b, c, d);
+    }
+
+    function _list5(address a, address b, address c, address d, address e) internal pure returns (address[] memory l) {
+        l = new address[](5);
+        (l[0], l[1], l[2], l[3], l[4]) = (a, b, c, d, e);
     }
 
     // Run a job through to the end of the reveal window. outputs[i] == "" means provider i stakes
@@ -119,6 +127,15 @@ contract OffBalanceTest is Test {
         (o[0], o[1], o[2], o[3]) = (a, b, c, d);
     }
 
+    function _bytes5(bytes memory a, bytes memory b, bytes memory c, bytes memory d, bytes memory e)
+        internal
+        pure
+        returns (bytes[] memory o)
+    {
+        o = new bytes[](5);
+        (o[0], o[1], o[2], o[3], o[4]) = (a, b, c, d, e);
+    }
+
     function _status(JobID_t id) internal view returns (uint8) {
         return uint8(ob.getJobStatus(id));
     }
@@ -131,8 +148,8 @@ contract OffBalanceTest is Test {
     }
 
     function _everyone() internal view returns (address[] memory e) {
-        e = new address[](5);
-        (e[0], e[1], e[2], e[3], e[4]) = (buyer, p1, p2, p3, p4);
+        e = new address[](6);
+        (e[0], e[1], e[2], e[3], e[4], e[5]) = (buyer, p1, p2, p3, p4, p5);
     }
 
     // ───────────── scaling stake ─────────────
@@ -234,22 +251,24 @@ contract OffBalanceTest is Test {
     }
 
     function test_FinalizeDropsEveryUnstakedProvider() public {
-        // Adjacent unstaked providers, including the last slot: checks swap-and-pop rechecks slot i.
-        JobID_t id = _submit(2, 4);
-        _assign(id, _list4(p1, p2, p3, p4));
+        // Adjacent unstaked providers, one of them in the last slot: checks swap-and-pop rechecks
+        // slot i after a swap (p5 moves into p3's slot and must be kept, then p4 is popped).
+        JobID_t id = _submit(3, 5);
+        _assign(id, _list5(p1, p2, p3, p4, p5));
         _stake(id, p1);
-        _stake(id, p4);
+        _stake(id, p2);
+        _stake(id, p5);
         vm.warp(block.timestamp + ob.PENDING_WINDOW() + 1);
         ob.finalizeProviderSelection(id);
 
         address[] memory left = ob.getAssignedProviders(id);
-        assertEq(left.length, 2);
-        assertTrue((left[0] == p1 && left[1] == p4) || (left[0] == p4 && left[1] == p1));
+        assertEq(left.length, 3);
+        for (uint256 i; i < 3; ++i) assertTrue(left[i] == p1 || left[i] == p2 || left[i] == p5, "only stakers are left");
         assertEq(_status(id), uint8(OffBalance.Status.COMMIT));
 
-        vm.prank(p2);
+        vm.prank(p3);
         vm.expectRevert("Provider not assigned");
-        ob.submitCommitment(id, _commitment("aa", _salt(p2)));
+        ob.submitCommitment(id, _commitment("aa", _salt(p3)));
     }
 
     function test_TooFewStakersRefundsEveryone() public {
@@ -297,22 +316,30 @@ contract OffBalanceTest is Test {
 
     function test_SlashesWrongAnswerAndNonCommitterAndPaysWinners() public {
         bytes memory a = "aa";
-        JobID_t id = _runToRevealEnd(2, _list4(p1, p2, p3, p4), _bytes4(a, a, "bb", ""));
+        // 3 of 5 must agree: p4 gives a different answer, p5 never commits
+        JobID_t id = _runToRevealEnd(3, _list5(p1, p2, p3, p4, p5), _bytes5(a, a, a, "bb", ""));
 
         ob.endRevealPhase(id);
         vm.warp(block.timestamp + ob.DELIVERY_WINDOW() + 1);
         vm.expectEmit(true, true, false, true, address(ob));
-        emit OffBalance.SLASHED(id, p3, 6 * S);
-        vm.expectEmit(true, true, false, true, address(ob));
         emit OffBalance.SLASHED(id, p4, 6 * S);
+        vm.expectEmit(true, true, false, true, address(ob));
+        emit OffBalance.SLASHED(id, p5, 6 * S);
         ob.endDeliveryPhase(id);
 
-        uint256 share = (PRICE + 12 * S) / 2;
-        assertEq(ob.credits(p1), share + 6 * S);
-        assertEq(ob.credits(p2), share + 6 * S);
-        assertEq(ob.credits(p3), 0);
+        uint256 pool = PRICE + 12 * S;
+        uint256 share = pool / 3;
+        uint256 paid;
+        address[3] memory winners = [p1, p2, p3];
+        for (uint256 i; i < 3; ++i) {
+            uint256 got = ob.credits(winners[i]) - 6 * S;
+            assertTrue(got == share || got == share + pool % 3, "winner gets a share (one also gets the dust) plus its stake");
+            paid += got;
+        }
+        assertEq(paid, pool, "winners split the price and both slashed stakes");
         assertEq(ob.credits(p4), 0);
-        for (uint256 i; i < 4; ++i) assertEq(ob.lockedStake(_list4(p1, p2, p3, p4)[i]), 0);
+        assertEq(ob.credits(p5), 0);
+        for (uint256 i; i < 5; ++i) assertEq(ob.lockedStake(_list5(p1, p2, p3, p4, p5)[i]), 0);
         _assertSolvent(_everyone());
     }
 

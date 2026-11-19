@@ -138,6 +138,9 @@ export function validateJob(values, usdPerEth = null) {
 		errors.window = "Enter an execution window of 1–10080 minutes.";
 	if (!errors.quorum && !errors.k && Number(values.quorum) > Number(values.k))
 		errors.quorum = "Agreement cannot exceed the provider count.";
+	// the contract requires a majority, so two different results can never both win (B6)
+	else if (!errors.quorum && !errors.k && 2 * Number(values.quorum) <= Number(values.k))
+		errors.quorum = "More than half of the providers must agree.";
 	return errors;
 }
 

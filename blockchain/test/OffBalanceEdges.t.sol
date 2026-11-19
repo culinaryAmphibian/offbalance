@@ -5,13 +5,13 @@ import {OffBalance, JobID_t} from "../contracts/OffBalance.sol";
 import {OffBalanceFixture} from "./OffBalanceFixture.sol";
 
 // Edge cases not covered by contracts/OffBalance.t.sol: phase deadlines at their exact second,
-// settlement arithmetic, ties, the stake curve and reputation limits, session keys that expire or
+// settlement arithmetic, the majority rule that rules out ties, the stake curve and reputation limits, session keys that expire or
 // are revoked mid-job, cancellation rules, and withdraw re-entrancy.
 contract OffBalanceEdgesTest is OffBalanceFixture {
     // ───────────── deadlines: the last allowed second, and one after ─────────────
 
     function test_StakeAtTheStakingDeadlineCountsOneSecondLaterDoesNot() public {
-        JobID_t id = _submit(PRICE, 1, 2);
+        JobID_t id = _submit(PRICE, 2, 2);
         ob.assignProviders(id, _first(2));
         (, uint256 pending,,,) = ob.getDeadlines(id);
 
@@ -26,9 +26,10 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
     }
 
     function test_FinalizeWaitsForTheStakingDeadlineUnlessEveryoneStaked() public {
-        JobID_t id = _submit(PRICE, 1, 2);
-        ob.assignProviders(id, _first(2));
+        JobID_t id = _submit(PRICE, 2, 3);
+        ob.assignProviders(id, _first(3));
         _stake(id, provs[0]);
+        _stake(id, provs[1]);
         (, uint256 pending,,,) = ob.getDeadlines(id);
 
         vm.warp(pending);
@@ -39,11 +40,12 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
         vm.prank(makeAddr("anyone")); // anyone can close staking
         ob.finalizeProviderSelection(id);
         assertEq(_status(id), COMMIT);
-        assertEq(ob.getAssignedProviders(id).length, 1, "the provider that didn't stake is dropped");
+        assertEq(ob.getAssignedProviders(id).length, 2, "the provider that didn't stake is dropped");
     }
 
     function test_CommitAtTheCommitDeadlineCountsAndRevealCannotStartUntilAfterIt() public {
-        JobID_t id = _committing(PRICE, 1, _first(2));
+        JobID_t id = _committing(PRICE, 2, _first(3));
+        _commit(id, provs[2], "out");
         (,, uint256 commitDeadline,,) = ob.getDeadlines(id);
 
         vm.warp(commitDeadline);
@@ -60,11 +62,11 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
     }
 
     function test_RevealAtTheRevealDeadlineCountsAndConsensusWaitsUntilAfterIt() public {
-        JobID_t id = _committing(PRICE, 1, _first(2));
-        _commit(id, provs[0], "out");
-        _commit(id, provs[1], "out");
+        JobID_t id = _committing(PRICE, 2, _first(3));
+        for (uint256 i; i < 3; ++i) _commit(id, provs[i], "out");
         vm.warp(block.timestamp + EXEC + 1);
         ob.startRevealPhase(id);
+        _reveal(id, provs[2], "out");
         (,,, uint256 revealDeadline,) = ob.getDeadlines(id);
 
         vm.warp(revealDeadline);
@@ -93,7 +95,7 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
     }
 
     function test_EveryPhaseFunctionRejectsTheWrongPhase() public {
-        JobID_t id = _submit(PRICE, 1, 2);
+        JobID_t id = _submit(PRICE, 2, 2);
         vm.expectRevert("Not in staking phase");
         ob.finalizeProviderSelection(id);
         vm.expectRevert("Not in commit phase");
@@ -133,43 +135,66 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
     }
 
     function test_WinnersSplitThePriceAndEverySlashedStake() public {
-        address[] memory ps = _first(4);
-        // p3 gives a different answer, p4 never commits
-        JobID_t id = _runToRevealEnd(PRICE, 2, ps, _outputs("out", "out", "wrong", ""));
-        uint256[4] memory stakes;
-        for (uint256 i; i < 4; ++i) stakes[i] = _required(id, ps[i]);
+        address[] memory ps = _first(5);
+        // 3 of 5 must agree: p4 gives a different answer, p5 never commits
+        JobID_t id = _runToRevealEnd(PRICE, 3, ps, _outputs("out", "out", "out", "wrong", ""));
+        uint256[5] memory stakes;
+        for (uint256 i; i < 5; ++i) stakes[i] = _required(id, ps[i]);
         _settle(id);
 
-        uint256 pool = PRICE + stakes[2] + stakes[3];
-        assertEq(ob.credits(ps[0]) + ob.credits(ps[1]), pool + stakes[0] + stakes[1], "winners get the pool plus their stakes");
-        assertEq(ob.credits(ps[2]), 0);
+        uint256 pool = PRICE + stakes[3] + stakes[4];
+        assertEq(ob.credits(ps[0]) + ob.credits(ps[1]) + ob.credits(ps[2]), pool + stakes[0] + stakes[1] + stakes[2],
+            "winners get the pool plus their stakes");
         assertEq(ob.credits(ps[3]), 0);
+        assertEq(ob.credits(ps[4]), 0);
         assertEq(ob.credits(buyer), 0);
         assertEq(address(ob).balance, _owed());
     }
 
-    function test_ASingleRequiredMatchCanBeMetByOneProvider() public {
-        address[] memory ps = _first(3);
-        // k = 1: the most common answer is "a" (2 votes), so "b" is slashed
-        JobID_t id = _runToRevealEnd(PRICE, 1, ps, _outputs("a", "a", "b"));
+    function test_ASingleProviderJobNeedsOnlyItsOwnAnswer() public {
+        JobID_t id = _runToRevealEnd(PRICE, 1, _first(1), _outputs1("a"));
         _settle(id);
         assertEq(_status(id), PAID);
-        assertEq(ob.credits(ps[2]), 0);
+        assertEq(ob.credits(provs[0]), PRICE + _required(id, provs[0]));
     }
 
-    // B6 in TESTING_PLAN.md: the contract needs the top answer to have k matches, not a majority,
-    // so a 2-2 split with k = 2 is "consensus", and the answer revealed by the earlier-assigned
-    // providers wins while the other pair is slashed. This pins down today's behaviour; change it
-    // when the team decides what a tie should do (e.g. NO_QUORUM).
-    function test_TieIsWonByTheEarlierAssignedAnswer_currentBehaviourB6() public {
+    // B6 in TESTING_PLAN.md: more than half the providers must agree (2k > quorum), checked when
+    // the job is submitted. Two different answers can then never both reach k, so consensus can't
+    // tie (before, a 2-2 split with k = 2 paid the earlier-revealed pair and slashed the other).
+    function test_SubmitRequiresMoreThanHalfTheProvidersToAgree() public {
+        uint256[2][6] memory invalid = [[uint256(0), 1], [uint256(1), 2], [uint256(2), 4], [uint256(3), 6], [uint256(2), 5], [uint256(4), 3]];
+        for (uint256 i; i < invalid.length; ++i) {
+            vm.prank(buyer);
+            vm.expectRevert("Invalid consensus threshold");
+            ob.submitJob{value: PRICE}(PRICE, invalid[i][0], invalid[i][1], EXEC, "img");
+        }
+        uint256[2][6] memory valid = [[uint256(1), 1], [uint256(2), 2], [uint256(2), 3], [uint256(3), 4], [uint256(3), 5], [uint256(4), 6]];
+        for (uint256 i; i < valid.length; ++i) _submit(PRICE, valid[i][0], valid[i][1]);
+    }
+
+    function testFuzz_SubmitAcceptsExactlyTheMajorityThresholds(uint256 k, uint256 quorum) public {
+        k = bound(k, 0, 300);
+        quorum = bound(quorum, 0, 300);
+        vm.prank(buyer);
+        if (2 * k > quorum && k <= quorum) {
+            ob.submitJob{value: PRICE}(PRICE, k, quorum, EXEC, "img");
+        } else {
+            vm.expectRevert("Invalid consensus threshold");
+            ob.submitJob{value: PRICE}(PRICE, k, quorum, EXEC, "img");
+        }
+    }
+
+    // With the majority rule a 2-2 split can't be a consensus: 4 providers need 3 matches, so the
+    // split ends in NO_QUORUM and everyone, both pairs included, gets their money back.
+    function test_AnEvenSplitIsNoQuorumAndRefundsEveryone() public {
         address[] memory ps = _first(4);
-        JobID_t id = _runToRevealEnd(PRICE, 2, ps, _outputs("a", "a", "b", "b"));
+        JobID_t id = _runToRevealEnd(PRICE, 3, ps, _outputs("a", "a", "b", "b"));
+        uint256 stake = _required(id, ps[0]);
         _settle(id);
-        assertEq(_status(id), PAID);
-        assertGt(ob.credits(ps[0]), 0);
-        assertGt(ob.credits(ps[1]), 0);
-        assertEq(ob.credits(ps[2]), 0, "honest-looking pair slashed on a tie");
-        assertEq(ob.credits(ps[3]), 0);
+        assertEq(_status(id), NO_QUORUM);
+        assertEq(ob.credits(buyer), PRICE);
+        for (uint256 i; i < 4; ++i) assertEq(ob.credits(ps[i]), stake, "no pair is slashed");
+        assertEq(address(ob).balance, _owed());
     }
 
     function test_NoRevealsAtAllIsNoQuorumWithEverythingRefunded() public {
@@ -280,7 +305,7 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
         address session = vm.addr(sessionKey);
         vm.deal(session, 10 ether);
         _registerSession(owner, sessionKey, uint64(block.timestamp + 1 days));
-        JobID_t id = _submit(PRICE, 1, 2);
+        JobID_t id = _submit(PRICE, 2, 2);
         ob.assignProviders(id, _first(2));
         uint256 r = _required(id, owner);
         vm.prank(session);
@@ -329,7 +354,7 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
     // ───────────── cancellation ─────────────
 
     function test_OnlyTheBuyerCancelsAndOnlyBeforeTheProviderSetIsFinal() public {
-        JobID_t id = _submit(PRICE, 1, 2);
+        JobID_t id = _submit(PRICE, 2, 2);
         vm.prank(provs[0]);
         vm.expectRevert("Only buyer");
         ob.cancelJob(id);
@@ -348,7 +373,7 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
     }
 
     function test_ACanceledJobCantBeAssignedOrStakedOn() public {
-        JobID_t id = _submit(PRICE, 1, 2);
+        JobID_t id = _submit(PRICE, 2, 2);
         vm.prank(buyer);
         ob.cancelJob(id);
         vm.expectRevert("Job not awaiting assignment");
@@ -374,7 +399,7 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
     }
 
     function test_WithdrawPaysTheCallerOnly() public {
-        JobID_t id = _submit(PRICE, 1, 2);
+        JobID_t id = _submit(PRICE, 2, 2);
         vm.prank(buyer);
         ob.cancelJob(id);
         vm.prank(provs[0]);
@@ -384,6 +409,11 @@ contract OffBalanceEdgesTest is OffBalanceFixture {
     }
 
     // ───────────── helpers ─────────────
+
+    function _outputs1(bytes memory a) internal pure returns (bytes[] memory o) {
+        o = new bytes[](1);
+        o[0] = a;
+    }
 
     function _outputs2(bytes memory a, bytes memory b) internal pure returns (bytes[] memory o) {
         o = new bytes[](2);

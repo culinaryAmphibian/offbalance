@@ -1,4 +1,4 @@
-import { Query, Schema, model, type InferSchemaType } from "mongoose";
+import { Query, Schema, model, type Document, type InferSchemaType } from "mongoose";
 import { money } from "./decimal.ts";
 import { JOB_STATUSES, JobStatus } from "./JobStatus.ts";
 
@@ -55,6 +55,11 @@ async function otherField(query: Query<unknown, unknown>, field: string, sort: 1
 	return stored?.[field];
 }
 
+// More than half the providers must agree (TESTING_PLAN.md B6): otherwise two different answers
+// could both reach the threshold, and the contract refuses such a job (2k > quorum there).
+export const isMajority = (agree: number, providers: number) => 2 * agree > providers;
+export const MAJORITY_MESSAGE = "minNodesToAgree must be more than half of minNodesToRunOn";
+
 const jobSchema = new Schema(
 	{
 		// Stable API id (also the contract id on older jobs).
@@ -109,21 +114,48 @@ const jobSchema = new Schema(
 					},
 					message: "minNodesToRunOn can't be lowered below minNodesToAgree",
 				},
+				{
+					// raising it alone (on an update, or on a saved job) must keep a majority; a new job
+					// is covered by minNodesToAgree's own check
+					async validator(this: (Document & { minNodesToAgree?: number }) | Query<unknown, unknown>, v: number) {
+						if (this instanceof Query) {
+							const quorum = await otherField(this, "minNodesToAgree", 1);
+							return quorum === undefined || isMajority(quorum, v);
+						}
+						if (this.isNew || !this.isModified("minNodesToRunOn")) return true;
+						return this.minNodesToAgree === undefined || isMajority(this.minNodesToAgree, v);
+					},
+					message: MAJORITY_MESSAGE,
+				},
 			],
 		}, // k
 		minNodesToAgree: {
 			type: Number,
 			required: true,
 			min: 1,
-			validate: {
-				// `this` is the document on save, the query on update with runValidators
-				async validator(this: { minNodesToRunOn?: number } | Query<unknown, unknown>, v: number) {
-					if (!Number.isSafeInteger(v)) return false;
-					const k = this instanceof Query ? await otherField(this, "minNodesToRunOn", 1) : this.minNodesToRunOn;
-					return k === undefined || v <= k;
+			validate: [
+				{
+					// `this` is the document on save, the query on update with runValidators
+					async validator(this: { minNodesToRunOn?: number } | Query<unknown, unknown>, v: number) {
+						if (!Number.isSafeInteger(v)) return false;
+						const k = this instanceof Query ? await otherField(this, "minNodesToRunOn", 1) : this.minNodesToRunOn;
+						return k === undefined || v <= k;
+					},
+					message: "minNodesToAgree can't exceed minNodesToRunOn",
 				},
-				message: "minNodesToAgree can't exceed minNodesToRunOn",
-			},
+				{
+					async validator(this: (Document & { minNodesToRunOn?: number }) | Query<unknown, unknown>, v: number) {
+						if (this instanceof Query) {
+							const k = await otherField(this, "minNodesToRunOn", -1);
+							return k === undefined || isMajority(v, k);
+						}
+						// jobs saved before the rule keep their thresholds until one of them changes
+						if (!this.isNew && !this.isModified("minNodesToAgree") && !this.isModified("minNodesToRunOn")) return true;
+						return this.minNodesToRunOn === undefined || isMajority(v, this.minNodesToRunOn);
+					},
+					message: MAJORITY_MESSAGE,
+				},
+			],
 		}, // quorum
 		timeWindow: { type: Number, required: true, min: 1, validate: Number.isSafeInteger }, // seconds
 		requirements: { type: jobRequirementsSchema, default: () => ({}) },

@@ -69,7 +69,7 @@ describe("a burst of heartbeats against MongoDB", { skip: !uri && "set MONGODB_U
 		await AuthTokenModel.insertMany(accounts.map((a, i) => ({ tokenHash: hashToken(`p-${i}`), account: a._id, wallet: wallet(1000 + i) })));
 		await JobModel.insertMany(Array.from({ length: JOBS }, (_, j) => ({
 			onChainJobId: j + 1, owner: buyer._id, dockerImageDigest: `docker.io/library/alpine@sha256:${"a".repeat(64)}`,
-			maxPrice: "1", minNodesToRunOn: 1 + (j % 3), minNodesToAgree: 1, timeWindow: 600, submittedAt: new Date(),
+			maxPrice: "1", minNodesToRunOn: 1 + (j % 3), minNodesToAgree: 1 + Math.floor((1 + (j % 3)) / 2), timeWindow: 600, submittedAt: new Date(),
 		})));
 		matcher = new Matcher(null);
 		server = createApp({ chain: null, matcher, builder: new Builder() }, { log: false }).listen(0, "127.0.0.1");

@@ -105,6 +105,18 @@ describe("Job", () => {
 		await assert.rejects(validJob({ minNodesToRunOn: 2, minNodesToAgree: 3 }).validate(), /minNodesToAgree/);
 	});
 
+	// B6: the contract only takes jobs where more than half the providers must agree, so a tie
+	// between two answers can't happen.
+	test("more than half the providers must agree", async () => {
+		for (const [providers, agree] of [[2, 1], [4, 2], [6, 3], [5, 2]]) {
+			await assert.rejects(validJob({ minNodesToRunOn: providers, minNodesToAgree: agree }).validate(),
+				/more than half/, `${agree} of ${providers}`);
+		}
+		for (const [providers, agree] of [[1, 1], [2, 2], [3, 2], [4, 3], [5, 3]]) {
+			await validJob({ minNodesToRunOn: providers, minNodesToAgree: agree }).validate();
+		}
+	});
+
 	test("results need provider, hash, deliveryTime and location", async () => {
 		await assert.rejects(validJob({ results: [{ hash: "0xabc" }] }).validate(), /results\.0\.(provider|deliveryTime|location)/);
 		await validJob({

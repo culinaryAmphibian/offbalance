@@ -149,6 +149,32 @@ describe("database audit", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, (
 			assert.deepEqual([stored?.minNodesToRunOn, stored?.minNodesToAgree], [2, 2]);
 		});
 
+		// B6: more than half the providers must agree, and an update can't break that either way
+		test("an update can't leave the agreement threshold at half the providers or below", async () => {
+			const owner = await AccountModel.create({ walletIds: [w("6")] });
+			const job = await JobModel.create(jobFields({ owner: owner._id, onChainJobId: 6, minNodesToRunOn: 4, minNodesToAgree: 3 }));
+			await assert.rejects(JobModel.updateOne({ _id: job._id }, { $set: { minNodesToAgree: 2 } }, { runValidators: true }), /more than half/);
+			await assert.rejects(JobModel.updateOne({ _id: job._id }, { $set: { minNodesToRunOn: 6 } }, { runValidators: true }), /more than half/);
+			await assert.rejects(JobModel.updateOne({ _id: job._id }, { $set: { minNodesToRunOn: 6, minNodesToAgree: 3 } }, { runValidators: true }), /more than half/);
+			await JobModel.updateOne({ _id: job._id }, { $set: { minNodesToRunOn: 5 } }, { runValidators: true });
+			const doc = (await JobModel.findById(job._id))!;
+			doc.minNodesToRunOn = 6;
+			await assert.rejects(doc.save(), /more than half/);
+		});
+
+		// Jobs saved before the rule still load and save (status updates etc.); only changing their
+		// thresholds has to follow it.
+		test("a job saved before the majority rule keeps working until its thresholds change", async () => {
+			const owner = await AccountModel.create({ walletIds: [w("7")] });
+			const { insertedId } = await JobModel.collection.insertOne(
+				{ ...new JobModel(jobFields({ owner: owner._id, onChainJobId: 7 })).toObject(), minNodesToRunOn: 2, minNodesToAgree: 1 });
+			const legacy = (await JobModel.findById(insertedId))!;
+			legacy.name = "renamed";
+			await legacy.save();
+			legacy.minNodesToRunOn = 3;
+			await assert.rejects(legacy.save(), /more than half/);
+		});
+
 		test("nextSeq hands out unique ids under concurrency", async () => {
 			const ids = await Promise.all(Array.from({ length: 50 }, () => nextSeq("jobId")));
 			assert.equal(new Set(ids).size, 50);

@@ -161,6 +161,12 @@ describe("server API", { skip: !MONGODB_URI && "set MONGODB_URI to run" }, () =>
 			assert.match(res.body.error, /minNodesToAgree/);
 		});
 
+		test("rejects jobs where half the providers or fewer must agree (B6)", async () => {
+			const res = await call("POST", "/jobs", { as: "buyer", body: job({ minNodesToRunOn: 4, minNodesToAgree: 2 }) });
+			assert.equal(res.status, 400);
+			assert.match(res.body.error, /more than half/);
+		});
+
 		test("a job is matched to the cheapest k providers within budget", async () => {
 			const res = await call("POST", "/jobs", { as: "buyer", body: job() });
 			assert.equal(res.status, 201, JSON.stringify(res.body));

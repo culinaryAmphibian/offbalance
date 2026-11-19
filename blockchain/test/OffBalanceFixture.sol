@@ -143,6 +143,15 @@ abstract contract OffBalanceFixture is Test {
         (o[0], o[1], o[2], o[3]) = (a, b, c, d);
     }
 
+    function _outputs(bytes memory a, bytes memory b, bytes memory c, bytes memory d, bytes memory e)
+        internal
+        pure
+        returns (bytes[] memory o)
+    {
+        o = new bytes[](5);
+        (o[0], o[1], o[2], o[3], o[4]) = (a, b, c, d, e);
+    }
+
     // ───────────── accounting ─────────────
 
     function _everyone() internal view returns (address[] memory e) {

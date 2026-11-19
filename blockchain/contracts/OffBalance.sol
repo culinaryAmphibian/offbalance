@@ -299,7 +299,10 @@ contract OffBalance {
     ) private returns (JobID_t jobId) {
         require(price > 0, "Price must be positive");
         require(msg.value == price, "Send exact job price");
-        require(k > 0 && quorum >= k, "Invalid consensus threshold");
+        // More than half the providers must agree (2k > quorum), so two different answers can never
+        // both reach k: consensus can't tie (TESTING_PLAN.md B6). `quorum / 2` rounds down, so this
+        // is exactly 2k > quorum, without the overflow of k * 2.
+        require(k > quorum / 2 && quorum >= k, "Invalid consensus threshold");
         require(executionTime > 0, "Execution time must be positive");
 
         jobId = JobID_t.wrap(nextJobId++);
