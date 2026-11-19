@@ -79,10 +79,9 @@ describe("a burst of heartbeats against MongoDB", { skip: !uri && "set MONGODB_U
 	after(async () => {
 		if (server) await new Promise(resolve => server.close(resolve));
 		await matcher?.idle().catch(() => {});
-		if (mongoose.connection.readyState === 1) {
-			await mongoose.connection.dropDatabase();
-			await disconnectDB();
-		}
+		// Always disconnect, even if MongoDB went away mid-test: an open client's heartbeat timer keeps the process alive.
+		if (mongoose.connection.readyState === 1) await mongoose.connection.dropDatabase().catch(() => {});
+		await disconnectDB().catch(() => {});
 	});
 
 	test(`${PROVIDERS} simultaneous heartbeats all succeed, and every waiting job is matched once`, async () => {

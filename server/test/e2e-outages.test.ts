@@ -168,6 +168,8 @@ describe("the server survives chain and database outages", { skip: !hasDocker &&
 		const matcher = new Matcher(null);
 		const quiet = { log: (m: string) => logs.push(m), warn: (m: string) => logs.push(m), error: (...m: unknown[]) => logs.push(m.join(" ")) };
 		const orchestrator = new Orchestrator(chain, { log: quiet });
+		// before anything that can fail, so after() always stops the poll loop and the process can exit
+		stopServer = async () => { await orchestrator.stop(); await chain!.stop(); };
 		await chain.listen(async event => {
 			await handleChainEvent(event, matcher);
 			orchestrator.onEvent(event);
@@ -175,7 +177,6 @@ describe("the server survives chain and database outages", { skip: !hasDocker &&
 		api = createApp({ chain, matcher, builder: new Builder() }, { log: false }).listen(0, "127.0.0.1");
 		await new Promise(resolve => api.once("listening", resolve));
 		apiBase = `http://127.0.0.1:${(api.address() as { port: number }).port}`;
-		stopServer = async () => { await orchestrator.stop(); await chain!.stop(); };
 
 		const buyer = await models.AccountModel.create({ walletIds: [wallets.buyer.account!.address.toLowerCase()] });
 		await models.AuthTokenModel.create({ tokenHash: models.hashToken("buyer-token"), account: buyer._id, wallet: wallets.buyer.account!.address.toLowerCase() });

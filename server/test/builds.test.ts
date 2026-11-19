@@ -116,10 +116,9 @@ describe("server-side builds and image pinning", { skip: !uri && "set MONGODB_UR
 	after(async () => {
 		await Promise.all([server, disabledServer].filter(Boolean).map(s => new Promise(resolve => s.close(resolve))));
 		await reg.close();
-		if (mongoose.connection.readyState === 1) {
-			await mongoose.connection.dropDatabase();
-			await disconnectDB();
-		}
+		// Always disconnect, even if MongoDB went away mid-test: an open client's heartbeat timer keeps the process alive.
+		if (mongoose.connection.readyState === 1) await mongoose.connection.dropDatabase().catch(() => {});
+		await disconnectDB().catch(() => {});
 	});
 
 	describe("Builder", () => {

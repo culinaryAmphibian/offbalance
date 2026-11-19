@@ -66,10 +66,9 @@ describe("contract events and database jobs", { skip: !uri && "set MONGODB_URI t
 	});
 	after(async () => {
 		if (server) await new Promise(resolve => server.close(resolve));
-		if (mongoose.connection.readyState === 1) {
-			await mongoose.connection.dropDatabase();
-			await disconnectDB();
-		}
+		// Always disconnect, even if MongoDB went away mid-test: an open client's heartbeat timer keeps the process alive.
+		if (mongoose.connection.readyState === 1) await mongoose.connection.dropDatabase().catch(() => {});
+		await disconnectDB().catch(() => {});
 	});
 
 	test("in the simple case the numbers line up: the first job saved is the contract's job 1", async () => {

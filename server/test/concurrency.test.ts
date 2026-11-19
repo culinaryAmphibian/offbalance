@@ -66,10 +66,9 @@ describe("buyer and matcher races", { skip: !uri && "set MONGODB_URI to run" }, 
 	after(async () => {
 		if (server) await new Promise(resolve => server.close(resolve));
 		await matcher?.idle().catch(() => {});
-		if (mongoose.connection.readyState === 1) {
-			await mongoose.connection.dropDatabase();
-			await disconnectDB();
-		}
+		// Always disconnect, even if MongoDB went away mid-test: an open client's heartbeat timer keeps the process alive.
+		if (mongoose.connection.readyState === 1) await mongoose.connection.dropDatabase().catch(() => {});
+		await disconnectDB().catch(() => {});
 	});
 
 	test("cancel before matching: the job is canceled and nobody is reserved", async () => {

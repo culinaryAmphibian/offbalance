@@ -104,8 +104,8 @@ describe('real HTTPS server and provider client', { skip: !mongodbUri && 'set MO
         assert.equal(child.exitCode, 0, output);
       }
     } finally {
-      if (mongoose.connection.readyState === 1) await mongoose.connection.dropDatabase();
-      await disconnectDB();
+      if (mongoose.connection.readyState === 1) await mongoose.connection.dropDatabase().catch(() => {});
+      await disconnectDB().catch(() => {});
       if (directory) rmSync(directory, { recursive: true, force: true });
     }
   });

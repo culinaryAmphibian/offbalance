@@ -222,10 +222,9 @@ test("the server alone drives jobs from commit to payout and to no-quorum", { sk
 		assert.equal(await dashboardEscrow(), null, "the dashboard stays available if the RPC is down");
 	} finally {
 		await stopServer().catch(() => {});
-		if (mongoose.connection.readyState === 1) {
-			await mongoose.connection.dropDatabase();
-			await mongoose.disconnect();
-		}
+		// Always disconnect, even if MongoDB went away mid-test: an open client's heartbeat timer keeps the process alive.
+		if (mongoose.connection.readyState === 1) await mongoose.connection.dropDatabase().catch(() => {});
+		await mongoose.disconnect().catch(() => {});
 		try { process.kill(-node.pid!, "SIGTERM"); } catch {}
 	}
 });

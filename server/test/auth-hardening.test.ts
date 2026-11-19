@@ -50,10 +50,9 @@ describe("authentication hardening", { skip: !uri && "set MONGODB_URI to run" },
 	});
 	after(async () => {
 		if (server) await new Promise(resolve => server.close(resolve));
-		if (mongoose.connection.readyState === 1) {
-			await mongoose.connection.dropDatabase();
-			await disconnectDB();
-		}
+		// Always disconnect, even if MongoDB went away mid-test: an open client's heartbeat timer keeps the process alive.
+		if (mongoose.connection.readyState === 1) await mongoose.connection.dropDatabase().catch(() => {});
+		await disconnectDB().catch(() => {});
 	});
 
 	test("the good token works, so the cases below fail for the right reason", async () => {

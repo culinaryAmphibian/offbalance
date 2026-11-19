@@ -109,10 +109,9 @@ describe("server API edge cases", { skip: !uri && "set MONGODB_URI to run" }, ()
 	after(async () => {
 		await Promise.all(servers.map(s => new Promise(resolve => s.close(resolve))));
 		rmSync(path.dirname(deploymentFile), { recursive: true, force: true });
-		if (mongoose.connection.readyState === 1) {
-			await mongoose.connection.dropDatabase();
-			await disconnectDB();
-		}
+		// Always disconnect, even if MongoDB went away mid-test: an open client's heartbeat timer keeps the process alive.
+		if (mongoose.connection.readyState === 1) await mongoose.connection.dropDatabase().catch(() => {});
+		await disconnectDB().catch(() => {});
 	});
 
 	describe("app", () => {

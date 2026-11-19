@@ -126,12 +126,14 @@ describe("the server drives staking and survives restarts", { skip: !uri && "set
 			assert.ok(chain?.canWrite, "server chain connection");
 			const matcher = new Matcher(null);
 			const orchestrator = new Orchestrator(chain, { log: { log() {}, warn() {}, error: console.error } });
+			// Before anything that can fail (recovery reads MongoDB): if this start fails halfway,
+			// after() must still stop this instance's poll loop, or the test process never exits.
+			stopServer = async () => { await orchestrator.stop(); await chain.stop(); };
 			await chain.listen(async event => {
 				await handleChainEvent(event, matcher);
 				orchestrator.onEvent(event);
 			});
 			await orchestrator.recover(await unfinishedPhaseJobIds());
-			stopServer = async () => { await orchestrator.stop(); await chain.stop(); };
 			return chain;
 		};
 		const owner = await AccountModel.create({ walletIds: [wallets.buyer.account!.address.toLowerCase()] });
@@ -146,10 +148,9 @@ describe("the server drives staking and survives restarts", { skip: !uri && "set
 
 	after(async () => {
 		await stopServer().catch(() => {});
-		if (mongoose?.connection.readyState === 1) {
-			await mongoose.connection.dropDatabase();
-			await mongoose.disconnect();
-		}
+		// Always disconnect, even if MongoDB went away mid-test: an open client's heartbeat timer keeps the process alive.
+		if (mongoose?.connection.readyState === 1) await mongoose.connection.dropDatabase().catch(() => {});
+		await mongoose?.disconnect().catch(() => {});
 		try { process.kill(-node.pid!, "SIGTERM"); } catch {}
 	});
 
